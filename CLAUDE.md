@@ -58,11 +58,17 @@ docs/
   decisions.md  budgets.md  data-formats.md
 ```
 
+## Map pipeline (Phase 3)
+
+- Python 3.15 venv at `crates/map-builder/.venv` (`pip install -r crates/map-builder/requirements.txt`). Run `crates/map-builder/build_map.sh` to fetch pinned sources and build `data/baked/meridian-map.bin` (about 4 minutes; not committed). `check_determinism.sh <scratch-dir>` builds twice and compares.
+- `scripts/check.sh` runs the map tests, `runner map-validate` and `runner map-bench` when the baked file exists. Budgets are in `docs/budgets.md`.
+- Hand-written data lives in `crates/map-builder/config/` (1990 states, chokepoints, strategic sites). Sources and licenses: `docs/attributions.md`.
+
 ## Formats
 
-- Authored content: RON. Baked runtime data: rkyv or custom flat arrays (decide by benchmark in Phase 2). Saves and replays: postcard-style binary with explicit version and migration (verify maintenance first). Source geometry is input to `map-builder` only.
+- Authored content: RON. Baked runtime data: the map is a custom flat-array container with a CRC-32 (Phase 3; rkyv was benchmarked and equal, but Python cannot write it). Saves and replays: postcard-style binary with explicit version and migration (verify maintenance first). Source geometry is input to `map-builder` only.
 - The game loads only baked files. Text is parsed once, never during ticking.
 
 ## Open decisions (ask before assuming)
 
-Baked format, save format, client technology (wgpu or Bevy), 1990 borders dataset, scripting (Lua, Rhai or data only), platforms beyond macOS. See guide section 8.
+Save format, client technology (wgpu or Bevy), 1990 borders dataset, scripting (Lua, Rhai or data only), platforms beyond macOS. See guide section 8.

@@ -4,6 +4,8 @@ use crate::clock::{Clock, Signals};
 use crate::command::{Command, Rejection};
 use crate::hash::StateHasher;
 use crate::ids::{CountryId, ProvinceId, UnitId};
+use crate::map::Map;
+use std::sync::Arc;
 use crate::rng::Rng;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,6 +51,22 @@ pub struct TickReport {
     pub rejected: Vec<(Command, Rejection)>,
 }
 
+/// Shared, read-only map attached to a world. Equality and hashing use the map's file
+/// checksum and size, not its contents.
+#[derive(Clone)]
+pub struct MapRef(pub Arc<Map>);
+impl std::fmt::Debug for MapRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Map(crc {:08x}, {} provinces, {} cells)", self.0.checksum, self.0.province_count(), self.0.cell_count())
+    }
+}
+impl PartialEq for MapRef {
+    fn eq(&self, o: &MapRef) -> bool {
+        Arc::ptr_eq(&self.0, &o.0) || (self.0.checksum == o.0.checksum && self.0.cell_count() == o.0.cell_count() && self.0.province_count() == o.0.province_count())
+    }
+}
+impl Eq for MapRef {}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct World {
     seed: u64,
@@ -63,6 +81,7 @@ pub struct World {
     units: Vec<Option<Unit>>,
     /// Indexed by SiteId order of creation.
     sites: Vec<Site>,
+    map: Option<MapRef>,
 }
 
 impl World {
@@ -77,7 +96,23 @@ impl World {
             value: vec![0; province_count as usize],
             units: Vec::new(),
             sites: Vec::new(),
+            map: None,
         }
+    }
+
+    /// A world on a real map: one country per map state, every province controlled by
+    /// its owning state. The map is shared and never changes.
+    pub fn from_map(seed: u64, map: Arc<Map>) -> World {
+        let mut w = World::new(seed, map.state_count() as u16, map.province_count());
+        for (p, &st) in map.province_state.iter().enumerate() {
+            w.controller[p] = CountryId(st);
+        }
+        w.map = Some(MapRef(map));
+        w
+    }
+
+    pub fn map(&self) -> Option<&Map> {
+        self.map.as_ref().map(|m| &*m.0)
     }
 
     // ---- setup (scenario building, before the first tick) ----
@@ -232,6 +267,13 @@ impl World {
                     h.write_bytes(&y.to_le_bytes());
                 }
             }
+        }
+        // Only worlds with a map hash it, so map-less hashes are unchanged.
+        if let Some(m) = &self.map {
+            h.write_u8(1);
+            h.write_u32(m.0.checksum);
+            h.write_u32(m.0.province_count());
+            h.write_u32(m.0.cell_count());
         }
         h.finish()
     }

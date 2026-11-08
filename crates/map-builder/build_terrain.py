@@ -69,9 +69,10 @@ def main(inter, ne_dir, tif):
     cz = np.load(inter / "sea" / "cell_zone.npy")
 
     # ---- elevation: 9 samples per cell ----
-    elev = np.load(inter / "elev_60s_int16.npy", mmap_mode="r") if (inter / "elev_60s_int16.npy").exists() else None
-    if elev is None:
-        elev = np.rint(tifffile.imread(tif)).astype(np.int16)
+    cache = inter / "elev_60s_int16.npy"
+    if not cache.exists():  # decode the compressed GeoTIFF once per intermediate directory
+        np.save(cache, np.rint(tifffile.imread(tif)).astype(np.int16))
+    elev = np.load(cache, mmap_mode="r")
     r = np.minimum(0.5 * np.sqrt(area / np.pi), 8000.0)
     ang = np.arange(8) * (np.pi / 4)
     sx = np.concatenate([cx[:, None], cx[:, None] + r[:, None] * np.cos(ang)], axis=1)

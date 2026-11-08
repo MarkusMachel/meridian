@@ -16,3 +16,5 @@ macro_rules! id_type {
 id_type!(ProvinceId, u32);
 id_type!(CountryId, u16);
 id_type!(UnitId, u32);
+id_type!(CellId, u32);
+id_type!(SiteId, u32);
