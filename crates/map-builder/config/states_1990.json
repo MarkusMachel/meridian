@@ -1,0 +1,41 @@
+{
+  "_comment": "How Natural Earth 5.1.1 modern admin-0 entities map to the states that existed on 1990-01-01. Hand-authored; edit here, not in code.",
+  "merge": {
+    "SUN": {"name": "Soviet Union", "from": ["ARM","AZE","BLR","EST","GEO","KAZ","KGZ","LVA","LTU","MDA","RUS","TJK","TKM","UKR","UZB"]},
+    "YUG": {"name": "Yugoslavia", "from": ["SRB","MNE","HRV","SVN","BIH","MKD","KOS"]},
+    "CSK": {"name": "Czechoslovakia", "from": ["CZE","SVK"]}
+  },
+  "entity_to_state": {
+    "ERI": "ETH", "SDS": "SDN", "TLS": "IDN", "SOL": "SOM", "SAH": "MAR",
+    "PSX": "ISR", "CYN": "CYP", "CNM": "CYP", "KAS": "IND", "PLW": "USA",
+    "HKG": "GBR", "MAC": "PRT", "USG": "USA", "KAB": "SUN"
+  },
+  "split": {
+    "DEU": {
+      "DDR": {"name": "East Germany", "adm1_names": ["Brandenburg","Mecklenburg-Vorpommern","Sachsen","Sachsen-Anhalt","Thüringen","Berlin"]},
+      "BRD": {"name": "West Germany", "rest": true}
+    },
+    "YEM": {
+      "YMD": {"name": "South Yemen", "adm1_names": ["Hadramawt","Al Mahrah","`Adan","Abyan","Shabwah","Lahij","Al Dali'"]},
+      "YAR": {"name": "North Yemen", "rest": true}
+    }
+  },
+  "excluded": {
+    "ATA": "Antarctica is out of scope (guide section 3A)",
+    "PGA": "Spratly Islands: tiny, no sovereign in 1990",
+    "BJN": "Bajo Nuevo Bank: uninhabited reef",
+    "SER": "Serranilla Bank: uninhabited reef",
+    "SCR": "Scarborough Reef: uninhabited reef",
+    "BRI": "Brazilian Island: uninhabited, disputed",
+    "BRT": "Bir Tawil: unclaimed land",
+    "SPI": "Southern Patagonian Ice Field: overlaps Chile and Argentina"
+  },
+  "notes": [
+    "Berlin is assigned whole to East Germany so West Berlin is not an enclave.",
+    "Namibia is kept independent although South Africa administered it until 1990-03-21.",
+    "Western Sahara goes to Morocco; Northern Cyprus to Cyprus; Palestine (West Bank, Gaza) to Israel; Eritrea to Ethiopia; South Sudan to Sudan; Timor-Leste to Indonesia; Kosovo to Yugoslavia.",
+    "Hong Kong goes to the United Kingdom and Macau to Portugal.",
+    "Palau goes to the United States (UN trust territory in 1990).",
+    "Admin-1 Al Bayda' is assigned to North Yemen although part of it was in South Yemen."
+  ]
+}
