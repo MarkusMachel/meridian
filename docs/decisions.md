@@ -48,3 +48,19 @@
 - **Result:** 173 states, total land 134.46 million km2 (guide estimate was about 135 million, includes dependencies). Spot checks against reference areas: West Germany 248.6k (real about 248.6k), Yugoslavia 254.8k (real 255.8k), Soviet Union 22.13M (real 22.4M including inland water). Both Yemens together are 453k km2 because Natural Earth's outline stops at the desert border; real figures are larger.
 - **Tooling:** Python 3.15 in `crates/map-builder/.venv` (not committed), versions pinned in `requirements.txt` (shapely 2.2.0, pyproj 3.8.0, pyshp 3.1.7, numpy 2.5.4, scipy 1.18.1). Running `build_states.py` twice gives byte-identical GeoJSON (sha256 `16fa95d6...3508a`) on this machine; cross-machine reproducibility depends on GEOS version and is not yet tested.
 - **Not yet done in Phase 3:** provinces, cells, adjacency graph, sea zones, sites, 1990 population (Natural Earth's population is 2019, so 1990 values need another source or scaling), baked map file, pathfinding, budgets.
+
+## Phase 3: Real map, step 2 (provinces) (2026-11-08)
+
+- **Result:** 15,240 provinces in 173 states (target was 15,000 to 17,000). Estimated area: median 9,001 km2, mean 8,823 km2, max 28,705 km2; 17 provinces over 15,000 km2, 1 over 20,000; 360 under 3,000 (mostly small states). Run time about 25 seconds.
+- **Method** (`crates/map-builder/build_provinces.py`, no random numbers): project each state to Equal Earth (EPSG:8857), split it into landmasses, sample a regular grid (spacing chosen per state so a province gets about 100 points, capped at 10 km), cluster with Lloyd's k-means started from evenly spaced points along a Morton curve, then repair clusters that came out in pieces. Province IDs are ordered by state tag, then north to south and west to east.
+- **Province count per state:** `max(round(area / 9000), min(10, max(1, floor(area / 450))))`. This is a change from the guide's flat "minimum 10 per country": provinces are never cut below about 450 km2 (two tactical cells), so Andorra (452 km2) gets 1, Luxembourg gets 5, and states from 4,500 km2 up get the full 10. The allocation across a state's landmasses uses the largest-remainder method so the total is exact.
+- **Islands:** landmasses smaller than 0.6 of a province are pooled with neighbours within 1,500 km (single linkage) into island-group provinces, which may be several pieces joined by sea links. Example: Alaska's 191-island chain forms the largest province (28,705 km2). Every landmass above that size gets its own province.
+- **Province area is an estimate** (points x spacing squared). Exact areas come from the cells in the next step. States' sampled areas are checked against true area (within 15% for states over 2,000 km2; no warnings).
+- **Bug found and fixed during the step:** the fragment repair first ignored neighbours on the edge of a province's bounding box (141 split provinces); fixed by widening the box (14 remain, all thin coastal strips, accepted).
+- **Known issues, to handle later:**
+  - Natural Earth cuts polygons at the antimeridian, so Chukotka, Fiji and parts of Alaska's Aleutians are separate landmasses with an artificial seam; the adjacency step must wrap across it.
+  - Greenland (about 240 provinces) and the Canadian Arctic mostly ice and tundra: a gameplay question, not an engine one.
+  - French Guiana is part of the France polygon, so France's 83 provinces include it; same pattern for other overseas parts (logged for the regions layer).
+  - Special territories (Berlin, Palestine and similar) get their own pass later, as agreed.
+- **Outputs** (all in `data/intermediate/`, not committed): `provinces.csv` (id, state, lon, lat, estimated area, points, landmass count, spacing) and the labelled sample points as `.npy` files. Output is byte-identical across runs.
+- **Pipeline:** `crates/map-builder/build_map.sh` runs fetch, states, provinces and the validator.
