@@ -1,0 +1,9 @@
+[package]
+name = "runner"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+meridian-core = { path = "../meridian-core" }
+proving-ground = { path = "../proving-ground" }
