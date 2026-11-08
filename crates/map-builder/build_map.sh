@@ -13,3 +13,6 @@ $PY $B/build_cells.py data/intermediate
 $PY $B/validate_cells.py data/intermediate
 $PY $B/build_sea.py data/intermediate data/source/natural-earth
 $PY $B/validate_graph.py data/intermediate
+$PY $B/build_terrain.py data/intermediate data/source/natural-earth data/source/etopo/ETOPO_2022_v1_60s_N90W180_surface.tif
+$PY $B/build_sites.py data/intermediate data/source/natural-earth
+$PY $B/build_population.py data/intermediate data/source/natural-earth data/source/worldbank

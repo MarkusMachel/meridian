@@ -107,6 +107,11 @@ def main(ne_dir, out_dir):
     lines += ["", f"total land area: {total:,.0f} km2"]
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    ent = {}
+    for tag in sorted(assigned):
+        for code, _ in assigned[tag]:
+            ent.setdefault(code, []).append(tag)
+    (out_dir / "entity_state.json").write_text(json.dumps({k: sorted(v) for k, v in sorted(ent.items())}, indent=0, sort_keys=True), encoding="utf-8")
     feats = [{"type": "Feature", "properties": {"tag": t, "name": names[t]}, "geometry": mapping(states[t])} for t in sorted(states)]
     (out_dir / "states_1990.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": feats}, sort_keys=True), encoding="utf-8")
     (out_dir / "states_1990_report.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")

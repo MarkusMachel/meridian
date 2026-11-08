@@ -1,6 +1,7 @@
 target/
 data/baked/
-data/source/
+data/source/natural-earth/
+data/source/etopo/
 data/intermediate/
 crates/map-builder/.venv/
 __pycache__/
