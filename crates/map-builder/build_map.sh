@@ -9,3 +9,7 @@ $B/fetch_sources.sh
 $PY $B/build_states.py data/source/natural-earth data/intermediate
 $PY $B/build_provinces.py data/intermediate
 $PY $B/validate_provinces.py data/intermediate
+$PY $B/build_cells.py data/intermediate
+$PY $B/validate_cells.py data/intermediate
+$PY $B/build_sea.py data/intermediate data/source/natural-earth
+$PY $B/validate_graph.py data/intermediate
