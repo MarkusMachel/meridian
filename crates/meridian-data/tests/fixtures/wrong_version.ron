@@ -1,0 +1,29 @@
+// Small sample scenario for engine tests. Not 1990 content.
+(
+    version: 99,
+    name: "sample",
+    seed: 1,
+    countries: [
+        (id: 0, name: "Alpha"),
+        (id: 1, name: "Bravo"),
+        (id: 2, name: "Charlie"),
+    ],
+    provinces: [
+        (id: 0, name: "North Alpha", controller: 0),
+        (id: 1, name: "South Alpha", controller: 0),
+        (id: 2, name: "Bravo Coast", controller: 1),
+        (id: 3, name: "Bravo Hills", controller: 1),
+        (id: 4, name: "Charlie Plain", controller: 2),
+        (id: 5, name: "Charlie Gap", controller: 2),
+    ],
+    units: [
+        (id: 0, owner: 0, location: 0),
+        (id: 1, owner: 1, location: 2),
+        (id: 2, owner: 2, location: 4),
+    ],
+    sites: [
+        (id: 0, name: "Alpha City", kind: City, province: 0, owner: 0, condition: 100, built_year: 1700, destroyed_year: None),
+        (id: 1, name: "Bravo Port", kind: Port, province: 2, owner: 1, condition: 90, built_year: 1850, destroyed_year: None),
+        (id: 2, name: "Old Bridge", kind: Crossing, province: 5, owner: 2, condition: 0, built_year: 1900, destroyed_year: Some(1944)),
+    ],
+)

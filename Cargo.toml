@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/meridian-core", "crates/proving-ground", "crates/runner"]
+members = ["crates/meridian-core", "crates/meridian-data", "crates/proving-ground", "crates/runner", "crates/tools"]
 
 [workspace.package]
 version = "0.1.0"

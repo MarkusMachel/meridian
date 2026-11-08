@@ -17,4 +17,4 @@ pub use command::{Command, Rejection};
 pub use fixed::Fixed;
 pub use ids::{CountryId, ProvinceId, UnitId};
 pub use rng::Rng;
-pub use world::{Ruleset, TickReport, Unit, World};
+pub use world::{Ruleset, Site, SiteKind, TickReport, Unit, World};

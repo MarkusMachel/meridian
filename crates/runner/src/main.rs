@@ -26,7 +26,14 @@ fn commands_for(tick: u64, provinces: u32) -> Vec<Command> {
 }
 
 fn main() {
-    let mut args = std::env::args().skip(1);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("validate") => std::process::exit(cmd_validate(&args[1..])),
+        Some("bake") => std::process::exit(cmd_bake(&args[1..])),
+        Some("run") => std::process::exit(cmd_run(&args[1..])),
+        _ => {}
+    }
+    let mut args = args.into_iter();
     let seed: u64 = args.next().map_or(1, |s| s.parse().expect("seed must be an integer"));
     let ticks: u64 = args.next().map_or(8760, |s| s.parse().expect("ticks must be an integer"));
     let provinces = 64;
@@ -43,4 +50,71 @@ fn main() {
         d.year, d.month, d.day, d.hour,
         world.state_hash()
     );
+}
+
+/// `runner validate <file.ron>...` : report every error in every file.
+fn cmd_validate(files: &[String]) -> i32 {
+    if files.is_empty() {
+        eprintln!("usage: runner validate <scenario.ron>...");
+        return 2;
+    }
+    let mut bad = 0;
+    for f in files {
+        match meridian_data::validate_scenario_file(std::path::Path::new(f)) {
+            Ok(_) => println!("{f}: ok"),
+            Err(errors) => {
+                bad += 1;
+                for e in &errors {
+                    eprintln!("{e}");
+                }
+                eprintln!("{f}: {} error(s)", errors.len());
+            }
+        }
+    }
+    (bad > 0) as i32
+}
+
+/// `runner bake <in.ron> <out.bin>` : validate, then write the baked file.
+fn cmd_bake(args: &[String]) -> i32 {
+    let [input, output] = args else {
+        eprintln!("usage: runner bake <scenario.ron> <out.bin>");
+        return 2;
+    };
+    match meridian_data::validate_scenario_file(std::path::Path::new(input)) {
+        Ok(s) => {
+            let bytes = meridian_data::bake::bake_scenario(&s);
+            std::fs::write(output, &bytes).expect("cannot write output file");
+            println!("{output}: {} bytes", bytes.len());
+            0
+        }
+        Err(errors) => {
+            for e in &errors {
+                eprintln!("{e}");
+            }
+            1
+        }
+    }
+}
+
+/// `runner run <scenario.ron> [ticks]` : load a scenario and tick it.
+fn cmd_run(args: &[String]) -> i32 {
+    let Some(path) = args.first() else {
+        eprintln!("usage: runner run <scenario.ron> [ticks]");
+        return 2;
+    };
+    let ticks: u64 = args.get(1).map_or(8760, |s| s.parse().expect("ticks must be an integer"));
+    let mut world = match meridian_data::load_scenario_file(std::path::Path::new(path)) {
+        Ok(w) => w,
+        Err(errors) => {
+            for e in &errors {
+                eprintln!("{e}");
+            }
+            return 1;
+        }
+    };
+    for _ in 0..ticks {
+        world.tick(&[], &ProvingGround);
+    }
+    println!("scenario={path} ticks={ticks} hash={:016x}", world.state_hash());
+    0
 }

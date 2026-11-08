@@ -1,0 +1,6 @@
+(
+    version: 1,
+    name: "x",
+    seed: 1,
+    countries: [(id: 0, name: "A"],
+)

@@ -12,6 +12,30 @@ pub struct Unit {
     pub location: ProvinceId,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SiteKind {
+    City = 0,
+    Port = 1,
+    Airfield = 2,
+    Crossing = 3,
+    Industry = 4,
+    Base = 5,
+}
+
+/// A city, port, airfield, bridge, facility or base. Anchored to a province
+/// for now; Phase 3 adds the cell anchor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Site {
+    pub kind: SiteKind,
+    pub province: ProvinceId,
+    pub owner: CountryId,
+    /// 0 (destroyed) to 100 (intact).
+    pub condition: u8,
+    pub built_year: i16,
+    pub destroyed_year: Option<i16>,
+}
+
 /// Rules run by the tick, in a fixed order. Implementations must keep all
 /// state in the World (a ruleset holding its own state would be missed by the
 /// state hash) and obey the determinism rules.
@@ -37,6 +61,8 @@ pub struct World {
     value: Vec<i64>,
     /// Indexed by UnitId; None means the slot is empty.
     units: Vec<Option<Unit>>,
+    /// Indexed by SiteId order of creation.
+    sites: Vec<Site>,
 }
 
 impl World {
@@ -50,6 +76,7 @@ impl World {
             controller: vec![CountryId(0); province_count as usize],
             value: vec![0; province_count as usize],
             units: Vec::new(),
+            sites: Vec::new(),
         }
     }
 
@@ -65,7 +92,15 @@ impl World {
         id
     }
 
+    pub fn add_site_for_setup(&mut self, site: Site) {
+        self.sites.push(site);
+    }
+
     // ---- read access ----
+
+    pub fn sites(&self) -> &[Site] {
+        &self.sites
+    }
 
     pub fn seed(&self) -> u64 {
         self.seed
@@ -183,6 +218,21 @@ impl World {
                 }
             }
         }
+        h.write_u32(self.sites.len() as u32);
+        for site in &self.sites {
+            h.write_u8(site.kind as u8);
+            h.write_u32(site.province.0);
+            h.write_u16(site.owner.0);
+            h.write_u8(site.condition);
+            h.write_bytes(&site.built_year.to_le_bytes());
+            match site.destroyed_year {
+                None => h.write_u8(0),
+                Some(y) => {
+                    h.write_u8(1);
+                    h.write_bytes(&y.to_le_bytes());
+                }
+            }
+        }
         h.finish()
     }
 }
@@ -216,6 +266,15 @@ mod tests {
         let mut w = base.clone(); w.units[0].as_mut().unwrap().location = ProvinceId(1); variants.push(w);
         let mut w = base.clone(); w.units[0].as_mut().unwrap().owner = CountryId(1); variants.push(w);
         let mut w = base.clone(); w.units.push(None); variants.push(w);
+        let site = Site { kind: SiteKind::City, province: ProvinceId(1), owner: CountryId(0), condition: 100, built_year: 1900, destroyed_year: None };
+        let mut w = base.clone(); w.sites.push(site.clone()); variants.push(w);
+        let mut w = base.clone(); w.sites.push(site.clone()); let h1 = w.state_hash();
+        let mut w2 = w.clone(); w2.sites[0].kind = SiteKind::Port; assert_ne!(h1, w2.state_hash());
+        let mut w2 = w.clone(); w2.sites[0].province = ProvinceId(2); assert_ne!(h1, w2.state_hash());
+        let mut w2 = w.clone(); w2.sites[0].owner = CountryId(1); assert_ne!(h1, w2.state_hash());
+        let mut w2 = w.clone(); w2.sites[0].condition = 50; assert_ne!(h1, w2.state_hash());
+        let mut w2 = w.clone(); w2.sites[0].built_year = 1901; assert_ne!(h1, w2.state_hash());
+        let mut w2 = w.clone(); w2.sites[0].destroyed_year = Some(1950); assert_ne!(h1, w2.state_hash());
         for (i, v) in variants.iter().enumerate() {
             assert_ne!(v.state_hash(), h0, "variant {i} not reflected in hash");
         }

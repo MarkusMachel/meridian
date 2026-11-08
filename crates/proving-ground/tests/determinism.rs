@@ -49,4 +49,4 @@ fn rejected_command_leaves_state_unchanged() {
 fn golden_hash() {
     assert_eq!(run(1, 8760), GOLDEN);
 }
-const GOLDEN: u64 = 9773012133288501445;
+const GOLDEN: u64 = 16117180310011935637;

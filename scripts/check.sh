@@ -13,4 +13,5 @@ c=$(./target/release/runner 2 8760)
 echo "$a"; echo "$c"
 [ "$a" = "$b" ] || { echo "FAIL: same seed gave different results"; exit 1; }
 [ "${a##*hash=}" != "${c##*hash=}" ] || { echo "FAIL: different seeds gave same hash"; exit 1; }
+./target/release/runner validate data/scenarios/sample.ron
 echo "OK"

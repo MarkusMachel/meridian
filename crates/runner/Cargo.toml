@@ -7,3 +7,4 @@ publish.workspace = true
 [dependencies]
 meridian-core = { path = "../meridian-core" }
 proving-ground = { path = "../proving-ground" }
+meridian-data = { path = "../meridian-data" }
