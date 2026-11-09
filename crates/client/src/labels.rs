@@ -13,10 +13,12 @@ use meridian_data::{Labels, RenderData};
 const EARTH_RADIUS_M: f64 = 6_378_137.0;
 /// Average glyph width as a share of the font size.
 const GLYPH: f64 = 0.62;
-const COUNTRY_MAX_PX: f64 = 34.0;
-const COUNTRY_MIN_PX: f64 = 9.0;
-const REGION_MAX_PX: f64 = 13.0;
-const REGION_MIN_PX: f64 = 8.0;
+// Sizes in logical points (multiplied by the screen's scale factor, so they stay readable on
+// high-density displays).
+const COUNTRY_MAX_PX: f64 = 44.0;
+const COUNTRY_MIN_PX: f64 = 13.0;
+const REGION_MAX_PX: f64 = 17.0;
+const REGION_MIN_PX: f64 = 12.0;
 const MAX_LABELS: usize = 500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,10 +51,10 @@ struct Candidate {
     y: f64,
 }
 
-fn candidates(out: &mut Vec<Candidate>, labels: &Labels, kind: LabelKind, camera: &Camera) {
+fn candidates(out: &mut Vec<Candidate>, labels: &Labels, kind: LabelKind, camera: &Camera, scale: f64) {
     let (min_px, max_px) = match kind {
-        LabelKind::Country => (COUNTRY_MIN_PX, COUNTRY_MAX_PX),
-        LabelKind::Region => (REGION_MIN_PX, REGION_MAX_PX),
+        LabelKind::Country => (COUNTRY_MIN_PX * scale, COUNTRY_MAX_PX * scale),
+        LabelKind::Region => (REGION_MIN_PX * scale, REGION_MAX_PX * scale),
     };
     for i in 0..labels.names.len() {
         let (x, y) = camera.world_to_screen(labels.x[i] as f64, labels.y[i] as f64);
@@ -70,10 +72,10 @@ fn candidates(out: &mut Vec<Candidate>, labels: &Labels, kind: LabelKind, camera
 }
 
 /// The labels to draw for this camera, in drawing order.
-pub fn place(data: &RenderData, camera: &Camera) -> Vec<PlacedLabel> {
+pub fn place(data: &RenderData, camera: &Camera, scale: f64) -> Vec<PlacedLabel> {
     let mut cand = Vec::new();
-    candidates(&mut cand, &data.countries, LabelKind::Country, camera);
-    candidates(&mut cand, &data.regions, LabelKind::Region, camera);
+    candidates(&mut cand, &data.countries, LabelKind::Country, camera, scale);
+    candidates(&mut cand, &data.regions, LabelKind::Region, camera, scale);
     // countries first, then bigger areas first; ties by index so the result is stable
     cand.sort_by(|a, b| (a.kind as u8).cmp(&(b.kind as u8)).then(b.area.cmp(&a.area)).then(a.i.cmp(&b.i)));
     let mut taken: Vec<(f64, f64, f64, f64)> = Vec::new();
@@ -138,14 +140,14 @@ mod tests {
         // 500,000 km2 at the equator is about 707 km across
         let d = data(label("Examplia", 0, 0, 500_000), Labels::default());
         let mut cam = Camera { cx: 0.0, cy: 0.0, m_per_px: 2_000.0, width_px: 1000.0, height_px: 800.0, bounds: Bounds { min_x: -1e9, min_y: -1e9, max_x: 1e9, max_y: 1e9 } };
-        let near = place(&d, &cam);
+        let near = place(&d, &cam, 1.0);
         assert_eq!(near.len(), 1);
         assert_eq!(near[0].text, "EXAMPLIA");
         cam.m_per_px = 200_000.0; // 3.5 px wide: far too small for a name
-        assert!(place(&d, &cam).is_empty());
+        assert!(place(&d, &cam, 1.0).is_empty());
         cam.m_per_px = 2_000.0;
         cam.cx = 50_000_000.0; // label off screen
-        assert!(place(&d, &cam).is_empty());
+        assert!(place(&d, &cam, 1.0).is_empty());
     }
 
     #[test]
@@ -156,7 +158,7 @@ mod tests {
         regions.names.push(small.names[0].clone()); regions.x.push(small.x[0]); regions.y.push(small.y[0]); regions.area_km2.push(small.area_km2[0]);
         let d = data(Labels::default(), regions);
         let cam = Camera { cx: 0.0, cy: 0.0, m_per_px: 1_000.0, width_px: 1000.0, height_px: 800.0, bounds: Bounds { min_x: -1e9, min_y: -1e9, max_x: 1e9, max_y: 1e9 } };
-        let placed = place(&d, &cam);
+        let placed = place(&d, &cam, 1.0);
         assert_eq!(placed.len(), 1);
         assert_eq!(placed[0].text, "Bigland");
     }

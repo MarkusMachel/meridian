@@ -29,9 +29,11 @@ from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial import cKDTree
 from shapely.geometry import shape
 
-TARGET_KM2 = 9000.0       # average province area
-MIN_PROVINCES = 10        # per state, where the state is big enough
-MIN_PROVINCE_KM2 = 450.0  # ... but never cut finer than about 2 tactical cells
+SPLIT_ABOVE_KM2 = 120_000.0   # a region bigger than this is cut into several provinces ...
+SPLIT_TARGET_KM2 = 70_000.0   # ... of about this size
+TARGET_KM2 = 9000.0           # only used by provinces_for_area (kept for the validators' old rules)
+MIN_PROVINCES = 10
+MIN_PROVINCE_KM2 = 450.0
 POOL_DISTANCE_M = 1_500_000
 SMALL_PART_FRACTION = 0.6
 POINTS_PER_PROVINCE = 100  # grid sampling density
@@ -185,11 +187,8 @@ def main(inter):
         feats = regions_of[tag]
         geoms = [project(shape(f["geometry"])) for f in feats]
         r_areas = [sum(p.area for p in shapely.get_parts(g)) / 1e6 for g in geoms]
-        # provinces per region: about one per TARGET_KM2, at least one; a small state still gets its floor
-        ks_region = [max(1, round(a / TARGET_KM2)) for a in r_areas]
-        n_state = max(sum(ks_region), provinces_for_area(state_area[tag]))
-        if sum(ks_region) < n_state:
-            ks_region = allocate(r_areas, n_state)
+        # one province per region (a real division); only an enormous region is split further
+        ks_region = [1 if a <= SPLIT_ABOVE_KM2 else max(2, round(a / SPLIT_TARGET_KM2)) for a in r_areas]
         state_rows = []
         for feat, geom, area_km2, n_reg in zip(feats, geoms, r_areas, ks_region):
             region_id = feat["properties"]["region"]
@@ -198,7 +197,9 @@ def main(inter):
             large = [p for p in parts if p.area >= SMALL_PART_FRACTION * target_m2]
             small = [p for p in parts if p.area < SMALL_PART_FRACTION * target_m2]
             groups = [[p] for p in large]
-            if small:
+            if n_reg == 1:
+                groups = [parts]  # one province, even if the region is several islands
+            elif small:
                 cents = np.array([[p.centroid.x, p.centroid.y] for p in small])
                 if len(small) == 1:
                     groups.append(small)

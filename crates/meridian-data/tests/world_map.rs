@@ -24,7 +24,7 @@ fn world_map_loads_and_validates_with_zero_errors() {
     let Some(m) = load() else { return };
     let problems = m.validate_world();
     assert!(problems.is_empty(), "{} problems, first: {:?}", problems.len(), &problems[..problems.len().min(5)]);
-    assert!((15_000..=17_000).contains(&m.province_count()), "provinces: {}", m.province_count());
+    assert!((2_500..=4_500).contains(&m.province_count()), "provinces: {}", m.province_count());
     assert!((550_000..=650_000).contains(&m.cell_count()), "cells: {}", m.cell_count());
     assert_eq!(m.state_count(), 173);
 }
@@ -113,7 +113,7 @@ fn world_on_the_real_map_is_deterministic_and_hash_covers_the_map() {
         let mut w = World::from_map(seed, m.clone());
         assert_eq!(w.country_count() as u32, m.state_count());
         assert_eq!(w.province_count(), m.province_count());
-        for p in [0u32, 5000, 15000] {
+        for p in [0u32, 2000, 4000] {
             assert_eq!(w.controller(ProvinceId(p)).0, m.province_state[p as usize]);
         }
         for _ in 0..48 {

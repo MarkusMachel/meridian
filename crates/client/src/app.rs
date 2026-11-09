@@ -504,14 +504,14 @@ impl App {
             painter.add(egui::Shape::closed_line(pts, egui::Stroke::new(1.5, egui::Color32::BLACK)));
         }
         if self.show_labels {
-            for l in client::labels::place(&self.render, &self.camera) {
+            for l in client::labels::place(&self.render, &self.camera, ppp) {
                 let pos = to_pt((l.x, l.y));
                 let font = egui::FontId::proportional((l.size_px / ppp) as f32);
                 let (ink, halo) = match l.kind {
-                    client::labels::LabelKind::Country => (egui::Color32::from_rgba_unmultiplied(45, 30, 20, 215), egui::Color32::from_rgba_unmultiplied(255, 250, 235, 110)),
-                    client::labels::LabelKind::Region => (egui::Color32::from_rgba_unmultiplied(55, 42, 30, 190), egui::Color32::from_rgba_unmultiplied(255, 250, 235, 90)),
+                    client::labels::LabelKind::Country => (egui::Color32::from_rgb(35, 22, 12), egui::Color32::from_rgba_unmultiplied(255, 248, 225, 235)),
+                    client::labels::LabelKind::Region => (egui::Color32::from_rgb(40, 28, 18), egui::Color32::from_rgba_unmultiplied(255, 248, 225, 225)),
                 };
-                for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                for (dx, dy) in [(-1.3, 0.0), (1.3, 0.0), (0.0, -1.3), (0.0, 1.3), (-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
                     painter.text(pos + egui::vec2(dx, dy), egui::Align2::CENTER_CENTER, &l.text, font.clone(), halo);
                 }
                 painter.text(pos, egui::Align2::CENTER_CENTER, &l.text, font, ink);

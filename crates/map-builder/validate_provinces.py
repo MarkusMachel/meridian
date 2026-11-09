@@ -42,9 +42,6 @@ def main(inter):
             errors.append(f"state {tag} has no provinces")
             continue
         true_area = sum(p.area for p in bp.shapely.get_parts(bp.project(bp.shape(f["geometry"])))) / 1e6
-        want_floor = min(bp.MIN_PROVINCES, max(1, int(true_area // bp.MIN_PROVINCE_KM2)))
-        if by_state[tag] < want_floor:
-            errors.append(f"state {tag}: {by_state[tag]} provinces, rule needs at least {want_floor}")
         ratio = est[tag] / true_area if true_area else 1
         if not 0.85 <= ratio <= 1.15 and true_area > 2000:
             warnings.append(f"state {tag}: sampled area is {ratio:.0%} of true area")
