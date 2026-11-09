@@ -259,9 +259,6 @@ impl App {
         g.map_renderer.show_cells = self.show_cells;
         let ppp = full.pixels_per_point;
         let jobs = g.egui_ctx.tessellate(full.shapes, ppp);
-        if std::env::var_os("MERIDIAN_DEBUG").is_some() {
-            eprintln!("egui: {} jobs, ppp {ppp}, textures set {}, screen {}x{}", jobs.len(), full.textures_delta.set.len(), g.config.width, g.config.height);
-        }
 
         // egui sends each texture (the font atlas above all) exactly once, so upload it now, before
         // anything can make us skip the frame; skipping first would leave egui with no font for good.
@@ -281,12 +278,15 @@ impl App {
                 self.gfx = Some(g);
                 return;
             }
-            other => {
-                // Timeout, occluded (window hidden) or a validation error: skip this frame, but keep
-                // asking for redraws, or the loop would stop for good.
-                if std::env::var_os("MERIDIAN_DEBUG").is_some() {
-                    eprintln!("surface texture not available: {}", match other { wgpu::CurrentSurfaceTexture::Timeout => "timeout", wgpu::CurrentSurfaceTexture::Occluded => "occluded", _ => "other" });
-                }
+            wgpu::CurrentSurfaceTexture::Occluded => {
+                // The window is hidden (another app in front, minimised). Stop drawing; winit tells us
+                // when it is visible again (`WindowEvent::Occluded(false)`) and we ask for a frame then.
+                free_textures(&mut g.egui_renderer, &full.textures_delta);
+                self.gfx = Some(g);
+                return;
+            }
+            _ => {
+                // Timeout or a one-off error: skip this frame but keep the loop going.
                 g.window.request_redraw();
                 free_textures(&mut g.egui_renderer, &full.textures_delta);
                 self.gfx = Some(g);
@@ -495,6 +495,11 @@ impl ApplicationHandler for App {
                 self.camera.resize(size.width as f64, size.height as f64);
             }
             WindowEvent::RedrawRequested => self.redraw(),
+            WindowEvent::Occluded(false) => {
+                if let Some(g) = &self.gfx {
+                    g.window.request_redraw();
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(start) = self.press {
                     let d = ((position.x - start.x).powi(2) + (position.y - start.y).powi(2)).sqrt();
