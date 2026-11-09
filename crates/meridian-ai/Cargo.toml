@@ -7,3 +7,6 @@ publish.workspace = true
 # Deliberately no `omniscient` feature: the AI sees only what its country knows.
 [dependencies]
 meridian-core = { path = "../meridian-core" }
+
+[dev-dependencies]
+meridian-core = { path = "../meridian-core", features = ["omniscient"] }

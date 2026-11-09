@@ -60,3 +60,7 @@ Per-cell state is stored as differences from the starting state, so the 599,261 
 ## Not yet set
 
 Per-tick and per-system time budgets and the simulation memory budget are set in Phase 8.
+
+## Phase 6: reads while the sim runs
+
+- A query on the sim thread must finish within `MAX_QUERY_NS` = 2 ms (the sim runs queries between ticks). Measured on the full map: 17 µs for the heaviest ordinary read (a country's provinces), 300 queries during a 20,000-tick run.

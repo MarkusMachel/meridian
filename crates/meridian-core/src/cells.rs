@@ -20,22 +20,38 @@ pub mod hazard {
     pub const FLOOD: u8 = 8;
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug)]
 pub struct CellState {
-    pub controller: Vec<u16>,
+    controller: Vec<u16>,
     /// 0 (none) to 255 (flattened).
-    pub damage: Vec<u8>,
-    pub hazards: Vec<u8>,
+    damage: Vec<u8>,
+    hazards: Vec<u8>,
     /// Tick of the last fight in the cell, or `NEVER_FOUGHT`.
-    pub last_fought: Vec<u32>,
-    pub hunger: Vec<u8>,
+    last_fought: Vec<u32>,
+    hunger: Vec<u8>,
     /// Remaining local food, 0 to 255.
-    pub food: Vec<u8>,
+    food: Vec<u8>,
     /// Mud, snow depth or frozen ground; meaning set by rules.
-    pub ground: Vec<u8>,
+    ground: Vec<u8>,
     /// Provinces currently simulated cell by cell. Sorted.
     pub opened: ActiveSet,
+    /// Cells changed since the last `take_dirty`. Diagnostic for the read interface; not state.
+    dirty: Vec<u32>,
 }
+
+impl PartialEq for CellState {
+    fn eq(&self, o: &CellState) -> bool {
+        self.controller == o.controller
+            && self.damage == o.damage
+            && self.hazards == o.hazards
+            && self.last_fought == o.last_fought
+            && self.hunger == o.hunger
+            && self.food == o.food
+            && self.ground == o.ground
+            && self.opened == o.opened
+    }
+}
+impl Eq for CellState {}
 
 /// One cell whose state differs from the starting state.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -115,7 +131,84 @@ impl CellState {
             food: vec![255; n],
             ground: vec![0; n],
             opened: ActiveSet::new(),
+            dirty: Vec::new(),
         }
+    }
+
+    pub fn controller(&self, i: usize) -> u16 {
+        self.controller[i]
+    }
+    /// All controllers, for bulk scans (front detection).
+    pub fn controllers(&self) -> &[u16] {
+        &self.controller
+    }
+    pub fn damage(&self, i: usize) -> u8 {
+        self.damage[i]
+    }
+    pub fn hazards(&self, i: usize) -> u8 {
+        self.hazards[i]
+    }
+    pub fn last_fought(&self, i: usize) -> u32 {
+        self.last_fought[i]
+    }
+    pub fn hunger(&self, i: usize) -> u8 {
+        self.hunger[i]
+    }
+    pub fn food(&self, i: usize) -> u8 {
+        self.food[i]
+    }
+    pub fn ground(&self, i: usize) -> u8 {
+        self.ground[i]
+    }
+    pub fn set_controller(&mut self, i: usize, v: u16) {
+        if self.controller[i] != v {
+            self.controller[i] = v;
+            self.dirty.push(i as u32);
+        }
+    }
+    pub fn set_damage(&mut self, i: usize, v: u8) {
+        if self.damage[i] != v {
+            self.damage[i] = v;
+            self.dirty.push(i as u32);
+        }
+    }
+    pub fn set_hazards(&mut self, i: usize, v: u8) {
+        if self.hazards[i] != v {
+            self.hazards[i] = v;
+            self.dirty.push(i as u32);
+        }
+    }
+    pub fn set_last_fought(&mut self, i: usize, v: u32) {
+        if self.last_fought[i] != v {
+            self.last_fought[i] = v;
+            self.dirty.push(i as u32);
+        }
+    }
+    pub fn set_hunger(&mut self, i: usize, v: u8) {
+        if self.hunger[i] != v {
+            self.hunger[i] = v;
+            self.dirty.push(i as u32);
+        }
+    }
+    pub fn set_food(&mut self, i: usize, v: u8) {
+        if self.food[i] != v {
+            self.food[i] = v;
+            self.dirty.push(i as u32);
+        }
+    }
+    pub fn set_ground(&mut self, i: usize, v: u8) {
+        if self.ground[i] != v {
+            self.ground[i] = v;
+            self.dirty.push(i as u32);
+        }
+    }
+
+    /// The cells changed since the last call, ascending and without repeats. Clears the list.
+    pub fn take_dirty(&mut self) -> Vec<u32> {
+        let mut d = std::mem::take(&mut self.dirty);
+        d.sort_unstable();
+        d.dedup();
+        d
     }
 
     pub fn len(&self) -> usize {

@@ -200,10 +200,10 @@ fn a_map_world_saves_cell_differences_and_caches_rebuild_identically() {
     {
         let c = w.cells_mut().unwrap();
         for &cell in &cell_ids[..5] {
-            c.damage[cell as usize] = 77;
-            c.controller[cell as usize] = 9;
+            c.set_damage(cell as usize, 77);
+            c.set_controller(cell as usize, 9);
         }
-        c.hunger[cell_ids[0] as usize] = 3;
+        c.set_hunger(cell_ids[0] as usize, 3);
     }
     for (k, owner) in [(0usize, 0u16), (3, 9)] {
         let id = w.add_unit_for_setup(Unit { owner: CountryId(owner), location: ProvinceId(100) });

@@ -27,6 +27,25 @@ pub struct Transit {
     pub arrive_tick: u64,
 }
 
+/// A standing order held by a unit (or a headquarters). The engine validates and stores it;
+/// rules systems carry it out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum UnitOrder {
+    /// Hold at all costs: cannot retreat in order. The player can cancel it.
+    Hold,
+    /// Break off from a fight as a defender.
+    Withdraw,
+    Fortify { facing: CellId },
+    JoinAssault { cell: CellId },
+    AmphibiousAssault { cell: CellId },
+    Bombard { target: CellId },
+    AirMission { kind: u8, target: CellId },
+    Launch { missile: u16, target: CellId, count: u32 },
+    Mobilize,
+    Demobilize,
+    BuildBridge { a: CellId, b: CellId },
+}
+
 /// Attributes of a unit that live beside `Unit { owner, location }`, indexed by UnitId.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UnitExt {
@@ -47,6 +66,7 @@ pub struct UnitExt {
     pub encircled_days: u16,
     pub traits: TraitSet,
     pub transit: Option<Transit>,
+    pub order: Option<UnitOrder>,
 }
 
 impl Default for UnitExt {
@@ -64,6 +84,7 @@ impl Default for UnitExt {
             encircled_days: 0,
             traits: TraitSet::new(),
             transit: None,
+            order: None,
         }
     }
 }
@@ -208,6 +229,50 @@ impl UnitExt {
         }
         h.write_u16(self.encircled_days);
         write_traits(h, &self.traits);
+        match self.order {
+            None => h.write_u8(0),
+            Some(o) => {
+                h.write_u8(1);
+                match o {
+                    UnitOrder::Hold => h.write_u8(0),
+                    UnitOrder::Withdraw => h.write_u8(1),
+                    UnitOrder::Fortify { facing } => {
+                        h.write_u8(2);
+                        h.write_u32(facing.0);
+                    }
+                    UnitOrder::JoinAssault { cell } => {
+                        h.write_u8(3);
+                        h.write_u32(cell.0);
+                    }
+                    UnitOrder::AmphibiousAssault { cell } => {
+                        h.write_u8(4);
+                        h.write_u32(cell.0);
+                    }
+                    UnitOrder::Bombard { target } => {
+                        h.write_u8(5);
+                        h.write_u32(target.0);
+                    }
+                    UnitOrder::AirMission { kind, target } => {
+                        h.write_u8(6);
+                        h.write_u8(kind);
+                        h.write_u32(target.0);
+                    }
+                    UnitOrder::Launch { missile, target, count } => {
+                        h.write_u8(7);
+                        h.write_u16(missile);
+                        h.write_u32(target.0);
+                        h.write_u32(count);
+                    }
+                    UnitOrder::Mobilize => h.write_u8(8),
+                    UnitOrder::Demobilize => h.write_u8(9),
+                    UnitOrder::BuildBridge { a, b } => {
+                        h.write_u8(10);
+                        h.write_u32(a.0);
+                        h.write_u32(b.0);
+                    }
+                }
+            }
+        }
         match self.transit {
             None => h.write_u8(0),
             Some(t) => {

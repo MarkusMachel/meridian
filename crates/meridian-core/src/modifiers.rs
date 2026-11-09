@@ -62,6 +62,40 @@ pub fn apply_modifiers<'a>(base: Fixed, key: u16, mods: impl Iterator<Item = &'a
     out
 }
 
+/// One category's contribution, for UI tooltips ("why is this unit weaker here?").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TraceStep {
+    pub category: u8,
+    /// Sum of the modifiers before the cap.
+    pub raw_sum: Fixed,
+    /// After the cap.
+    pub clamped: Fixed,
+    /// `1 + clamped`, floored at zero: what this category multiplied the value by.
+    pub factor: Fixed,
+}
+
+/// The same calculation as `apply_modifiers`, but returns each category's step as well.
+/// Diagnostic only: never hashed, never fed back into the simulation.
+pub fn trace_modifiers<'a>(base: Fixed, key: u16, mods: impl Iterator<Item = &'a Modifier>, rules: &CategoryRules) -> (Fixed, Vec<TraceStep>) {
+    let mut sums = vec![Fixed::ZERO; rules.len()];
+    for m in mods.filter(|m| m.key == key) {
+        if let Some(s) = sums.get_mut(m.category as usize) {
+            *s = s.saturating_add(m.value);
+        }
+    }
+    let mut out = base;
+    let mut steps = Vec::new();
+    for (i, (sum, &(lo, hi))) in sums.iter().zip(&rules.caps).enumerate() {
+        let clamped = (*sum).max(lo).min(hi);
+        let factor = Fixed::ONE.saturating_add(clamped).max(Fixed::ZERO);
+        out = out * factor;
+        if *sum != Fixed::ZERO {
+            steps.push(TraceStep { category: i as u8, raw_sum: *sum, clamped, factor });
+        }
+    }
+    (out, steps)
+}
+
 /// Which holders a trait's modifiers reach.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Scope {
@@ -187,6 +221,19 @@ mod tests {
         let diff = [m(1, 0, pct(25)), m(1, 1, pct(25))];
         // 100 * 1.25 * 1.25 = 156.25
         assert_eq!(apply_modifiers(Fixed::from_int(100), 1, diff.iter(), &r), Fixed::from_ratio(15625, 100));
+    }
+
+    #[test]
+    fn the_trace_agrees_with_the_calculation_and_lists_only_active_categories() {
+        let r = rules();
+        let mods = [m(1, 0, pct(80)), m(1, 0, pct(80)), m(1, 1, pct(10)), m(2, 1, pct(50))];
+        let (value, steps) = trace_modifiers(Fixed::from_int(100), 1, mods.iter(), &r);
+        assert_eq!(value, apply_modifiers(Fixed::from_int(100), 1, mods.iter(), &r));
+        assert_eq!(steps.len(), 2);
+        assert_eq!((steps[0].category, steps[0].clamped), (0, pct(100)));
+        assert!((steps[0].raw_sum.raw() - pct(160).raw()).abs() < 4, "two 80% modifiers sum to about 160%");
+        assert_eq!(steps[1].category, 1);
+        assert!(trace_modifiers(Fixed::from_int(1), 9, mods.iter(), &r).1.is_empty());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Commands are the only way to change the world from outside. They are
 //! applied at the start of a tick. A rejected command changes nothing.
 
-use crate::ids::{CellId, CountryId, ProvinceId, UnitId};
+use crate::ids::{CellId, CountryId, OfficerId, ProvinceId, UnitId};
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Command {
@@ -23,6 +23,30 @@ pub enum Command {
     SignTreaty { issuer: CountryId, treaty: u32 },
     /// Pick an option of a pending event.
     ChooseEvent { issuer: CountryId, event: u32, option: u8 },
+
+    // ---- orders to forces (validated here, carried out by rules systems) ----
+    SetStance { issuer: CountryId, unit: UnitId, stance: u8 },
+    Mobilize { issuer: CountryId, unit: UnitId },
+    Demobilize { issuer: CountryId, unit: UnitId },
+    /// Put an officer in command of a unit.
+    Appoint { issuer: CountryId, officer: OfficerId, unit: UnitId },
+    /// Fire missiles. Range, stock and release rules are checked by the ruleset.
+    Launch { issuer: CountryId, unit: UnitId, missile: u16, target: CellId, count: u32 },
+    AirMission { issuer: CountryId, unit: UnitId, kind: u8, target: CellId },
+    /// Move a whole unit by air, sea or other long hop; it arrives after a ruleset-set time.
+    Transit { issuer: CountryId, unit: UnitId, to: CellId },
+    SetDoctrine { issuer: CountryId, track: u8, target: u16 },
+    Withdraw { issuer: CountryId, unit: UnitId },
+    /// Hold at all costs.
+    Hold { issuer: CountryId, unit: UnitId },
+    CancelOrder { issuer: CountryId, unit: UnitId },
+    Fortify { issuer: CountryId, unit: UnitId, facing: CellId },
+    AmphibiousAssault { issuer: CountryId, unit: UnitId, target: CellId },
+    JoinAssault { issuer: CountryId, unit: UnitId, cell: CellId },
+    Bombard { issuer: CountryId, unit: UnitId, target: CellId },
+    BuildBridge { issuer: CountryId, unit: UnitId, a: CellId, b: CellId },
+    DismantleBridge { issuer: CountryId, unit: UnitId, a: CellId, b: CellId },
+    DemolishBridge { issuer: CountryId, unit: UnitId, a: CellId, b: CellId },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

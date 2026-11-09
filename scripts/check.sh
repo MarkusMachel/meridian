@@ -5,6 +5,11 @@ cd "$(dirname "$0")/.."
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+# Phase 6: the AI and client crates must compile without the `omniscient` feature. A workspace
+# build unifies features and hides a violation, so check each crate on its own.
+cargo check -p meridian-ai
+cargo check -p test-client
+cargo test -p test-client
 # Release run twice: the hashes must match (determinism across runs).
 cargo build --release -p runner
 a=$(./target/release/runner 1 8760)

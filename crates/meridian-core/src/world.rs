@@ -16,6 +16,21 @@ use std::sync::Arc;
 use crate::rng::Rng;
 use crate::tech::Tech;
 
+/// Raw read and write access to world state. Public only with the `omniscient` feature
+/// (for rulesets, tools and tests); otherwise crate-private, so code built without the
+/// feature, such as the AI crate, can only look at the world through a `CountryView`.
+macro_rules! gated {
+    ($(#[$m:meta])* fn $($rest:tt)*) => {
+        #[cfg(feature = "omniscient")]
+        $(#[$m])*
+        pub fn $($rest)*
+        #[cfg(not(feature = "omniscient"))]
+        #[allow(dead_code)]
+        $(#[$m])*
+        pub(crate) fn $($rest)*
+    };
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Unit {
     pub owner: CountryId,
@@ -63,6 +78,34 @@ pub trait Ruleset {
         None
     }
 
+    // ---- hooks used to validate orders; the defaults refuse (no such capability) ----
+
+    /// How far this unit can bombard, in metres; `None` means it cannot.
+    fn bombard_range_m(&self, _world: &World, _unit: UnitId) -> Option<u32> {
+        None
+    }
+    /// 0 means a cell cannot be landed on; higher is better.
+    fn landing_suitability(&self, _world: &World, _cell: crate::ids::CellId) -> u8 {
+        0
+    }
+    fn validate_launch(&self, _world: &World, _unit: UnitId, _missile: u16, _target: crate::ids::CellId, _count: u32) -> Result<(), &'static str> {
+        Err("this unit cannot launch missiles")
+    }
+    fn validate_mission(&self, _world: &World, _unit: UnitId, _kind: u8, _target: crate::ids::CellId) -> Result<(), &'static str> {
+        Err("this unit cannot fly missions")
+    }
+    /// Ticks a long move takes; `None` means there is no route.
+    fn transit_ticks(&self, _world: &World, _unit: UnitId, _to: Destination) -> Option<u64> {
+        None
+    }
+    /// Ticks a doctrine change takes.
+    fn doctrine_transition_ticks(&self, _track: u8, _from: u16, _to: u16) -> u32 {
+        720
+    }
+    fn can_build_bridge(&self, _world: &World, _unit: UnitId) -> bool {
+        false
+    }
+
     fn project_template(&self, _kind: u16) -> Option<ProjectTemplate> {
         None
     }
@@ -77,10 +120,47 @@ pub struct Event {
     pub amount: i64,
 }
 
+/// Something the player should be told about (a city fell, a treaty was signed). `kind` and
+/// the two numbers are defined by the ruleset; the client turns them into text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Message {
+    pub country: CountryId,
+    pub kind: u16,
+    pub a: i64,
+    pub b: i64,
+}
+
+/// Something that happened this tick that the client may want to draw (a hit, a strike, a
+/// mission flown, a movement, a battle). Cosmetic only: never read back by the simulation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ClientEvent {
+    pub kind: u16,
+    /// Cell or other place the event refers to (meaning set by `kind`).
+    pub place: u32,
+    pub other: u32,
+    pub amount: i64,
+}
+
+/// Transient outputs of one tick. Not state: empty between ticks, never hashed or saved.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Outbox {
+    messages: Vec<Message>,
+    events: Vec<ClientEvent>,
+}
+
+/// What a tick did, for a UI that must not copy the whole world.
 #[derive(Debug, Default)]
 pub struct TickReport {
+    /// The tick that just ran.
+    pub tick: u64,
     /// Commands that were refused this tick, in submission order.
     pub rejected: Vec<(Command, Rejection)>,
+    /// Cells whose per-cell state changed this tick, ascending.
+    pub changed_cells: Vec<u32>,
+    /// Draw-me events, in the order they were emitted.
+    pub events: Vec<ClientEvent>,
+    /// Things to tell the player, in the order they were emitted.
+    pub messages: Vec<Message>,
 }
 
 /// Shared, read-only map attached to a world. Equality and hashing use the map's file
@@ -101,37 +181,39 @@ impl Eq for MapRef {}
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct World {
-    seed: u64,
-    clock: Clock,
-    rng: Rng,
-    country_count: u16,
+    pub(crate) seed: u64,
+    pub(crate) clock: Clock,
+    pub(crate) rng: Rng,
+    pub(crate) country_count: u16,
     /// Per province, indexed by ProvinceId.
-    controller: Vec<CountryId>,
+    pub(crate) controller: Vec<CountryId>,
     /// Per province generic value slot; meaning is defined by the ruleset.
-    value: Vec<i64>,
+    pub(crate) value: Vec<i64>,
     /// Indexed by UnitId; None means the slot is empty.
-    units: Vec<Option<Unit>>,
+    pub(crate) units: Vec<Option<Unit>>,
     /// Extra unit attributes, always the same length as `units`.
-    unit_ext: Vec<UnitExt>,
-    forces: Forces,
-    combat: CombatState,
-    econ: Economy,
-    scripted: EventState,
-    tech: Tech,
-    intel: Intel,
-    polity: Polity,
-    diplomacy: Diplomacy,
+    pub(crate) unit_ext: Vec<UnitExt>,
+    pub(crate) forces: Forces,
+    pub(crate) combat: CombatState,
+    pub(crate) econ: Economy,
+    pub(crate) scripted: EventState,
+    pub(crate) tech: Tech,
+    pub(crate) intel: Intel,
+    pub(crate) polity: Polity,
+    pub(crate) diplomacy: Diplomacy,
     /// How many factions per treaty approval must pass, in thousandths (a world setting).
-    treaty_threshold: u32,
+    pub(crate) treaty_threshold: u32,
     /// Indexed by SiteId order of creation.
-    sites: Vec<Site>,
+    pub(crate) sites: Vec<Site>,
     /// Events waiting for the next event phase. Normally empty at the end of a tick.
-    events: Vec<Event>,
+    pub(crate) events: Vec<Event>,
     /// Present only on a world with a map.
     #[serde(skip)]
-    cells: Option<CellState>,
+    pub(crate) outbox: Outbox,
     #[serde(skip)]
-    map: Option<MapRef>,
+    pub(crate) cells: Option<CellState>,
+    #[serde(skip)]
+    pub(crate) map: Option<MapRef>,
 }
 
 impl World {
@@ -157,6 +239,7 @@ impl World {
             treaty_threshold: 500,
             sites: Vec::new(),
             events: Vec::new(),
+            outbox: Outbox::default(),
             cells: None,
             map: None,
         }
@@ -174,46 +257,54 @@ impl World {
         w
     }
 
-    /// Per-cell dynamic state, if the world has a map.
-    pub fn cells(&self) -> Option<&CellState> {
-        self.cells.as_ref()
-    }
-    pub fn cells_mut(&mut self) -> Option<&mut CellState> {
-        self.cells.as_mut()
-    }
-
-    /// Start simulating a province cell by cell. Every cell takes the province's
-    /// controller. Returns false if the world has no map, the province does not exist
-    /// or it is already open.
-    pub fn open_province(&mut self, p: ProvinceId) -> bool {
-        let (Some(map), Some(cells)) = (self.map.as_ref(), self.cells.as_mut()) else { return false };
-        if p.0 >= map.0.province_count() || !cells.opened.insert(p.0) {
-            return false;
+    gated! {
+        /// Per-cell dynamic state, if the world has a map.
+        fn cells(&self) -> Option<&CellState> {
+            self.cells.as_ref()
         }
-        let c = self.controller[p.index()].0;
-        for &cell in map.0.cells_of(p) {
-            cells.controller[cell as usize] = c;
+    }
+    gated! {
+        fn cells_mut(&mut self) -> Option<&mut CellState> {
+            self.cells.as_mut()
         }
-        true
     }
 
-    /// Stop simulating a province cell by cell. The province goes to whoever controls
-    /// most of its cells (ties to the lower country ID) and every cell follows it.
-    /// Returns false if the province was not open.
-    pub fn close_province(&mut self, p: ProvinceId) -> bool {
-        let (Some(map), Some(cells)) = (self.map.as_ref(), self.cells.as_mut()) else { return false };
-        if !cells.opened.remove(p.0) {
-            return false;
+    gated! {
+        /// Start simulating a province cell by cell. Every cell takes the province's
+        /// controller. Returns false if the world has no map, the province does not exist
+        /// or it is already open.
+        fn open_province(&mut self, p: ProvinceId) -> bool {
+            let (Some(map), Some(cells)) = (self.map.as_ref(), self.cells.as_mut()) else { return false };
+            if p.0 >= map.0.province_count() || !cells.opened.insert(p.0) {
+                return false;
+            }
+            let c = self.controller[p.index()].0;
+            for &cell in map.0.cells_of(p) {
+                cells.set_controller(cell as usize, c);
+            }
+            true
         }
-        let list = map.0.cells_of(p);
-        if let Some(winner) = cells.majority_controller(list) {
-            self.controller[p.index()] = winner;
+    }
+
+    gated! {
+        /// Stop simulating a province cell by cell. The province goes to whoever controls
+        /// most of its cells (ties to the lower country ID) and every cell follows it.
+        /// Returns false if the province was not open.
+        fn close_province(&mut self, p: ProvinceId) -> bool {
+            let (Some(map), Some(cells)) = (self.map.as_ref(), self.cells.as_mut()) else { return false };
+            if !cells.opened.remove(p.0) {
+                return false;
+            }
+            let list = map.0.cells_of(p);
+            if let Some(winner) = cells.majority_controller(list) {
+                self.controller[p.index()] = winner;
+            }
+            let c = self.controller[p.index()].0;
+            for &cell in list {
+                cells.set_controller(cell as usize, c);
+            }
+            true
         }
-        let c = self.controller[p.index()].0;
-        for &cell in list {
-            cells.controller[cell as usize] = c;
-        }
-        true
     }
 
     /// The checksum of the attached map, if any (saves record it so they load on the right map).
@@ -267,8 +358,10 @@ impl World {
 
     // ---- read access ----
 
-    pub fn sites(&self) -> &[Site] {
-        &self.sites
+    gated! {
+        fn sites(&self) -> &[Site] {
+            &self.sites
+        }
     }
 
     pub fn seed(&self) -> u64 {
@@ -283,135 +376,179 @@ impl World {
     pub fn province_count(&self) -> u32 {
         self.controller.len() as u32
     }
-    pub fn controller(&self, p: ProvinceId) -> CountryId {
-        self.controller[p.index()]
+    gated! {
+        fn controller(&self, p: ProvinceId) -> CountryId {
+            self.controller[p.index()]
+        }
     }
-    pub fn value(&self, p: ProvinceId) -> i64 {
-        self.value[p.index()]
+    gated! {
+        fn value(&self, p: ProvinceId) -> i64 {
+            self.value[p.index()]
+        }
     }
-    pub fn unit(&self, u: UnitId) -> Option<&Unit> {
-        self.units.get(u.index()).and_then(|x| x.as_ref())
+    gated! {
+        fn unit(&self, u: UnitId) -> Option<&Unit> {
+            self.units.get(u.index()).and_then(|x| x.as_ref())
+        }
     }
-    pub fn unit_ext(&self, u: UnitId) -> Option<&UnitExt> {
-        self.units.get(u.index()).and_then(|x| x.as_ref()).map(|_| &self.unit_ext[u.index()])
+    gated! {
+        fn unit_ext(&self, u: UnitId) -> Option<&UnitExt> {
+            self.units.get(u.index()).and_then(|x| x.as_ref()).map(|_| &self.unit_ext[u.index()])
+        }
     }
-    pub fn unit_ext_mut(&mut self, u: UnitId) -> Option<&mut UnitExt> {
-        if self.units.get(u.index()).is_some_and(|x| x.is_some()) { Some(&mut self.unit_ext[u.index()]) } else { None }
+    gated! {
+        fn unit_ext_mut(&mut self, u: UnitId) -> Option<&mut UnitExt> {
+            if self.units.get(u.index()).is_some_and(|x| x.is_some()) { Some(&mut self.unit_ext[u.index()]) } else { None }
+        }
     }
-    pub fn forces(&self) -> &Forces {
-        &self.forces
+    gated! {
+        fn forces(&self) -> &Forces {
+            &self.forces
+        }
     }
-    pub fn forces_mut(&mut self) -> &mut Forces {
-        &mut self.forces
+    gated! {
+        fn forces_mut(&mut self) -> &mut Forces {
+            &mut self.forces
+        }
     }
-    pub fn combat(&self) -> &CombatState {
-        &self.combat
+    gated! {
+        fn combat(&self) -> &CombatState {
+            &self.combat
+        }
     }
-    pub fn combat_mut(&mut self) -> &mut CombatState {
-        &mut self.combat
+    gated! {
+        fn combat_mut(&mut self) -> &mut CombatState {
+            &mut self.combat
+        }
     }
-    pub fn tech(&self) -> &Tech {
-        &self.tech
+    gated! {
+        fn tech(&self) -> &Tech {
+            &self.tech
+        }
     }
-    pub fn tech_mut(&mut self) -> &mut Tech {
-        &mut self.tech
+    gated! {
+        fn tech_mut(&mut self) -> &mut Tech {
+            &mut self.tech
+        }
     }
-    pub fn intel(&self) -> &Intel {
-        &self.intel
+    gated! {
+        fn intel(&self) -> &Intel {
+            &self.intel
+        }
     }
-    pub fn intel_mut(&mut self) -> &mut Intel {
-        &mut self.intel
+    gated! {
+        fn intel_mut(&mut self) -> &mut Intel {
+            &mut self.intel
+        }
     }
-    pub fn event_state(&self) -> &EventState {
-        &self.scripted
+    gated! {
+        fn event_state(&self) -> &EventState {
+            &self.scripted
+        }
     }
-    pub fn event_state_mut(&mut self) -> &mut EventState {
-        &mut self.scripted
+    gated! {
+        fn event_state_mut(&mut self) -> &mut EventState {
+            &mut self.scripted
+        }
     }
-    pub fn polity(&self) -> &Polity {
-        &self.polity
+    gated! {
+        fn polity(&self) -> &Polity {
+            &self.polity
+        }
     }
-    pub fn polity_mut(&mut self) -> &mut Polity {
-        &mut self.polity
+    gated! {
+        fn polity_mut(&mut self) -> &mut Polity {
+            &mut self.polity
+        }
     }
-    pub fn diplomacy(&self) -> &Diplomacy {
-        &self.diplomacy
+    gated! {
+        fn diplomacy(&self) -> &Diplomacy {
+            &self.diplomacy
+        }
     }
-    pub fn diplomacy_mut(&mut self) -> &mut Diplomacy {
-        &mut self.diplomacy
+    gated! {
+        fn diplomacy_mut(&mut self) -> &mut Diplomacy {
+            &mut self.diplomacy
+        }
     }
     pub fn set_treaty_threshold(&mut self, permille: u32) {
         self.treaty_threshold = permille;
     }
 
-    /// Add a country at run time (a breakaway state or a successor). IDs are never reused.
-    pub fn create_country(&mut self) -> CountryId {
-        let id = CountryId(self.country_count);
-        self.country_count += 1;
-        id
-    }
-
-    /// A unit changes sides (a defection or a transfer). Returns false if it does not exist.
-    pub fn set_unit_owner(&mut self, u: UnitId, to: CountryId) -> bool {
-        match self.units.get_mut(u.index()).and_then(|x| x.as_mut()) {
-            Some(unit) if to.0 < self.country_count => {
-                unit.owner = to;
-                true
-            }
-            _ => false,
+    gated! {
+        /// Add a country at run time (a breakaway state or a successor). IDs are never reused.
+        fn create_country(&mut self) -> CountryId {
+            let id = CountryId(self.country_count);
+            self.country_count += 1;
+            id
         }
     }
 
-    /// Split a country in two (the civil war outcome). The original government keeps its
-    /// ID; a new country takes the listed provinces and units plus `share_permille` of the
-    /// treasury, debt and equipment stockpile. Nothing is created or destroyed: people,
-    /// goods and units stay where they are, and the money and equipment shares add back
-    /// up to the original totals. Returns the new country, or None if the origin is unknown.
-    pub fn split_country(&mut self, origin: CountryId, provinces: &[ProvinceId], units: &[UnitId], share_permille: u32) -> Option<CountryId> {
-        if origin.0 >= self.country_count || share_permille > 1000 {
-            return None;
-        }
-        let new = self.create_country();
-        for &p in provinces {
-            if p.0 >= self.province_count() || self.controller[p.index()] != origin {
-                continue;
-            }
-            self.controller[p.index()] = new;
-            if let (Some(map), Some(cells)) = (self.map.as_ref(), self.cells.as_mut()) {
-                for &c in map.0.cells_of(p) {
-                    cells.controller[c as usize] = new.0;
+    gated! {
+        /// A unit changes sides (a defection or a transfer). Returns false if it does not exist.
+        fn set_unit_owner(&mut self, u: UnitId, to: CountryId) -> bool {
+            match self.units.get_mut(u.index()).and_then(|x| x.as_mut()) {
+                Some(unit) if to.0 < self.country_count => {
+                    unit.owner = to;
+                    true
                 }
-                for b in self.econ.buildings().to_vec() {
-                    if b.owner == origin && map.0.cell_province[b.cell as usize] == p.0 {
-                        self.econ.set_building(crate::econ::Building { owner: new, ..b });
+                _ => false,
+            }
+        }
+    }
+
+    gated! {
+        /// Split a country in two (the civil war outcome). The original government keeps its
+        /// ID; a new country takes the listed provinces and units plus `share_permille` of the
+        /// treasury, debt and equipment stockpile. Nothing is created or destroyed: people,
+        /// goods and units stay where they are, and the money and equipment shares add back
+        /// up to the original totals. Returns the new country, or None if the origin is unknown.
+        fn split_country(&mut self, origin: CountryId, provinces: &[ProvinceId], units: &[UnitId], share_permille: u32) -> Option<CountryId> {
+            if origin.0 >= self.country_count || share_permille > 1000 {
+                return None;
+            }
+            let new = self.create_country();
+            for &p in provinces {
+                if p.0 >= self.province_count() || self.controller[p.index()] != origin {
+                    continue;
+                }
+                self.controller[p.index()] = new;
+                if let (Some(map), Some(cells)) = (self.map.as_ref(), self.cells.as_mut()) {
+                    for &c in map.0.cells_of(p) {
+                        cells.set_controller(c as usize, new.0);
+                    }
+                    for b in self.econ.buildings().to_vec() {
+                        if b.owner == origin && map.0.cell_province[b.cell as usize] == p.0 {
+                            self.econ.set_building(crate::econ::Building { owner: new, ..b });
+                        }
+                    }
+                }
+                for s in self.sites.iter_mut() {
+                    if s.province == p && s.owner == origin {
+                        s.owner = new;
                     }
                 }
             }
-            for s in self.sites.iter_mut() {
-                if s.province == p && s.owner == origin {
-                    s.owner = new;
+            for &u in units {
+                if self.unit(u).is_some_and(|x| x.owner == origin) {
+                    self.set_unit_owner(u, new);
                 }
             }
-        }
-        for &u in units {
-            if self.unit(u).is_some_and(|x| x.owner == origin) {
-                self.set_unit_owner(u, new);
+            let f = self.econ.finance(origin);
+            let (t, d) = (f.treasury * share_permille as i64 / 1000, f.debt * share_permille as i64 / 1000);
+            self.econ.finance_mut(origin).treasury -= t;
+            self.econ.finance_mut(origin).debt -= d;
+            self.econ.finance_mut(new).treasury += t;
+            self.econ.finance_mut(new).debt += d;
+            for model in self.econ.models_held_by(origin) {
+                let give = self.econ.equipment(origin, model) * share_permille as u64 / 1000;
+                self.econ.take_equipment(origin, model, give);
+                self.econ.add_equipment(new, model, give);
             }
+            let c = self.polity.country(origin);
+            *self.polity.country_mut(new) = c;
+            Some(new)
         }
-        let f = self.econ.finance(origin);
-        let (t, d) = (f.treasury * share_permille as i64 / 1000, f.debt * share_permille as i64 / 1000);
-        self.econ.finance_mut(origin).treasury -= t;
-        self.econ.finance_mut(origin).debt -= d;
-        self.econ.finance_mut(new).treasury += t;
-        self.econ.finance_mut(new).debt += d;
-        for model in self.econ.models_held_by(origin) {
-            let give = self.econ.equipment(origin, model) * share_permille as u64 / 1000;
-            self.econ.take_equipment(origin, model, give);
-            self.econ.add_equipment(new, model, give);
-        }
-        let c = self.polity.country(origin);
-        *self.polity.country_mut(new) = c;
-        Some(new)
     }
 
     /// Check a command against the current state without changing it. Works on a copy of
@@ -420,46 +557,76 @@ impl World {
         self.clone().apply(cmd, ruleset)
     }
 
-    pub fn econ(&self) -> &Economy {
-        &self.econ
+    gated! {
+        fn econ(&self) -> &Economy {
+            &self.econ
+        }
     }
-    pub fn econ_mut(&mut self) -> &mut Economy {
-        &mut self.econ
-    }
-
-    /// Put a unit in transit: it arrives at `destination` on `arrive_tick`.
-    /// Returns false if the unit does not exist or is already in transit.
-    pub fn start_transit(&mut self, u: UnitId, destination: Destination, arrive_tick: u64) -> bool {
-        match self.unit_ext_mut(u) {
-            Some(e) if e.transit.is_none() => {
-                e.transit = Some(crate::forces::Transit { destination, arrive_tick });
-                true
-            }
-            _ => false,
+    gated! {
+        fn econ_mut(&mut self) -> &mut Economy {
+            &mut self.econ
         }
     }
 
-    pub fn unit_count(&self) -> u32 {
-        self.units.len() as u32
+    gated! {
+        /// Put a unit in transit: it arrives at `destination` on `arrive_tick`.
+        /// Returns false if the unit does not exist or is already in transit.
+        fn start_transit(&mut self, u: UnitId, destination: Destination, arrive_tick: u64) -> bool {
+            match self.unit_ext_mut(u) {
+                Some(e) if e.transit.is_none() => {
+                    e.transit = Some(crate::forces::Transit { destination, arrive_tick });
+                    true
+                }
+                _ => false,
+            }
+        }
+    }
+
+    gated! {
+        fn unit_count(&self) -> u32 {
+            self.units.len() as u32
+        }
     }
 
     // ---- access for rulesets ----
 
-    pub fn values_mut(&mut self) -> &mut [i64] {
-        &mut self.value
+    gated! {
+        fn values_mut(&mut self) -> &mut [i64] {
+            &mut self.value
+        }
     }
-    /// Queue an event for the next event phase of the tick.
-    pub fn raise_event(&mut self, event: Event) {
-        self.events.push(event);
+    gated! {
+        /// Queue an event for the next event phase of the tick.
+        fn raise_event(&mut self, event: Event) {
+            self.events.push(event);
+        }
     }
-    pub fn pending_events(&self) -> &[Event] {
-        &self.events
+    gated! {
+        fn pending_events(&self) -> &[Event] {
+            &self.events
+        }
     }
-    pub fn rng_mut(&mut self) -> &mut Rng {
-        &mut self.rng
+    gated! {
+        /// Queue a message for the player. It appears in this tick's report.
+        fn message(&mut self, country: CountryId, kind: u16, a: i64, b: i64) {
+            self.outbox.messages.push(Message { country, kind, a, b });
+        }
     }
-    pub fn set_controller(&mut self, p: ProvinceId, c: CountryId) {
-        self.controller[p.index()] = c;
+    gated! {
+        /// Queue a draw-me event for the client. It appears in this tick's report.
+        fn emit(&mut self, event: ClientEvent) {
+            self.outbox.events.push(event);
+        }
+    }
+    gated! {
+        fn rng_mut(&mut self) -> &mut Rng {
+            &mut self.rng
+        }
+    }
+    gated! {
+        fn set_controller(&mut self, p: ProvinceId, c: CountryId) {
+            self.controller[p.index()] = c;
+        }
     }
 
     // ---- the tick ----
@@ -482,7 +649,13 @@ impl World {
         for e in &batch {
             ruleset.on_event(self, e);
         }
+        report.tick = self.clock.tick();
         self.clock.advance();
+        report.events = std::mem::take(&mut self.outbox.events);
+        report.messages = std::mem::take(&mut self.outbox.messages);
+        if let Some(c) = self.cells.as_mut() {
+            report.changed_cells = c.take_dirty();
+        }
         report
     }
 
@@ -543,7 +716,7 @@ impl World {
                     if cell.0 >= map.0.cell_count() {
                         return Err(Rejection::NoSuchCell(cell));
                     }
-                    cells.controller[cell.index()]
+                    cells.controller(cell.index())
                 };
                 if owner != issuer.0 {
                     return Err(Rejection::Refused("cell is not under your control"));
@@ -596,6 +769,10 @@ impl World {
                 let approved = |c: CountryId| polity.faction_vote(c, |f| !polity.opposes(c, f, kind), threshold);
                 if self.diplomacy.sign(treaty, now, approved) { Ok(()) } else { Err(Rejection::Refused("treaty not signed yet")) }
             }
+            Command::SetStance { .. } | Command::Mobilize { .. } | Command::Demobilize { .. } | Command::Appoint { .. } | Command::Launch { .. }
+            | Command::AirMission { .. } | Command::Transit { .. } | Command::SetDoctrine { .. } | Command::Withdraw { .. } | Command::Hold { .. }
+            | Command::CancelOrder { .. } | Command::Fortify { .. } | Command::AmphibiousAssault { .. } | Command::JoinAssault { .. }
+            | Command::Bombard { .. } | Command::BuildBridge { .. } | Command::DismantleBridge { .. } | Command::DemolishBridge { .. } => self.apply_order(cmd, ruleset),
             Command::ChooseEvent { issuer, event, option } => {
                 self.check_country(issuer)?;
                 let set = ruleset.event_set().ok_or(Rejection::Refused("no events in this ruleset"))?;
@@ -800,6 +977,30 @@ mod tests {
         for (i, v) in variants.iter().enumerate() {
             assert_ne!(v.state_hash(), h0, "variant {i} not reflected in hash");
         }
+    }
+
+    #[test]
+    fn the_tick_report_lists_changed_cells_events_and_messages() {
+        use crate::map::tests::test_map;
+        struct Reporter;
+        impl Ruleset for Reporter {
+            fn run(&self, w: &mut World, s: Signals) {
+                if s.new_day {
+                    w.cells_mut().unwrap().set_damage(5, 9);
+                    w.cells_mut().unwrap().set_damage(2, 9);
+                    w.cells_mut().unwrap().set_damage(5, 9); // unchanged value: not a change
+                    w.emit(ClientEvent { kind: 1, place: 5, other: 0, amount: 9 });
+                    w.message(CountryId(0), 4, 5, 0);
+                }
+            }
+        }
+        let mut w = World::from_map(1, Arc::new(Map::from_raw(test_map(16, 16)).unwrap()));
+        let r = w.tick(&[], &Reporter);
+        assert_eq!((r.tick, r.changed_cells.clone()), (0, vec![2, 5]));
+        assert_eq!((r.events.len(), r.messages.len()), (1, 1));
+        let r = w.tick(&[], &Reporter);
+        assert!(r.changed_cells.is_empty() && r.events.is_empty() && r.messages.is_empty(), "nothing left over, and tick 1 is not a new day");
+        assert_eq!(r.tick, 1);
     }
 
     #[test]

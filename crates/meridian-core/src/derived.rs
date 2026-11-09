@@ -160,12 +160,12 @@ pub fn front_segments(world: &World, a: CountryId, b: CountryId) -> Vec<FrontSeg
     let (Some(map), Some(cells)) = (world.map(), world.cells()) else { return Vec::new() };
     let mut edges: Vec<(u32, u32)> = Vec::new();
     for c in 0..map.cell_count() {
-        if cells.controller[c as usize] != a.0 {
+        if cells.controller(c as usize) != a.0 {
             continue;
         }
         for e in map.cell_edges(CellId(c)) {
             let n = map.c_dst[e];
-            if cells.controller[n as usize] == b.0 {
+            if cells.controller(n as usize) == b.0 {
                 edges.push((c, n));
             }
         }
@@ -307,7 +307,7 @@ mod tests {
         // make cells with x < 8 country 0 and the rest country 1 (the test map already splits at x = w/2)
         let c = w.cells_mut().unwrap();
         for i in 0..256 {
-            c.controller[i] = if i % 16 < 8 { 0 } else { 1 };
+            c.set_controller(i, if i % 16 < 8 { 0 } else { 1 });
         }
         let segs = front_segments(&w, CountryId(0), CountryId(1));
         assert_eq!(segs.len(), 1, "one straight border is one segment");
@@ -317,10 +317,10 @@ mod tests {
         // two separate pockets give two segments
         let c = w.cells_mut().unwrap();
         for i in 0..256 {
-            c.controller[i] = 0;
+            c.set_controller(i, 0);
         }
-        c.controller[0] = 1;
-        c.controller[16 * 15 + 15] = 1;
+        c.set_controller(0, 1);
+        c.set_controller(16 * 15 + 15, 1);
         assert_eq!(front_segments(&w, CountryId(0), CountryId(1)).len(), 2);
     }
 }

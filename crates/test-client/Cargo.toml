@@ -1,0 +1,13 @@
+[package]
+name = "test-client"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# A stand-in for a real client: it reads state and gives orders ONLY through the public
+# interface. It is deliberately built without the `omniscient` feature (run it alone with
+# `cargo test -p test-client`; building the whole workspace at once turns the feature on for
+# every crate, which hides the check).
+[dependencies]
+meridian-core = { path = "../meridian-core" }
+meridian-ai = { path = "../meridian-ai" }
