@@ -324,8 +324,10 @@ impl App {
         let mut act = UiActions::default();
         let snap = &self.snapshot;
         egui::Panel::top("time").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                egui::MenuBar::new().ui(ui, |ui| {
+            // The menu bar is itself a horizontal row that takes all the width it is given, so the
+            // rest of the bar must live inside it (next to it, it would be pushed out of view).
+            egui::MenuBar::new().ui(ui, |ui| {
+                {
                     ui.menu_button("Game", |ui| {
                         if ui.button("Save").clicked() {
                             act.save = true;
@@ -340,7 +342,7 @@ impl App {
                             ui.close();
                         }
                     });
-                });
+                }
                 ui.separator();
                 ui.strong(&snap.date);
                 ui.label(format!("tick {}", snap.tick));

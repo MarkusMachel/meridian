@@ -6,7 +6,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let out = std::path::PathBuf::from(&args[1]);
     let ppp: f32 = args.get(2).map_or(2.0, |s| s.parse().unwrap());
-    let (w, h) = (900u32, 300u32);
+    let (w, h) = (2880u32, 300u32);
     let gpu = headless_gpu().expect("gpu");
     let ctx = egui::Context::default();
     let mut renderer = egui_wgpu::Renderer::new(&gpu.device, FORMAT, egui_wgpu::RendererOptions::default());
@@ -26,11 +26,24 @@ fn main() {
         let mut raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32 / ppp, h as f32 / ppp))), ..Default::default() };
         raw.viewports.get_mut(&raw.viewport_id).unwrap().native_pixels_per_point = Some(ppp);
         let full = ctx.run_ui(raw, |ui| {
-            egui::Panel::top("t").show(ui, |ui| {
-                ui.horizontal(|ui| {
+            egui::Panel::top("time").show(ui, |ui| {
+                egui::MenuBar::new().ui(ui, |ui| {
+                    ui.menu_button("Game", |ui| {
+                        let _ = ui.button("Save");
+                    });
+                    ui.separator();
                     ui.strong("1990-01-01 00:00");
                     ui.label("tick 0");
-                    let _ = ui.button("Pause");
+                    ui.separator();
+                    let _ = ui.selectable_label(true, "Pause");
+                    let _ = ui.button("Step");
+                    for n in 1..=5u8 {
+                        let _ = ui.selectable_label(false, format!("{n}"));
+                    }
+                    ui.separator();
+                    egui::ComboBox::from_id_salt("mode").selected_text("Political").show_ui(ui, |_| {});
+                    ui.separator();
+                    ui.label("16.0 ms/frame, level 0, 21 km/px");
                 });
             });
         });
