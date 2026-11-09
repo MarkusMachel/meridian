@@ -219,3 +219,7 @@ All of this is plumbing: tables, conserving primitives, votes and validation. No
 - **Validators:** every region has a province; no cell is in a province of another region; the hairline-overlap limit for cell pairs is now 50,000 m2 (region outlines made valid after projection can overlap by up to about 40,000 m2, a fifth of a hundredth of a cell).
 - **Consequences:** province ids changed, so older saves do not load (the loader refuses them on the map checksum). Provinces are not equal-size any more: a region just over the threshold gets one province, so sizes range widely. Province names and 1990 admin changes (for example Soviet republic borders, which are admin-0 lines in the source) are not modelled yet.
 - **Path fingerprint changed with the map:** `096013a9723c06d4` on macOS (the Phase 4 value `bc7ecb8ba28ec26c` belonged to the old provinces). Linux has not been re-run on the new map.
+
+## Phase 7: first Victoria-2-style look pass (2026-11-09)
+
+- Muted sea colour, brown-ink province lines (soft), heavier dark-brown state borders, blue-grey coast line, and country colours in a narrower earthy band. Colours and widths only (`render.rs` `STYLES`, `SEA`, `modes.rs` `country_color`); no new geometry. Still to do for the full look: terrain/shaded-relief base under the owner tint, rivers, dashed borders, labels.

@@ -39,14 +39,14 @@ pub const NO_PROVINCE: u32 = u32::MAX;
 
 /// Line styles in draw order: cell edge, province border, state border, coast.
 const STYLES: [([f32; 4], f32); 4] = [
-    ([0.0, 0.0, 0.0, 0.18], 1.0),
-    ([0.10, 0.10, 0.12, 0.55], 1.0),
-    ([0.05, 0.05, 0.08, 0.95], 2.0),
-    ([0.02, 0.05, 0.12, 0.95], 1.5),
+    ([0.25, 0.18, 0.10, 0.14], 1.0),
+    ([0.25, 0.18, 0.10, 0.38], 1.0),
+    ([0.16, 0.11, 0.07, 0.95], 2.5),
+    ([0.20, 0.30, 0.38, 0.90], 1.2),
 ];
 /// Cell edges are drawn only when zoomed in closer than this many metres per pixel.
 const CELL_LINES_BELOW_M_PER_PX: f64 = 2500.0;
-const SEA: wgpu::Color = wgpu::Color { r: 0.80, g: 0.89, b: 0.95, a: 1.0 };
+const SEA: wgpu::Color = wgpu::Color { r: 0.66, g: 0.76, b: 0.80, a: 1.0 };
 
 struct GpuLevel {
     tolerance_m: u32,

@@ -28,8 +28,9 @@ impl Mode {
 /// lightness and saturation cycling so neighbours with close ids still differ.
 pub fn country_color(country: u16) -> Rgba {
     let hue = (country as f64 * 0.618_033_988_749_895).fract();
-    let s = [0.45, 0.60, 0.35][country as usize % 3];
-    let l = [0.62, 0.52, 0.72, 0.45][country as usize % 4];
+    // flat, earthy colours in a narrow band, like a printed political map
+    let s = [0.38, 0.46, 0.30][country as usize % 3];
+    let l = [0.58, 0.50, 0.64, 0.45][country as usize % 4];
     hsl(hue, s, l)
 }
 
