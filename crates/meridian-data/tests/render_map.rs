@@ -1,3 +1,4 @@
+#![allow(clippy::chunks_exact_to_as_chunks)] // chunks_exact reads more plainly than as_chunks
 //! Render-file checks against the real baked world (client data, not used by the engine).
 //! Files come from crates/map-builder (not committed). If the render file is missing the test
 //! prints a notice and passes, unless MERIDIAN_REQUIRE_MAP=1 (set by scripts/check.sh).

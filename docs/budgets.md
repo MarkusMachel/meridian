@@ -68,3 +68,14 @@ Per-tick and per-system time budgets and the simulation memory budget are set in
 ## Render file (client data)
 
 - `data/baked/meridian-render.bin`: about 110 MB, built in about 40 s from the intermediate files, byte-identical across runs. Loads in about 55 ms (release). Level sizes: coarse 368k triangles, medium 768k, fine 960k.
+
+## Client frame time (offscreen, with readback, Apple M4 Pro, 2560x1440, whole world drawn each frame)
+
+| View | Level | Mean | p50 | p99 | Max |
+| --- | --- | --- | --- | --- | --- |
+| World | 0 | 8.3 ms | 8.5 | 10.6 | 10.6 |
+| Regional (3 km/px) | 1 | 7.4 ms | 9.4 | 11.1 | 11.1 |
+| Close (600 m/px) | 2 | 12.0 ms | 10.6 | 16.7 | 16.7 |
+| Closest (150 m/px) | 2 | 11.4 ms | 10.0 | 25.3 | 25.3 |
+
+Target not yet set (needs the windowed frame time with the panels). Cell edges are not culled; that is the first thing to fix if close-up frames miss 60 fps.

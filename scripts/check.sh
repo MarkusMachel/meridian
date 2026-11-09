@@ -35,6 +35,10 @@ if [ -f data/baked/meridian-map.bin ]; then
   ./target/release/runner map-validate data/baked/meridian-map.bin
   ./target/release/runner map-bench data/baked/meridian-map.bin
   if [ -f data/baked/meridian-render.bin ]; then
+    # Client smoke test: draw one frame without a window and check that a picture was written.
+    cargo build --release -p client
+    ./target/release/client --screenshot "$tmp/shot.png" --size 800x450 --ticks 24
+    [ -s "$tmp/shot.png" ] || { echo "FAIL: client wrote no picture"; exit 1; }
     crates/map-builder/.venv/bin/python -I -W ignore crates/map-builder/validate_render.py data/intermediate data/baked/meridian-render.bin
   fi
 else

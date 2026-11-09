@@ -39,6 +39,22 @@ pub fn scenario(seed: u64, provinces: u32) -> World {
     w
 }
 
+/// The proving-ground rules on the real map: every state is a country that controls its own
+/// provinces, and each country that owns land gets one unit on its first province.
+pub fn scenario_on_map(seed: u64, map: std::sync::Arc<meridian_core::Map>) -> World {
+    let mut first: Vec<Option<u32>> = vec![None; map.state_count() as usize];
+    for (p, &st) in map.province_state.iter().enumerate() {
+        first[st as usize].get_or_insert(p as u32);
+    }
+    let mut w = World::from_map(seed, map);
+    for (c, p) in first.iter().enumerate() {
+        if let Some(p) = p {
+            w.add_unit_for_setup(Unit { owner: CountryId(c as u16), location: ProvinceId(*p) });
+        }
+    }
+    w
+}
+
 fn daily_counter(world: &mut World, _: Signals) {
     for v in world.values_mut() {
         *v += 1;

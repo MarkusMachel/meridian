@@ -1,3 +1,5 @@
+#![allow(clippy::chunks_exact_to_as_chunks)] // chunks_exact reads more plainly than as_chunks
+
 //! Data schemas, loader, validator and baker. Reads files; hands the
 //! simulation ready-made world state. The simulation never touches files.
 
