@@ -7,3 +7,8 @@
 | [World Bank](https://data.worldbank.org/indicator/SP.POP.TOTL) SP.POP.TOTL, 1990 and 2019 | country population totals | CC BY 4.0 | Attribution required: "The World Bank: Population, total (SP.POP.TOTL)". Snapshots committed in `data/source/worldbank/`. |
 
 Hand-written data (state merge table, chokepoints, strategic sites) is original work in this repository; strategic site coordinates are approximate and unverified.
+
+## Software used by the client (checked 2026-11-09)
+
+- `wgpu`, `winit`, `egui`, `egui-wgpu`, `egui-winit`, `pollster`, `bytemuck`, `png`: MIT and/or Apache-2.0 (licences as declared on crates.io; re-check with `cargo license` before a release).
+- `epaint_default_fonts` (enabled by egui's `default_fonts` feature, used for the interface text): the crate is `(MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0`. It bundles Ubuntu-Light (Ubuntu Font License), Hack (MIT-style), Noto Emoji (SIL OFL) and an emoji icon font (MIT). All allow commercial use; the licence texts ship in that crate's `fonts/` folder and must be included with a release. Replace with the typewriter-style OFL fonts from `docs/design-notes.md` when the paper-map look is built.
