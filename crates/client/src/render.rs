@@ -391,6 +391,13 @@ impl Renderer {
         self.draw_urban = self.show_details && camera.m_per_px < URBAN_BELOW;
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
         // Province borders fade out when the whole world is in view, where 15,000 of them are only noise.
+        // Roads and railways get wider as you zoom in (up to 4x their base width below 300 m/px),
+        // so close up they are features you can see and click, not hairlines.
+        let widen = (1_200.0 / camera.m_per_px).clamp(1.0, 4.0) as f32;
+        for (k, (color, width, dash)) in DETAIL_STYLES.iter().enumerate().take(5) {
+            let st = Style { color: *color, width_px: width * widen, dash_px: dash * widen, _pad: [0.0; 2] };
+            queue.write_buffer(&self.style_buffers[ROAD_STYLE + k], 0, bytemuck::bytes_of(&st));
+        }
         let fade = (1.0 - camera.m_per_px / 20_000.0).clamp(0.0, 1.0) as f32;
         let mut s = STYLES[1];
         s.0[3] = 0.12 + (s.0[3] - 0.12) * fade;

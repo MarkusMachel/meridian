@@ -19,6 +19,12 @@ const COUNTRY_MIN_PX: f64 = 13.0;
 const REGION_MAX_PX: f64 = 17.0;
 const REGION_MIN_PX: f64 = 12.0;
 const MAX_LABELS: usize = 500;
+/// Country names fade out between these zooms (metres per pixel) as you zoom in, and so do region
+/// names further in: close up the map shows places, not the name of the whole country.
+const COUNTRY_FADE: (f64, f64) = (1_200.0, 2_400.0);
+const REGION_FADE: (f64, f64) = (150.0, 300.0);
+/// A name is also hidden once its area is wider than this share of the screen (it fills the view).
+const FILLS_SCREEN: f64 = 1.1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LabelKind {
@@ -34,6 +40,8 @@ pub struct PlacedLabel {
     pub y: f64,
     pub size_px: f64,
     pub kind: LabelKind,
+    /// 0 (invisible) to 1: names fade out as you zoom in.
+    pub alpha: f64,
 }
 
 struct Candidate {
@@ -43,9 +51,19 @@ struct Candidate {
     size: f64,
     x: f64,
     y: f64,
+    alpha: f64,
 }
 
 fn candidates(out: &mut Vec<Candidate>, labels: &Labels, kind: LabelKind, camera: &Camera, scale: f64) {
+    let (lo, hi) = match kind {
+        LabelKind::Country => COUNTRY_FADE,
+        LabelKind::Region => REGION_FADE,
+    };
+    let alpha = ((camera.m_per_px - lo) / (hi - lo)).clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return;
+    }
+    let screen = camera.width_px.max(camera.height_px);
     let (min_px, max_px) = match kind {
         LabelKind::Country => (COUNTRY_MIN_PX * scale, COUNTRY_MAX_PX * scale),
         LabelKind::Region => (REGION_MIN_PX * scale, REGION_MAX_PX * scale),
@@ -58,10 +76,10 @@ fn candidates(out: &mut Vec<Candidate>, labels: &Labels, kind: LabelKind, camera
         let n = labels.names[i].chars().count().max(1) as f64;
         let extent_px = (labels.area_km2[i] as f64).sqrt() * 1000.0 / camera.m_per_px;
         let size = (extent_px * 0.8 / (n * GLYPH)).min(max_px);
-        if size < min_px {
+        if size < min_px || extent_px > FILLS_SCREEN * screen {
             continue;
         }
-        out.push(Candidate { i, kind, area: labels.area_km2[i], size, x, y });
+        out.push(Candidate { i, kind, area: labels.area_km2[i], size, x, y, alpha });
     }
 }
 
@@ -90,7 +108,7 @@ pub fn place(data: &RenderData, camera: &Camera, scale: f64) -> Vec<PlacedLabel>
             continue;
         }
         taken.push(rect);
-        out.push(PlacedLabel { text, x: c.x, y: c.y, size_px: c.size, kind: c.kind });
+        out.push(PlacedLabel { text, x: c.x, y: c.y, size_px: c.size, kind: c.kind, alpha: c.alpha });
         if out.len() >= MAX_LABELS {
             break;
         }
@@ -243,6 +261,19 @@ mod tests {
         cam.m_per_px = 2_000.0;
         cam.cx = 50_000_000.0; // label off screen
         assert!(place(&d, &cam, 1.0).is_empty());
+    }
+
+    #[test]
+    fn country_names_disappear_when_zoomed_in() {
+        let d = data(label("Examplia", 0, 0, 500_000), Labels::default());
+        let b = Bounds { min_x: -1e9, min_y: -1e9, max_x: 1e9, max_y: 1e9 };
+        let far = Camera { cx: 0.0, cy: 0.0, m_per_px: 3_000.0, width_px: 1000.0, height_px: 800.0, bounds: b };
+        assert_eq!(place(&d, &far, 1.0)[0].alpha, 1.0);
+        let fading = Camera { m_per_px: 1_800.0, ..far };
+        let a = place(&d, &fading, 1.0)[0].alpha;
+        assert!(a > 0.0 && a < 1.0);
+        let close = Camera { m_per_px: 1_000.0, ..far };
+        assert!(place(&d, &close, 1.0).is_empty());
     }
 
     #[test]

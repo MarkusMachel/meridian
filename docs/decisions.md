@@ -263,3 +263,8 @@ All of this is plumbing: tables, conserving primitives, votes and validation. No
 - **Names and icons are clipped to the map area** (they drew over the top bar and side panel).
 - `client --view` now also sets the window's starting camera.
 - **Not done:** 3D models, city sprites that grow with population, terrain textures (forest, desert) at close zoom, a 1990 road/rail network.
+
+## Phase 7: names fade when zoomed in, wider roads and railways close up (2026-11-09)
+
+- **Country names fade out** between 2.4 and 1.2 km/px and are gone closer in; region names fade between 300 and 150 m/px. A name is also hidden once its area is wider than the screen (it fills the view). Close up the map shows cities and infrastructure, not the name of the country you are standing in (as in HOI). Tested in `labels.rs`.
+- **Roads and railways widen as you zoom in:** width (and the railway dash length) times 1,200 / metres-per-pixel, between 1x and 4x. At 300 m/px a major highway is about 7.6 px and a main railway about 7.6 px, so they are visible targets. Cutting a road or railway (interdiction) is gameplay and belongs in the gameplay backlog; the map already marks each cell with road/rail flags, so a cut would be a command on those cells.

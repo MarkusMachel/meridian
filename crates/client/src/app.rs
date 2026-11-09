@@ -600,6 +600,7 @@ impl App {
                     client::labels::LabelKind::Country => (egui::Color32::from_rgb(35, 22, 12), egui::Color32::from_rgba_unmultiplied(255, 248, 225, 235)),
                     client::labels::LabelKind::Region => (egui::Color32::from_rgb(40, 28, 18), egui::Color32::from_rgba_unmultiplied(255, 248, 225, 225)),
                 };
+                let (ink, halo) = (ink.gamma_multiply(l.alpha as f32), halo.gamma_multiply(l.alpha as f32));
                 for (dx, dy) in [(-1.3, 0.0), (1.3, 0.0), (0.0, -1.3), (0.0, 1.3), (-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
                     painter.text(pos + egui::vec2(dx, dy), egui::Align2::CENTER_CENTER, &l.text, font.clone(), halo);
                 }
