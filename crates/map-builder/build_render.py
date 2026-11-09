@@ -30,7 +30,7 @@ from shapely import STRtree
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import render_extras  # noqa: E402
 
-FORMAT_VERSION = 5
+FORMAT_VERSION = 6
 KIND_RENDER = 4
 LEVELS_M = [8000.0, 2500.0, 800.0]
 KIND_PROVINCE, KIND_STATE, KIND_COAST = 0, 1, 2
@@ -204,6 +204,8 @@ def main(inter, out_file, levels, ne_dir):
     # shaded relief, rivers and place names
     A["relief"], A["relief_info"] = render_extras.relief(inter, (int(cm[:, 0].min()), int(cm[:, 0].max()), int(cm[:, 1].min()), int(cm[:, 1].max())))
     print(f"relief: {A['relief_info'][0]} x {A['relief_info'][1]} pixels")
+    A["land_rgb"] = render_extras.land_colors(ne_dir, (int(cm[:, 0].min()), int(cm[:, 0].max()), int(cm[:, 1].min()), int(cm[:, 1].max())))
+    print(f"land colours: {len(A['land_rgb']) // 3} pixels (Natural Earth II)")
     A["river_x"], A["river_y"], A["river_off"], A["river_rank"] = render_extras.rivers(ne_dir)
     print(f"rivers: {len(A['river_off']) - 1} lines, {len(A['river_x'])} points")
     A["road_x"], A["road_y"], A["road_off"], A["road_class"] = render_extras.roads(ne_dir)

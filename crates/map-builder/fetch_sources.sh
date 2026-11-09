@@ -22,6 +22,8 @@ fetch_ne ne_10m_railroads cultural 0bce64d1bb7ce1178810f0a341322b0459acb0689a610
 fetch_ne ne_10m_rivers_lake_centerlines physical ded71b01870855ccfe19b51f2ec14c9bb48fae23c0e9f3c11974d426433b5c38
 fetch_ne ne_10m_roads cultural 880b235383a1e1ccf33f4ea6f82b6755a2ffbce07e3974e412b43e88fe954ae9
 fetch_ne ne_10m_urban_areas cultural 2c593114e954ce1adb297ddee5465f05d9e81fa0a26deb13f8500d58a00d7051
+# Natural Earth II land cover colours (raster, public domain), for the client's land texture
+fetch_ne NE2_HR_LC raster 28114eb3bb4d8ba441d645971df2ec7762c55bb91b7cf8a7092f382d594dfb18
 
 etopo=data/source/etopo/ETOPO_2022_v1_60s_N90W180_surface.tif
 [ -f "$etopo" ] || curl -sSfLo "$etopo" "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/60s/60s_surface_elev_gtif/ETOPO_2022_v1_60s_N90W180_surface.tif"

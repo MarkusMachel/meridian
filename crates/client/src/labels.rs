@@ -164,6 +164,7 @@ pub fn place_sites(map: &meridian_core::Map, data: &RenderData, camera: &Camera,
             continue;
         }
         let ok = match map.site_kind[s] {
+            4 => false, // industry: no map symbol (the owner asked for it to go)
             0 => min_city.is_some_and(|m| map.site_size[s] >= m),
             1 | 2 => show_ports,
             _ => show_other,
@@ -229,7 +230,7 @@ mod tests {
             cell_ring_y: vec![],
             province_mx: vec![],
             province_my: vec![],
-            relief: Relief { width: 1, height: 1, x0: 0, y0: 0, x1: 1, y1: 1, pixels: vec![128] },
+            relief: Relief { width: 1, height: 1, x0: 0, y0: 0, x1: 1, y1: 1, pixels: vec![128], land_rgb: vec![0, 0, 0] },
             river_x: vec![],
             river_y: vec![],
             river_off: vec![0],

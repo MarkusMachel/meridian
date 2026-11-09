@@ -7,14 +7,38 @@ struct Globals {
     inv_scale: f32,      // pixels per metre
     selected: u32,
     hover: u32,
-    _pad: u32,
-    relief_org: vec2<i32>,   // left and top edge of the relief raster (metres)
-    relief_span: vec2<f32>,  // width and height in metres; 0 = no relief
+    relief_on: u32,          // 1 = shade with the relief raster
+    relief_org: vec2<i32>,   // left and top edge of the relief and land rasters (metres)
+    relief_span: vec2<f32>,  // width and height in metres
+    land_mix: f32,           // 0 = real land colours only, 1 = province colour only
+    detail: f32,             // 0..1: strength of the fine ground texture (close zoom)
+    _p1: f32,
+    _p2: f32,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(1) var<storage, read> colors: array<u32>;
 @group(0) @binding(2) var relief: texture_2d<f32>;
 @group(0) @binding(3) var relief_sampler: sampler;
+@group(0) @binding(4) var land: texture_2d<f32>;
+
+// Value noise for the ground texture: a hash per integer lattice point, smoothly interpolated.
+fn hash2(p: vec2<i32>) -> f32 {
+    var h = u32(p.x) * 374761393u + u32(p.y) * 668265263u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    h = h ^ (h >> 16u);
+    return f32(h & 0xffffu) / 65535.0;
+}
+
+fn vnoise(p: vec2<f32>) -> f32 {
+    let i = vec2<i32>(floor(p));
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = hash2(i);
+    let b = hash2(i + vec2<i32>(1, 0));
+    let c = hash2(i + vec2<i32>(0, 1));
+    let d = hash2(i + vec2<i32>(1, 1));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
 
 fn to_ndc(p: vec2<i32>) -> vec2<f32> {
     let rel = vec2<f32>(p - g.center) * g.inv_scale;
@@ -48,14 +72,28 @@ fn vs_fill(v: FillIn) -> FillOut {
 
 @fragment
 fn fs_fill(i: FillOut) -> @location(0) vec4<f32> {
-    var rgb = i.color.rgb;
-    if (g.relief_span.x > 0.0) {
-        let d = vec2<f32>(g.center - g.relief_org);
-        let uv = vec2<f32>((d.x + i.rel.x) / g.relief_span.x, (-d.y - i.rel.y) / g.relief_span.y);
-        let r = textureSampleLevel(relief, relief_sampler, uv, 0.0).r * (255.0 / 128.0);
-        rgb = clamp(rgb * mix(1.0, r, 0.7) * 0.92, vec3<f32>(0.0), vec3<f32>(1.0));
+    let d = vec2<f32>(g.center - g.relief_org);
+    let uv = vec2<f32>((d.x + i.rel.x) / g.relief_span.x, (-d.y - i.rel.y) / g.relief_span.y);
+    // the province (owner) colour as a tint over the real land colours: forests, deserts, ice show through
+    let ground = textureSampleLevel(land, relief_sampler, uv, 0.0).rgb;
+    // multiply: the owner colour keeps its hue, the land darkens it over forest and warms it over
+    // desert (1.2 keeps light deserts from washing out); then blend toward the plain land colour
+    let tinted = clamp(i.color.rgb * ground * 1.2, vec3<f32>(0.0), vec3<f32>(1.0));
+    var rgb = mix(ground * 0.9, tinted, g.land_mix);
+    if (g.land_mix >= 1.0) {
+        rgb = i.color.rgb;   // flat colours (debug mode): no land texture
     }
-    return vec4<f32>(rgb, i.color.a);
+    if (g.relief_on == 1u) {
+        let r = textureSampleLevel(relief, relief_sampler, uv, 0.0).r * (255.0 / 128.0);
+        rgb = rgb * mix(1.0, r, 0.7) * 0.92;
+    }
+    if (g.detail > 0.0) {
+        // fine mottling of the ground when zoomed in, so close up it is not a flat colour
+        let w = vec2<f32>(g.center) + i.rel;
+        let n = vnoise(w / 1600.0) * 0.55 + vnoise(w / 450.0) * 0.30 + vnoise(w / 140.0) * 0.15;
+        rgb = rgb * (1.0 + (n - 0.5) * 0.16 * g.detail);
+    }
+    return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), i.color.a);
 }
 
 // Lines: one instance per segment, drawn as a quad of 6 vertices.

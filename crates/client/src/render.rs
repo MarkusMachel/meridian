@@ -16,9 +16,12 @@ struct Globals {
     inv_scale: f32,
     selected: u32,
     hover: u32,
-    _pad: u32,
+    relief_on: u32,
     relief_org: [i32; 2],
     relief_span: [f32; 2],
+    land_mix: f32,
+    detail: f32,
+    _p: [f32; 2],
 }
 
 #[repr(C)]
@@ -170,6 +173,22 @@ pub struct Renderer {
     pub show_relief: bool,
     /// Roads, railways and built-up areas (a setting).
     pub show_details: bool,
+    /// How much of the province colour covers the real land colours (0 = land only, 1 = flat colour).
+    pub land_mix: f32,
+}
+
+/// Province colour share for map modes: political lets the land show through, terrain shows the land
+/// itself, the debug value mode stays flat so its numbers read plainly.
+pub const LAND_MIX_POLITICAL: f32 = 0.65;
+pub const LAND_MIX_TERRAIN: f32 = 0.0;
+pub const LAND_MIX_FLAT: f32 = 1.0; // 1 or more: plain province colours, no land texture
+
+pub fn land_mix_for(mode: crate::modes::Mode) -> f32 {
+    match mode {
+        crate::modes::Mode::Political => LAND_MIX_POLITICAL,
+        crate::modes::Mode::Terrain => LAND_MIX_TERRAIN,
+        crate::modes::Mode::Value => LAND_MIX_FLAT,
+    }
 }
 
 /// Push the segments of one polyline, each with the distance along the line at its start.
@@ -212,6 +231,7 @@ impl Renderer {
                 wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
             ],
         });
         let bgl1 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -235,6 +255,24 @@ impl Renderer {
             &rf.pixels,
         );
         let relief_view = relief_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        // land colours: RGB in the file, RGBA on the GPU (wgpu has no 3-channel 8-bit format)
+        let land_rgba: Vec<u8> = rf.land_rgb.chunks_exact(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect();
+        let land_tex = device.create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some("land colours"),
+                size: wgpu::Extent3d { width: rf.width, height: rf.height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &land_rgba,
+        );
+        let land_view = land_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let relief_sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge, ..Default::default() });
         let bind0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bind0"),
@@ -244,6 +282,7 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 1, resource: colors.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&relief_view) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&relief_sampler) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&land_view) },
             ],
         });
         let style_buffers: Vec<wgpu::Buffer> = STYLES
@@ -360,6 +399,7 @@ impl Renderer {
             show_cells: true,
             show_relief: true,
             show_details: true,
+            land_mix: LAND_MIX_POLITICAL,
         }
     }
 
@@ -380,9 +420,12 @@ impl Renderer {
             inv_scale: (1.0 / camera.m_per_px) as f32,
             selected,
             hover,
-            _pad: 0,
+            relief_on: u32::from(self.show_relief),
             relief_org: self.relief_org,
-            relief_span: if self.show_relief { self.relief_span } else { [0.0, 0.0] },
+            relief_span: self.relief_span,
+            land_mix: self.land_mix,
+            detail: ((3_000.0 - camera.m_per_px) / 2_000.0).clamp(0.0, 1.0) as f32,
+            _p: [0.0; 2],
         };
         self.river_tier = tier(camera.m_per_px, [RIVERS_MAJOR_BELOW, RIVERS_MEDIUM_BELOW, RIVERS_ALL_BELOW]);
         let details = if self.show_details { 1 } else { 0 };

@@ -18,11 +18,8 @@ _EQ_TO_LL = pyproj.Transformer.from_crs("EPSG:8857", "EPSG:4326", always_xy=True
 _LL_TO_EQ = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:8857", always_xy=True)
 
 
-def relief(inter, extent):
-    """Hillshade as a u8 raster in the Equal Earth plane. Byte 128 means "no change"; the client
-    multiplies the province colour by byte/128. `extent` = (x_min, x_max, y_min, y_max) of the data.
-    Returns (pixels, info) with info = width, height, x0, y0, x1, y1 (metres; row 0 is the top edge y1)."""
-    elev = np.load(Path(inter) / "elev_60s_int16.npy", mmap_mode="r")
+def _raster_grid(extent):
+    """Pixel grid of the display rasters (relief and land colours): (px, x0, y0, y1, H, xs)."""
     x_min, x_max, y_min, y_max = extent
     px = (x_max - x_min + 600_000) / RELIEF_W
     x0 = np.floor((x_min - 300_000) / px) * px
@@ -30,17 +27,32 @@ def relief(inter, extent):
     y1 = np.ceil((y_max + 300_000) / px) * px
     H = int(round((y1 - y0) / px))
     xs = x0 + (np.arange(RELIEF_W) + 0.5) * px
+    return px, x0, y0, y1, H, xs
+
+
+def _sample_rows(xs, ys):
+    """For one band of pixel rows: (ok, row, col) indexes into a global 1-arc-minute grid
+    (10800 x 21600, row 0 at 90 N); `ok` is False outside the projection's outline."""
+    X, Y = np.meshgrid(xs, ys)
+    lon, lat = _EQ_TO_LL.transform(X.ravel(), Y.ravel())
+    lon = np.asarray(lon).reshape(X.shape); lat = np.asarray(lat).reshape(X.shape)
+    ok = np.isfinite(lon) & np.isfinite(lat) & (np.abs(lon) <= 180.0) & (np.abs(lat) <= 90.0)
+    row = np.clip(np.floor((90.0 - np.where(ok, lat, 0.0)) * 60.0).astype(np.int64), 0, 10799)
+    col = np.clip(np.floor((np.where(ok, lon, 0.0) + 180.0) * 60.0).astype(np.int64), 0, 21599)
+    return ok, row, col
+
+
+def relief(inter, extent):
+    """Hillshade as a u8 raster in the Equal Earth plane. Byte 128 means "no change"; the client
+    multiplies the province colour by byte/128. `extent` = (x_min, x_max, y_min, y_max) of the data.
+    Returns (pixels, info) with info = width, height, x0, y0, x1, y1 (metres; row 0 is the top edge y1)."""
+    elev = np.load(Path(inter) / "elev_60s_int16.npy", mmap_mode="r")
+    px, x0, y0, y1, H, xs = _raster_grid(extent)
     Z = np.zeros((H, RELIEF_W), dtype=np.float32)
     step = 256
     for r0 in range(0, H, step):
         rows = np.arange(r0, min(H, r0 + step))
-        ys = y1 - (rows + 0.5) * px
-        X, Y = np.meshgrid(xs, ys)
-        lon, lat = _EQ_TO_LL.transform(X.ravel(), Y.ravel())
-        lon = np.asarray(lon).reshape(X.shape); lat = np.asarray(lat).reshape(X.shape)
-        ok = np.isfinite(lon) & np.isfinite(lat) & (np.abs(lon) <= 180.0) & (np.abs(lat) <= 90.0)
-        row = np.clip(np.floor((90.0 - np.where(ok, lat, 0.0)) * 60.0).astype(np.int64), 0, 10799)
-        col = np.clip(np.floor((np.where(ok, lon, 0.0) + 180.0) * 60.0).astype(np.int64), 0, 21599)
+        ok, row, col = _sample_rows(xs, y1 - (rows + 0.5) * px)
         v = np.maximum(np.asarray(elev)[row, col].astype(np.float32), 0.0)
         Z[rows] = np.where(ok, v, 0.0)
     Z = ndimage.gaussian_filter(Z, 1.0)
@@ -59,6 +71,24 @@ def relief(inter, extent):
     out[Z <= 0] = 128
     info = np.array([RELIEF_W, H, int(round(x0)), int(round(y0)), int(round(x0 + RELIEF_W * px)), int(round(y1))], dtype="<i4")
     return out.reshape(-1), info
+
+
+def land_colors(ne_dir, extent):
+    """Natural Earth II land cover colours (forest, grassland, desert, ice ...) resampled onto the
+    same pixel grid as the relief: RGB bytes, row by row. Each pixel averages a 2 x 2 block of the
+    1-arc-minute source to soften aliasing."""
+    import tifffile
+    src = tifffile.imread(str(Path(ne_dir) / "NE2_HR_LC" / "NE2_HR_LC.tif"))   # (10800, 21600, 3) u8
+    px, x0, y0, y1, H, xs = _raster_grid(extent)
+    out = np.zeros((H, RELIEF_W, 3), dtype=np.uint8)
+    step = 256
+    for r0 in range(0, H, step):
+        rows = np.arange(r0, min(H, r0 + step))
+        ok, row, col = _sample_rows(xs, y1 - (rows + 0.5) * px)
+        r1 = np.minimum(row + 1, 10799); c1 = (col + 1) % 21600
+        acc = (src[row, col].astype(np.uint16) + src[r1, col] + src[row, c1] + src[r1, c1] + 2) // 4
+        out[rows] = np.where(ok[..., None], acc, 0).astype(np.uint8)
+    return out.reshape(-1)
 
 
 def rivers(ne_dir):

@@ -170,7 +170,8 @@ impl App {
                 Mode::Value => modes::value_ramp(&snap.values),
                 Mode::Terrain => modes::terrain(&self.terrain),
             };
-            if let Some(g) = &self.gfx {
+            if let Some(g) = &mut self.gfx {
+                g.map_renderer.land_mix = client::render::land_mix_for(self.mode);
                 g.map_renderer.set_colors(&g.queue, &colors);
             }
             self.shown_tick = Some(snap.tick);
@@ -500,7 +501,7 @@ impl App {
 
 /// egui's list of textures it no longer needs; free them once the frame that could use them is done.
 /// A small building icon for a site, in the style of a printed map: dark ink on a light disc.
-/// Kinds: 0 city, 1 port, 2 airfield, 3 crossing, 4 industry, 5 base.
+/// Kinds: 0 city, 1 port, 2 airfield, 3 crossing, 5 base (industry, 4, has no symbol).
 fn draw_site_icon(p: &egui::Painter, kind: u8, c: egui::Pos2, population: u32) {
     use egui::{pos2, vec2, Color32, Shape, Stroke};
     let ink = Color32::from_rgb(35, 22, 12);
@@ -542,16 +543,6 @@ fn draw_site_icon(p: &egui::Painter, kind: u8, c: egui::Pos2, population: u32) {
             p.circle_filled(c, 6.0, paper);
             p.line_segment([c + vec2(-5.0, 1.5), c + vec2(5.0, 1.5)], Stroke::new(1.6, ink));
             p.add(Shape::line((0..=8).map(|i| { let t = i as f32 / 8.0 * std::f32::consts::PI; c + vec2(-4.0 * t.cos(), 1.5 - 4.0 * t.sin()) }).collect(), line));
-        }
-        4 => {
-            // factory: saw-tooth roof and a chimney
-            p.circle_filled(c, 7.0, paper);
-            let base = c.y + 3.5;
-            p.rect_filled(egui::Rect::from_min_max(pos2(c.x + 2.0, c.y - 5.5), pos2(c.x + 4.0, base)), 0.0, ink);
-            for i in 0..2 {
-                let x0 = c.x - 5.0 + i as f32 * 3.5;
-                p.add(Shape::convex_polygon(vec![pos2(x0, base), pos2(x0, c.y - 2.5), pos2(x0 + 3.5, c.y), pos2(x0 + 3.5, base)], ink, Stroke::NONE));
-            }
         }
         _ => {
             // military base: a flag on a pole

@@ -100,6 +100,7 @@ fn main() {
         Mode::Value => modes::value_ramp(&snap.values),
         Mode::Terrain => modes::terrain(&terrain),
     };
+    renderer.land_mix = client::render::land_mix_for(args.mode);
     renderer.set_colors(&gpu.queue, &colors);
     let (x0, y0, x1, y1) = render.bounds();
     let mut camera = Camera::fit(args.size.0 as f64, args.size.1 as f64, Bounds::around(x0, y0, x1, y1));
