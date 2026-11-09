@@ -34,6 +34,9 @@ if [ -f data/baked/meridian-map.bin ]; then
   MERIDIAN_REQUIRE_MAP=1 cargo test --release -p meridian-data --test world_map
   ./target/release/runner map-validate data/baked/meridian-map.bin
   ./target/release/runner map-bench data/baked/meridian-map.bin
+  if [ -f data/baked/meridian-render.bin ]; then
+    crates/map-builder/.venv/bin/python -I -W ignore crates/map-builder/validate_render.py data/intermediate data/baked/meridian-render.bin
+  fi
 else
   echo "NOTE: data/baked/meridian-map.bin not found; skipped map tests (run crates/map-builder/build_map.sh)"
 fi

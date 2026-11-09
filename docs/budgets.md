@@ -64,3 +64,7 @@ Per-tick and per-system time budgets and the simulation memory budget are set in
 ## Phase 6: reads while the sim runs
 
 - A query on the sim thread must finish within `MAX_QUERY_NS` = 2 ms (the sim runs queries between ticks). Measured on the full map: 17 µs for the heaviest ordinary read (a country's provinces), 300 queries during a 20,000-tick run.
+
+## Render file (client data)
+
+- `data/baked/meridian-render.bin`: about 110 MB, built in about 40 s from the intermediate files, byte-identical across runs. Loads in about 55 ms (release). Level sizes: coarse 368k triangles, medium 768k, fine 960k.

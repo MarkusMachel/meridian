@@ -2,11 +2,13 @@
 # Run the whole map-builder pipeline.
 #   INTER  working directory (default data/intermediate)
 #   BAKED  output file       (default data/baked/meridian-map.bin)
+#   RENDER render-only file for the client (default data/baked/meridian-render.bin)
 # Needs crates/map-builder/.venv (pip install -r requirements.txt) and downloads the sources.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 INTER="${INTER:-data/intermediate}"
 BAKED="${BAKED:-data/baked/meridian-map.bin}"
+RENDER="${RENDER:-data/baked/meridian-render.bin}"
 PY="crates/map-builder/.venv/bin/python -I -W ignore"
 B=crates/map-builder
 NE=data/source/natural-earth
@@ -23,3 +25,5 @@ $PY $B/build_terrain.py "$INTER" $NE data/source/etopo/ETOPO_2022_v1_60s_N90W180
 $PY $B/build_sites.py "$INTER" $NE
 $PY $B/build_population.py "$INTER" $NE data/source/worldbank
 $PY $B/bake_map.py "$INTER" "$BAKED"
+$PY $B/build_render.py "$INTER" "$RENDER"
+$PY $B/validate_render.py "$INTER" "$RENDER"

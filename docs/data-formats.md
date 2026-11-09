@@ -95,3 +95,19 @@ Payload: postcard of `Replay { scenario: String, seed: u64, map_checksum: Option
 - `Entry` is `{ tick, source (Player, Ai, Headquarters), command }`, in the order the commands were applied.
 - AI and headquarters commands are logged like player commands, so playing a replay never runs the AI.
 - `checkpoints` hold the state hash before the stated tick runs; the player stops at the first mismatch.
+
+## Render file (version 1)
+
+Written by `crates/map-builder/build_render.py` (checked by `validate_render.py`), read by `meridian_data::load_render_file`. **Client only; the engine never reads it.** Same header and array directory as the baked map, with magic `MRRD` and kind 4 (CRC-32 checksum). Coordinates are Equal Earth metres as i32, the same space as `cell_x` / `cell_y`.
+
+| Group | Arrays |
+| --- | --- |
+| Levels | `levels_tolerance_m` (u32, coarsest first; default 8000, 2500, 800 m) |
+| Per level `k` | `l{k}_vx`, `l{k}_vy` (i32), `l{k}_vprov` (u32 province per vertex), `l{k}_tri` (u32, 3 vertex indexes per triangle; a triangle never spans two provinces) |
+| Border lines per level | `l{k}_line_x`, `l{k}_line_y` (i32 points), `l{k}_line_off` (u32, lines + 1 entries), `l{k}_line_kind` (u8: 0 province border, 1 state border, 2 coast) |
+| Cells | `cell_seg` (i32, four values per distinct cell edge: x0, y0, x1, y1) |
+
+- Provinces are the union of their cells, simplified as one coverage per level (neighbours keep fitting). Small islands may vanish at the coarse levels; the finest level keeps every province within 1 % (or 50 km2) of its true area.
+- Lines come from noding all province boundaries; a piece touching one province is coast, two provinces of one state a province border, two states a state border.
+- Not yet in the file: cell fill meshes, rivers, contours, names and label positions, sea zones.
+- Size: about 110 MB for the whole world (cell outlines are 34 MB of it); loads in about 55 ms.
