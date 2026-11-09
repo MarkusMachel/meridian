@@ -54,6 +54,10 @@ struct App {
     frame_ms: f32,
     last_frame: Instant,
     snapshot: client::Snapshot,
+    /// Diagnostics (MERIDIAN_DEBUG): frames and ticks since the last report, and when it was printed.
+    debug_frames: u32,
+    debug_from_tick: u64,
+    debug_at: Instant,
     /// The unit that right-click orders go to: (unit id, owner).
     selected_unit: Option<(u32, u16)>,
     /// Move orders given and not yet finished: (unit id, destination province).
@@ -90,6 +94,9 @@ pub fn run(inputs: Inputs) {
         frame_ms: 16.0,
         last_frame: Instant::now(),
         snapshot: Default::default(),
+        debug_frames: 0,
+        debug_from_tick: 0,
+        debug_at: Instant::now(),
         selected_unit: None,
         orders: Vec::new(),
         status: String::new(),
@@ -228,6 +235,15 @@ impl App {
         self.last_frame = now;
         self.session.frame();
         self.refresh_colors();
+        if std::env::var_os("MERIDIAN_DEBUG").is_some() {
+            self.debug_frames += 1;
+            if self.debug_at.elapsed().as_secs_f64() >= 1.0 {
+                eprintln!("{:?}: {} frames, {} ticks in the last second", self.session.speed(), self.debug_frames, self.snapshot.tick - self.debug_from_tick);
+                self.debug_frames = 0;
+                self.debug_from_tick = self.snapshot.tick;
+                self.debug_at = Instant::now();
+            }
+        }
         let Some(mut g) = self.gfx.take() else { return };
 
         // --- egui ---
