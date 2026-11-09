@@ -259,16 +259,36 @@ impl App {
         g.map_renderer.show_cells = self.show_cells;
         let ppp = full.pixels_per_point;
         let jobs = g.egui_ctx.tessellate(full.shapes, ppp);
+        if std::env::var_os("MERIDIAN_DEBUG").is_some() {
+            eprintln!("egui: {} jobs, ppp {ppp}, textures set {}, screen {}x{}", jobs.len(), full.textures_delta.set.len(), g.config.width, g.config.height);
+        }
+
+        // egui sends each texture (the font atlas above all) exactly once, so upload it now, before
+        // anything can make us skip the frame; skipping first would leave egui with no font for good.
+        for (id, delta) in &full.textures_delta.set {
+            for d in delta {
+                g.egui_renderer.update_texture(&g.device, &g.queue, *id, d);
+            }
+        }
 
         // --- surface ---
         let frame = match g.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 g.surface.configure(&g.device, &g.config);
+                g.window.request_redraw();
+                free_textures(&mut g.egui_renderer, &full.textures_delta);
                 self.gfx = Some(g);
                 return;
             }
-            _ => {
+            other => {
+                // Timeout, occluded (window hidden) or a validation error: skip this frame, but keep
+                // asking for redraws, or the loop would stop for good.
+                if std::env::var_os("MERIDIAN_DEBUG").is_some() {
+                    eprintln!("surface texture not available: {}", match other { wgpu::CurrentSurfaceTexture::Timeout => "timeout", wgpu::CurrentSurfaceTexture::Occluded => "occluded", _ => "other" });
+                }
+                g.window.request_redraw();
+                free_textures(&mut g.egui_renderer, &full.textures_delta);
                 self.gfx = Some(g);
                 return;
             }
@@ -276,11 +296,6 @@ impl App {
         let view = frame.texture.create_view(&Default::default());
         g.map_renderer.prepare(&g.queue, &self.camera, self.selected, self.hover);
         let mut encoder = g.device.create_command_encoder(&Default::default());
-        for (id, delta) in &full.textures_delta.set {
-            for d in delta {
-                g.egui_renderer.update_texture(&g.device, &g.queue, *id, d);
-            }
-        }
         let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [g.config.width, g.config.height], pixels_per_point: ppp };
         let extra = g.egui_renderer.update_buffers(&g.device, &g.queue, &mut encoder, &jobs, &screen);
         {
@@ -300,9 +315,7 @@ impl App {
         g.queue.submit(extra.into_iter().chain(std::iter::once(encoder.finish())));
         g.window.pre_present_notify();
         g.queue.present(frame);
-        for id in &full.textures_delta.free {
-            g.egui_renderer.free_texture(id);
-        }
+        free_textures(&mut g.egui_renderer, &full.textures_delta);
         g.window.request_redraw();
         self.gfx = Some(g);
     }
@@ -402,6 +415,13 @@ impl App {
             }
         });
         act
+    }
+}
+
+/// egui's list of textures it no longer needs; free them once the frame that could use them is done.
+fn free_textures(renderer: &mut egui_wgpu::Renderer, delta: &egui::TexturesDelta) {
+    for id in &delta.free {
+        renderer.free_texture(id);
     }
 }
 
