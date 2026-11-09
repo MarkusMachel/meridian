@@ -504,7 +504,28 @@ impl App {
             painter.add(egui::Shape::closed_line(pts, egui::Stroke::new(1.5, egui::Color32::BLACK)));
         }
         if self.show_labels {
-            for l in client::labels::place(&self.render, &self.camera, ppp) {
+            let placed = client::labels::place(&self.render, &self.camera, ppp);
+            for m in client::labels::place_sites(&self.map, &self.render, &self.camera, ppp, &placed) {
+                let pos = to_pt((m.x, m.y));
+                let r = 3.0;
+                let ink = egui::Color32::from_rgb(35, 22, 12);
+                let light = egui::Color32::from_rgb(255, 248, 225);
+                match m.kind {
+                    0 => { painter.circle(pos, r + 0.5, light, egui::Stroke::new(1.5, ink)); }
+                    1 => { painter.rect(egui::Rect::from_center_size(pos, egui::vec2(2.0 * r, 2.0 * r)), 0.0, egui::Color32::from_rgb(60, 110, 170), egui::Stroke::new(1.0, ink), egui::StrokeKind::Middle); }
+                    2 => { painter.add(egui::Shape::convex_polygon(vec![pos + egui::vec2(0.0, -r - 1.0), pos + egui::vec2(r + 1.0, r), pos + egui::vec2(-r - 1.0, r)], egui::Color32::from_rgb(190, 190, 190), egui::Stroke::new(1.0, ink))); }
+                    _ => { painter.circle(pos, r - 0.5, egui::Color32::from_rgb(150, 70, 50), egui::Stroke::new(1.0, ink)); }
+                }
+                if let Some(name) = &m.name {
+                    let font = egui::FontId::proportional((m.size_px / ppp) as f32);
+                    let at = pos + egui::vec2(5.0, 0.0);
+                    for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                        painter.text(at + egui::vec2(dx, dy), egui::Align2::LEFT_CENTER, name, font.clone(), egui::Color32::from_rgba_unmultiplied(255, 248, 225, 230));
+                    }
+                    painter.text(at, egui::Align2::LEFT_CENTER, name, font, ink);
+                }
+            }
+            for l in placed {
                 let pos = to_pt((l.x, l.y));
                 let font = egui::FontId::proportional((l.size_px / ppp) as f32);
                 let (ink, halo) = match l.kind {

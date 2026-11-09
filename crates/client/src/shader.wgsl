@@ -53,7 +53,7 @@ fn fs_fill(i: FillOut) -> @location(0) vec4<f32> {
         let d = vec2<f32>(g.center - g.relief_org);
         let uv = vec2<f32>((d.x + i.rel.x) / g.relief_span.x, (-d.y - i.rel.y) / g.relief_span.y);
         let r = textureSampleLevel(relief, relief_sampler, uv, 0.0).r * (255.0 / 128.0);
-        rgb = clamp(rgb * mix(1.0, r, 0.85), vec3<f32>(0.0), vec3<f32>(1.0));
+        rgb = clamp(rgb * mix(1.0, r, 0.7) * 0.92, vec3<f32>(0.0), vec3<f32>(1.0));
     }
     return vec4<f32>(rgb, i.color.a);
 }

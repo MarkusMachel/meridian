@@ -29,8 +29,8 @@ impl Mode {
 pub fn country_color(country: u16) -> Rgba {
     let hue = (country as f64 * 0.618_033_988_749_895).fract();
     // flat, earthy colours in a narrow band, like a printed political map
-    let s = [0.38, 0.46, 0.30][country as usize % 3];
-    let l = [0.58, 0.50, 0.64, 0.45][country as usize % 4];
+    let s = [0.30, 0.38, 0.24][country as usize % 3];
+    let l = [0.46, 0.40, 0.52, 0.36][country as usize % 4] + ((country as usize / 12) % 3) as f64 * 0.025;
     hsl(hue, s, l)
 }
 

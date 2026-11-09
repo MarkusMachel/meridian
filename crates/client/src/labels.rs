@@ -98,6 +98,88 @@ pub fn place(data: &RenderData, camera: &Camera, scale: f64) -> Vec<PlacedLabel>
     out
 }
 
+/// A site (city, port, airfield, ...) to draw: a marker, and a name if there is room for it.
+#[derive(Clone, Debug)]
+pub struct SiteMark {
+    pub kind: u8,
+    /// Screen pixels.
+    pub x: f64,
+    pub y: f64,
+    pub name: Option<String>,
+    pub size_px: f64,
+}
+
+/// Which sites show at this zoom: big cities from far away, everything when close. Returns the
+/// smallest city population, or `None` for "no cities", and whether ports/airfields/other sites show.
+fn site_tiers(m_per_px: f64) -> (Option<u32>, bool, bool) {
+    let min_city = if m_per_px < 3_000.0 {
+        Some(0)
+    } else if m_per_px < 6_000.0 {
+        Some(200_000)
+    } else if m_per_px < 12_000.0 {
+        Some(700_000)
+    } else if m_per_px < 25_000.0 {
+        Some(2_000_000)
+    } else {
+        None
+    };
+    (min_city, m_per_px < 4_000.0, m_per_px < 2_000.0)
+}
+
+/// Sites for the current zoom, with names where they fit (names never overlap each other or the
+/// place names in `avoid`). Only sites that exist in 1990.
+pub fn place_sites(map: &meridian_core::Map, data: &RenderData, camera: &Camera, scale: f64, avoid: &[PlacedLabel]) -> Vec<SiteMark> {
+    let (min_city, show_ports, show_other) = site_tiers(camera.m_per_px);
+    let size = 12.0 * scale;
+    let mut taken: Vec<(f64, f64, f64, f64)> = avoid
+        .iter()
+        .map(|l| {
+            let w = l.text.chars().count() as f64 * l.size_px * GLYPH;
+            (l.x - w / 2.0, l.y - l.size_px * 0.6, l.x + w / 2.0, l.y + l.size_px * 0.6)
+        })
+        .collect();
+    let mut shown: Vec<(u32, usize)> = Vec::new();
+    for s in 0..map.site_count() as usize {
+        if map.site_built[s] > 1990 || map.site_destroyed[s] <= 1990 {
+            continue;
+        }
+        let ok = match map.site_kind[s] {
+            0 => min_city.is_some_and(|m| map.site_size[s] >= m),
+            1 | 2 => show_ports,
+            _ => show_other,
+        };
+        if !ok {
+            continue;
+        }
+        let c = map.site_cell[s] as usize;
+        let (x, y) = camera.world_to_screen(data.cell_mx[c] as f64, data.cell_my[c] as f64);
+        if x < 0.0 || y < 0.0 || x > camera.width_px || y > camera.height_px {
+            continue;
+        }
+        shown.push((map.site_size[s], s));
+    }
+    // big first, ties by index
+    shown.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    shown.truncate(MAX_LABELS);
+    let mut out = Vec::new();
+    for (_, s) in shown {
+        let c = map.site_cell[s] as usize;
+        let (x, y) = camera.world_to_screen(data.cell_mx[c] as f64, data.cell_my[c] as f64);
+        let name = map.site_names.get(s).filter(|n| !n.is_empty()).cloned();
+        let name = name.filter(|n| {
+            let w = n.chars().count() as f64 * size * GLYPH;
+            let rect = (x + 5.0 * scale, y - size * 0.6, x + 5.0 * scale + w, y + size * 0.6);
+            if taken.iter().any(|t| rect.0 < t.2 && rect.2 > t.0 && rect.1 < t.3 && rect.3 > t.1) {
+                return false;
+            }
+            taken.push(rect);
+            true
+        });
+        out.push(SiteMark { kind: map.site_kind[s], x, y, name, size_px: size });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
