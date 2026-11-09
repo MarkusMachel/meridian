@@ -21,7 +21,7 @@ def read(path):
     b = Path(path).read_bytes()
     assert b[:4] == b"MRRD", "bad magic"
     ver, kind, n, crc = struct.unpack_from("<IIQQ", b, 4)
-    assert ver == 4 and kind == 4, f"version {ver} kind {kind}"
+    assert ver == 5 and kind == 4, f"version {ver} kind {kind}"
     payload = b[28:28 + n]
     assert len(payload) == n and zlib.crc32(payload) == crc, "bad checksum"
     (count,) = struct.unpack_from("<I", payload, 0)
@@ -96,6 +96,13 @@ def main(inter, path):
     ro_r = A["river_off"].astype(np.int64)
     if ro_r[-1] != len(A["river_x"]) or len(A["river_x"]) != len(A["river_y"]) or len(A["river_rank"]) != len(ro_r) - 1 or not (np.diff(ro_r) >= 2).all():
         problems.append("river arrays are inconsistent")
+    for pre in ("road", "rail"):
+        o = A[f"{pre}_off"].astype(np.int64)
+        if o[-1] != len(A[f"{pre}_x"]) or len(A[f"{pre}_y"]) != len(A[f"{pre}_x"]) or len(A[f"{pre}_class"]) != len(o) - 1 or not (np.diff(o) >= 2).all() or (np.diff(A[f"{pre}_class"].astype(np.int64)) < 0).any():
+            problems.append(f"{pre} arrays are inconsistent (or not sorted by class)")
+    ut = A["urban_tri"]
+    if len(ut) % 3 or (len(ut) and ut.max() >= len(A["urban_vx"])) or len(A["urban_vy"]) != len(A["urban_vx"]):
+        problems.append("urban mesh is inconsistent")
     for pre in ("country", "region"):
         off = A[f"{pre}_name_off"].astype(np.int64)
         n = len(A[f"{pre}_x"])

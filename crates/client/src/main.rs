@@ -78,7 +78,7 @@ fn main() {
     let Some(out) = args.screenshot.clone() else {
         let world = proving_ground::scenario_on_map(1, map.clone());
         let session = Session::new(world, Box::new(proving_ground::schedule(false)), CountryId(0));
-        app::run(app::Inputs { map, render: Arc::new(render), session });
+        app::run(app::Inputs { map, render: Arc::new(render), session, view: args.view });
         return;
     };
     let terrain = modes::dominant_terrain(&map);

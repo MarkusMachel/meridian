@@ -215,6 +215,11 @@ mod tests {
             river_y: vec![],
             river_off: vec![0],
             river_rank: vec![],
+            roads: Default::default(),
+            rails: Default::default(),
+            urban_vx: vec![],
+            urban_vy: vec![],
+            urban_tri: vec![],
             countries: Default::default(),
             regions: Default::default(),
         }

@@ -58,6 +58,24 @@ const STYLES: [([f32; 4], f32, f32); 5] = [
     ([0.30, 0.48, 0.66, 0.85], 1.1, 0.0),
 ];
 const RIVER_STYLE: usize = 4;
+/// Map details drawn as extra styles after the five above: roads by class, the two passes of a
+/// railway (dark bed, then light dashes on top for the classic black-and-white line), urban fill.
+const DETAIL_STYLES: [([f32; 4], f32, f32); 6] = [
+    ([0.58, 0.24, 0.14, 0.90], 1.9, 0.0),
+    ([0.55, 0.34, 0.20, 0.80], 1.3, 0.0),
+    ([0.42, 0.34, 0.25, 0.60], 0.9, 0.0),
+    ([0.13, 0.10, 0.08, 0.80], 1.9, 0.0),
+    ([0.90, 0.86, 0.76, 0.75], 0.8, 10.0),
+    ([0.22, 0.19, 0.17, 0.55], 0.0, 0.0),
+];
+const ROAD_STYLE: usize = 5;
+const RAIL_BED_STYLE: usize = 8;
+const RAIL_TIE_STYLE: usize = 9;
+const URBAN_STYLE: usize = 10;
+/// Zoom (metres per pixel) below which each class shows: major, secondary/regional, other.
+const ROADS_BELOW: [f64; 3] = [6_000.0, 2_500.0, 1_200.0];
+const RAILS_BELOW: [f64; 3] = [8_000.0, 3_000.0, 1_400.0];
+const URBAN_BELOW: f64 = 9_000.0;
 /// Rivers of rank 1..=MAJOR show whenever zoomed in below RIVERS_MAJOR_BELOW; to MEDIUM below
 /// RIVERS_MEDIUM_BELOW; all of them below RIVERS_ALL_BELOW (metres per pixel).
 const RIVER_MAJOR_RANK: u8 = 5;
@@ -66,7 +84,7 @@ const RIVERS_MAJOR_BELOW: f64 = 30_000.0;
 const RIVERS_MEDIUM_BELOW: f64 = 9_000.0;
 const RIVERS_ALL_BELOW: f64 = 3_500.0;
 /// Cell edges are drawn only when zoomed in closer than this many metres per pixel.
-const CELL_LINES_BELOW_M_PER_PX: f64 = 2500.0;
+const CELL_LINES_BELOW_M_PER_PX: f64 = 900.0;
 const SEA: wgpu::Color = wgpu::Color { r: 0.66, g: 0.76, b: 0.80, a: 1.0 };
 
 struct GpuLevel {
@@ -79,10 +97,44 @@ struct GpuLevel {
     ranges: [std::ops::Range<u32>; 3],
 }
 
-/// Rivers sorted by rank; `ends` are the segment counts up to the major, medium and all tiers.
-struct GpuRivers {
+/// A line layer sorted by class; `ends[k]` is the number of segments of classes 0..=k.
+struct GpuLines {
     segments: wgpu::Buffer,
     ends: [u32; 3],
+}
+
+fn upload_lines(device: &wgpu::Device, label: &str, (segs, ends): (Vec<LineSeg>, [u32; 3])) -> GpuLines {
+    // a zero-size vertex buffer is not allowed, so an empty layer gets one unused segment
+    let segs = if segs.is_empty() { vec![LineSeg { a: [0; 4], dist: 0.0 }] } else { segs };
+    GpuLines { segments: device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: bytemuck::cast_slice(&segs), usage: wgpu::BufferUsages::VERTEX }), ends }
+}
+
+/// Segments of polylines grouped by class 0, 1, 2 (stable within a class).
+fn classed_lines(x: &[i32], y: &[i32], off: &[u32], class: impl Fn(usize) -> u8) -> (Vec<LineSeg>, [u32; 3]) {
+    let n = off.len().saturating_sub(1);
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| (class(i).min(2), i));
+    let mut segs = Vec::new();
+    let mut ends = [0u32; 3];
+    let mut k = 0usize;
+    for &i in &order {
+        while k < 2 && class(i).min(2) as usize > k {
+            ends[k] = segs.len() as u32;
+            k += 1;
+        }
+        let (a, b) = (off[i] as usize, off[i + 1] as usize);
+        push_line(&mut segs, &x[a..b], &y[a..b]);
+    }
+    while k < 3 {
+        ends[k] = segs.len() as u32;
+        k += 1;
+    }
+    (segs, ends)
+}
+
+/// How many classes of a layer show at this zoom.
+fn tier(m_per_px: f64, below: [f64; 3]) -> usize {
+    below.iter().filter(|&&b| m_per_px < b).count()
 }
 
 pub struct Renderer {
@@ -97,8 +149,17 @@ pub struct Renderer {
     levels: Vec<GpuLevel>,
     cell_segments: wgpu::Buffer,
     cell_segment_count: u32,
-    rivers: GpuRivers,
+    rivers: GpuLines,
     river_tier: usize,
+    roads: GpuLines,
+    rails: GpuLines,
+    road_tier: usize,
+    rail_tier: usize,
+    urban_vertices: wgpu::Buffer,
+    urban_indices: wgpu::Buffer,
+    urban_count: u32,
+    urban_pipeline: wgpu::RenderPipeline,
+    draw_urban: bool,
     relief_org: [i32; 2],
     relief_span: [f32; 2],
     level_in_use: usize,
@@ -107,6 +168,8 @@ pub struct Renderer {
     pub show_cells: bool,
     /// Shaded relief under the province colours (a setting).
     pub show_relief: bool,
+    /// Roads, railways and built-up areas (a setting).
+    pub show_details: bool,
 }
 
 /// Push the segments of one polyline, each with the distance along the line at its start.
@@ -116,31 +179,6 @@ fn push_line(segs: &mut Vec<LineSeg>, xs: &[i32], ys: &[i32]) {
         segs.push(LineSeg { a: [xs[k], ys[k], xs[k + 1], ys[k + 1]], dist: dist as f32 });
         dist += (((xs[k + 1] - xs[k]) as f64).powi(2) + ((ys[k + 1] - ys[k]) as f64).powi(2)).sqrt();
     }
-}
-
-fn rivers_of(data: &RenderData) -> (Vec<LineSeg>, [u32; 3]) {
-    let mut order: Vec<usize> = (0..data.river_rank.len()).collect();
-    order.sort_by_key(|&i| (data.river_rank[i], i));
-    let mut segs = Vec::new();
-    let mut ends = [0u32; 3];
-    for &i in &order {
-        let (a, b) = (data.river_off[i] as usize, data.river_off[i + 1] as usize);
-        if data.river_rank[i] > RIVER_MAJOR_RANK && ends[0] == 0 {
-            ends[0] = segs.len() as u32;
-        }
-        if data.river_rank[i] > RIVER_MEDIUM_RANK && ends[1] == 0 {
-            ends[1] = segs.len() as u32;
-        }
-        push_line(&mut segs, &data.river_x[a..b], &data.river_y[a..b]);
-    }
-    if ends[0] == 0 {
-        ends[0] = segs.len() as u32;
-    }
-    if ends[1] == 0 {
-        ends[1] = segs.len() as u32;
-    }
-    ends[2] = segs.len() as u32;
-    (segs, ends)
 }
 
 fn segments_of(level: &RenderLevel) -> (Vec<LineSeg>, [std::ops::Range<u32>; 3]) {
@@ -210,6 +248,7 @@ impl Renderer {
         });
         let style_buffers: Vec<wgpu::Buffer> = STYLES
             .iter()
+            .chain(DETAIL_STYLES.iter())
             .map(|(color, width, dash)| device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("style"), contents: bytemuck::bytes_of(&Style { color: *color, width_px: *width, dash_px: *dash, _pad: [0.0; 2] }), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST }))
             .collect();
         let styles = style_buffers
@@ -230,6 +269,19 @@ impl Renderer {
             layout: Some(&layout_fill),
             vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_fill"), compilation_options: Default::default(), buffers: &fill_buffers },
             fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_fill"), compilation_options: Default::default(), targets: &target }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let urban_attrs = [wgpu::VertexAttribute { format: wgpu::VertexFormat::Sint32x2, offset: 0, shader_location: 0 }];
+        let urban_buffers = [Some(wgpu::VertexBufferLayout { array_stride: 8, step_mode: wgpu::VertexStepMode::Vertex, attributes: &urban_attrs })];
+        let urban_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("urban"),
+            layout: Some(&layout_line),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_solid"), compilation_options: Default::default(), buffers: &urban_buffers },
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_solid"), compilation_options: Default::default(), targets: &target }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
@@ -266,8 +318,17 @@ impl Renderer {
             .collect();
         let cell_segs: Vec<LineSeg> = data.cell_seg.chunks_exact(4).map(|c| LineSeg { a: [c[0], c[1], c[2], c[3]], dist: 0.0 }).collect();
         let cell_segments = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("cell segments"), contents: bytemuck::cast_slice(&cell_segs), usage: wgpu::BufferUsages::VERTEX });
-        let (river_segs, river_ends) = rivers_of(data);
-        let rivers = GpuRivers { segments: device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("rivers"), contents: bytemuck::cast_slice(&river_segs), usage: wgpu::BufferUsages::VERTEX }), ends: river_ends };
+        let river_class = |i: usize| {
+            let r = data.river_rank[i];
+            if r <= RIVER_MAJOR_RANK { 0 } else if r <= RIVER_MEDIUM_RANK { 1 } else { 2 }
+        };
+        let rivers = upload_lines(device, "rivers", classed_lines(&data.river_x, &data.river_y, &data.river_off, river_class));
+        let roads = upload_lines(device, "roads", classed_lines(&data.roads.x, &data.roads.y, &data.roads.off, |i| data.roads.class[i]));
+        let rails = upload_lines(device, "rails", classed_lines(&data.rails.x, &data.rails.y, &data.rails.off, |i| data.rails.class[i]));
+        let urban_verts: Vec<[i32; 2]> = if data.urban_vx.is_empty() { vec![[0, 0]] } else { (0..data.urban_vx.len()).map(|i| [data.urban_vx[i], data.urban_vy[i]]).collect() };
+        let urban_idx: Vec<u32> = if data.urban_tri.is_empty() { vec![0, 0, 0] } else { data.urban_tri.clone() };
+        let urban_vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("urban verts"), contents: bytemuck::cast_slice(&urban_verts), usage: wgpu::BufferUsages::VERTEX });
+        let urban_indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("urban indices"), contents: bytemuck::cast_slice(&urban_idx), usage: wgpu::BufferUsages::INDEX });
 
         Renderer {
             globals,
@@ -283,12 +344,22 @@ impl Renderer {
             cell_segment_count: (data.cell_seg.len() / 4) as u32,
             rivers,
             river_tier: 0,
+            roads,
+            rails,
+            road_tier: 0,
+            rail_tier: 0,
+            urban_vertices,
+            urban_indices,
+            urban_count: data.urban_tri.len() as u32,
+            urban_pipeline,
+            draw_urban: false,
             relief_org: [rf.x0, rf.y1],
             relief_span: [(rf.x1 - rf.x0) as f32, (rf.y1 - rf.y0) as f32],
             level_in_use: 0,
             draw_cells: false,
             show_cells: true,
             show_relief: true,
+            show_details: true,
         }
     }
 
@@ -313,7 +384,11 @@ impl Renderer {
             relief_org: self.relief_org,
             relief_span: if self.show_relief { self.relief_span } else { [0.0, 0.0] },
         };
-        self.river_tier = if camera.m_per_px < RIVERS_ALL_BELOW { 3 } else if camera.m_per_px < RIVERS_MEDIUM_BELOW { 2 } else if camera.m_per_px < RIVERS_MAJOR_BELOW { 1 } else { 0 };
+        self.river_tier = tier(camera.m_per_px, [RIVERS_MAJOR_BELOW, RIVERS_MEDIUM_BELOW, RIVERS_ALL_BELOW]);
+        let details = if self.show_details { 1 } else { 0 };
+        self.road_tier = tier(camera.m_per_px, ROADS_BELOW) * details;
+        self.rail_tier = tier(camera.m_per_px, RAILS_BELOW) * details;
+        self.draw_urban = self.show_details && camera.m_per_px < URBAN_BELOW;
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
         // Province borders fade out when the whole world is in view, where 15,000 of them are only noise.
         let fade = (1.0 - camera.m_per_px / 20_000.0).clamp(0.0, 1.0) as f32;
@@ -338,11 +413,32 @@ impl Renderer {
         pass.set_index_buffer(level.indices.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..level.index_count, 0, 0..1);
 
+        if self.draw_urban && self.urban_count > 0 {
+            pass.set_pipeline(&self.urban_pipeline);
+            pass.set_bind_group(1, &self.styles[URBAN_STYLE], &[]);
+            pass.set_vertex_buffer(0, self.urban_vertices.slice(..));
+            pass.set_index_buffer(self.urban_indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.urban_count, 0, 0..1);
+        }
         pass.set_pipeline(&self.line_pipeline);
         if self.river_tier > 0 {
             pass.set_bind_group(1, &self.styles[RIVER_STYLE], &[]);
             pass.set_vertex_buffer(0, self.rivers.segments.slice(..));
             pass.draw(0..6, 0..self.rivers.ends[self.river_tier - 1]);
+        }
+        // roads: the less important classes first, so major highways sit on top
+        pass.set_vertex_buffer(0, self.roads.segments.slice(..));
+        for class in (0..self.road_tier).rev() {
+            let start = if class == 0 { 0 } else { self.roads.ends[class - 1] };
+            pass.set_bind_group(1, &self.styles[ROAD_STYLE + class], &[]);
+            pass.draw(0..6, start..self.roads.ends[class]);
+        }
+        if self.rail_tier > 0 {
+            pass.set_vertex_buffer(0, self.rails.segments.slice(..));
+            for style in [RAIL_BED_STYLE, RAIL_TIE_STYLE] {
+                pass.set_bind_group(1, &self.styles[style], &[]);
+                pass.draw(0..6, 0..self.rails.ends[self.rail_tier - 1]);
+            }
         }
         if self.draw_cells {
             pass.set_bind_group(1, &self.styles[0], &[]);

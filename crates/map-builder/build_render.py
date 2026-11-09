@@ -30,7 +30,7 @@ from shapely import STRtree
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import render_extras  # noqa: E402
 
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 KIND_RENDER = 4
 LEVELS_M = [8000.0, 2500.0, 800.0]
 KIND_PROVINCE, KIND_STATE, KIND_COAST = 0, 1, 2
@@ -206,6 +206,12 @@ def main(inter, out_file, levels, ne_dir):
     print(f"relief: {A['relief_info'][0]} x {A['relief_info'][1]} pixels")
     A["river_x"], A["river_y"], A["river_off"], A["river_rank"] = render_extras.rivers(ne_dir)
     print(f"rivers: {len(A['river_off']) - 1} lines, {len(A['river_x'])} points")
+    A["road_x"], A["road_y"], A["road_off"], A["road_class"] = render_extras.roads(ne_dir)
+    print(f"roads: {len(A['road_off']) - 1} lines, {len(A['road_x'])} points, by class {np.bincount(A['road_class'], minlength=3).tolist()}")
+    A["rail_x"], A["rail_y"], A["rail_off"], A["rail_class"] = render_extras.rails(ne_dir)
+    print(f"railways: {len(A['rail_off']) - 1} lines, {len(A['rail_x'])} points, by class {np.bincount(A['rail_class'], minlength=3).tolist()}")
+    A["urban_vx"], A["urban_vy"], A["urban_tri"] = render_extras.urban(ne_dir)
+    print(f"urban areas: {len(A['urban_vx'])} vertices, {len(A['urban_tri']) // 3} triangles")
     render_extras.labels(inter, A)
     print(f"labels: {len(A['country_x'])} countries, {len(A['region_x'])} regions")
     write(out_file, A)

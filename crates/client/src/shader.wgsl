@@ -106,3 +106,14 @@ fn fs_line(i: LineOut) -> @location(0) vec4<f32> {
     }
     return style.color;
 }
+
+// Solid fills in one colour (built-up areas): the style's colour, no per-vertex data but position.
+@vertex
+fn vs_solid(@location(0) pos: vec2<i32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(to_ndc(pos), 0.0, 1.0);
+}
+
+@fragment
+fn fs_solid() -> @location(0) vec4<f32> {
+    return style.color;
+}

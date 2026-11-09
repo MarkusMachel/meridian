@@ -107,6 +107,8 @@ pub struct SiteMark {
     pub y: f64,
     pub name: Option<String>,
     pub size_px: f64,
+    /// City population (0 for other sites), for the icon size.
+    pub population: u32,
 }
 
 /// Which sites show at this zoom: big cities from far away, everything when close. Returns the
@@ -162,10 +164,21 @@ pub fn place_sites(map: &meridian_core::Map, data: &RenderData, camera: &Camera,
     shown.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     shown.truncate(MAX_LABELS);
     let mut out = Vec::new();
+    // A port or airfield in the same cell as a city sits beside it, and repeats the name only once.
+    let city_cells: std::collections::BTreeSet<u32> = shown.iter().filter(|&&(_, s)| map.site_kind[s] == 0).map(|&(_, s)| map.site_cell[s]).collect();
+    let mut named: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut beside: std::collections::BTreeMap<u32, f64> = std::collections::BTreeMap::new();
     for (_, s) in shown {
         let c = map.site_cell[s] as usize;
-        let (x, y) = camera.world_to_screen(data.cell_mx[c] as f64, data.cell_my[c] as f64);
+        let (mut x, mut y) = camera.world_to_screen(data.cell_mx[c] as f64, data.cell_my[c] as f64);
+        if map.site_kind[s] != 0 && city_cells.contains(&map.site_cell[s]) {
+            let k = beside.entry(map.site_cell[s]).or_insert(0.0);
+            *k += 1.0;
+            x -= 12.0 * scale * *k;
+            y -= 10.0 * scale;
+        }
         let name = map.site_names.get(s).filter(|n| !n.is_empty()).cloned();
+        let name = name.filter(|n| named.insert(n.clone()));
         let name = name.filter(|n| {
             let w = n.chars().count() as f64 * size * GLYPH;
             let rect = (x + 5.0 * scale, y - size * 0.6, x + 5.0 * scale + w, y + size * 0.6);
@@ -175,7 +188,8 @@ pub fn place_sites(map: &meridian_core::Map, data: &RenderData, camera: &Camera,
             taken.push(rect);
             true
         });
-        out.push(SiteMark { kind: map.site_kind[s], x, y, name, size_px: size });
+        let population = if map.site_kind[s] == 0 { map.site_size[s] } else { 0 };
+        out.push(SiteMark { kind: map.site_kind[s], x, y, name, size_px: size, population });
     }
     out
 }
@@ -202,6 +216,11 @@ mod tests {
             river_y: vec![],
             river_off: vec![0],
             river_rank: vec![],
+            roads: Default::default(),
+            rails: Default::default(),
+            urban_vx: vec![],
+            urban_vy: vec![],
+            urban_tri: vec![],
             countries,
             regions,
         }

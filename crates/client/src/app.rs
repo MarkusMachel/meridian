@@ -21,6 +21,8 @@ pub struct Inputs {
     pub map: Arc<Map>,
     pub render: Arc<RenderData>,
     pub session: Session,
+    /// Starting camera (centre x, centre y, metres per pixel); `None` shows the whole world.
+    pub view: Option<(f64, f64, f64)>,
 }
 
 struct Gfx {
@@ -71,6 +73,7 @@ struct App {
     show_cells: bool,
     show_labels: bool,
     show_relief: bool,
+    show_details: bool,
     ui_scale: f32,
 }
 
@@ -117,6 +120,7 @@ pub fn run(inputs: Inputs) {
         show_cells: true,
         show_labels: true,
         show_relief: true,
+        show_details: true,
         ui_scale: 1.0,
         inputs: Some(inputs),
     };
@@ -148,6 +152,12 @@ impl App {
         let egui_state = egui_winit::State::new(egui_ctx.clone(), egui::ViewportId::ROOT, &*window, Some(window.scale_factor() as f32), window.theme(), Some(device.limits().max_texture_dimension_2d as usize));
         let egui_renderer = egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
         self.camera = Camera::fit(size.width.max(1) as f64, size.height.max(1) as f64, self.bounds);
+        if let Some((cx, cy, m)) = inputs.view {
+            self.camera.cx = cx;
+            self.camera.cy = cy;
+            self.camera.m_per_px = m;
+            self.camera.clamp();
+        }
         self.gfx = Some(Gfx { window, surface, device, queue, config, map_renderer, egui_ctx, egui_state, egui_renderer });
     }
 
@@ -290,6 +300,7 @@ impl App {
         g.egui_ctx.set_pixels_per_point(g.window.scale_factor() as f32 * self.ui_scale);
         g.map_renderer.show_cells = self.show_cells;
         g.map_renderer.show_relief = self.show_relief;
+        g.map_renderer.show_details = self.show_details;
         let ppp = full.pixels_per_point;
         let jobs = g.egui_ctx.tessellate(full.shapes, ppp);
 
@@ -413,10 +424,10 @@ impl App {
         egui::Window::new("Settings").open(&mut self.show_settings).show(ui.ctx(), |ui| {
             ui.checkbox(&mut self.show_cells, "Show cell edges when zoomed in");
             ui.checkbox(&mut self.show_relief, "Shaded relief");
+            ui.checkbox(&mut self.show_details, "Roads, railways and cities");
             ui.checkbox(&mut self.show_labels, "Place names");
             ui.add(egui::Slider::new(&mut self.ui_scale, 0.75..=2.0).text("Interface scale"));
         });
-        self.draw_overlay(ui.ctx());
         egui::Panel::right("province").default_size(260.0).show(ui, |ui| {
             ui.heading("Province");
             let shown = if self.selected != NO_PROVINCE { self.selected } else { self.hover };
@@ -481,11 +492,76 @@ impl App {
                 });
             }
         });
+        // the map area is what the panels left over: names and icons stay inside it
+        self.draw_overlay(ui.ctx(), ui.available_rect_before_wrap());
         act
     }
 }
 
 /// egui's list of textures it no longer needs; free them once the frame that could use them is done.
+/// A small building icon for a site, in the style of a printed map: dark ink on a light disc.
+/// Kinds: 0 city, 1 port, 2 airfield, 3 crossing, 4 industry, 5 base.
+fn draw_site_icon(p: &egui::Painter, kind: u8, c: egui::Pos2, population: u32) {
+    use egui::{pos2, vec2, Color32, Shape, Stroke};
+    let ink = Color32::from_rgb(35, 22, 12);
+    let paper = Color32::from_rgb(250, 244, 226);
+    let line = Stroke::new(1.3, ink);
+    match kind {
+        0 => {
+            if population >= 1_000_000 {
+                // skyline: three buildings of different heights on a light base
+                let w = if population >= 5_000_000 { 4.0 } else { 3.2 };
+                p.rect_filled(egui::Rect::from_min_max(pos2(c.x - 2.0 * w - 1.5, c.y - 3.6 * w), pos2(c.x + 2.0 * w + 1.5, c.y + 1.5)), 1.5, paper);
+                for (dx, h) in [(-1.5, 2.0), (-0.5, 3.2), (0.5, 2.5)] {
+                    let x0 = c.x + dx * w * 1.25;
+                    p.rect_filled(egui::Rect::from_min_max(pos2(x0, c.y - h * w), pos2(x0 + w, c.y)), 0.0, ink);
+                }
+            } else {
+                let r = if population >= 300_000 { 3.4 } else { 2.6 };
+                p.circle(c, r + 0.4, paper, Stroke::new(1.4, ink));
+                p.circle_filled(c, r * 0.4, ink);
+            }
+        }
+        1 => {
+            // anchor
+            p.circle_filled(c, 6.5, paper);
+            p.line_segment([c + vec2(0.0, -4.5), c + vec2(0.0, 4.0)], line);
+            p.line_segment([c + vec2(-2.5, -2.5), c + vec2(2.5, -2.5)], line);
+            p.add(Shape::line(vec![c + vec2(-4.0, 1.0), c + vec2(-3.0, 3.5), c + vec2(0.0, 4.5), c + vec2(3.0, 3.5), c + vec2(4.0, 1.0)], Stroke::new(1.3, Color32::from_rgb(30, 60, 110))));
+            p.circle_stroke(c + vec2(0.0, -5.0), 1.2, Stroke::new(1.0, ink));
+        }
+        2 => {
+            // aeroplane seen from above
+            p.circle_filled(c, 6.5, paper);
+            p.line_segment([c + vec2(0.0, -5.0), c + vec2(0.0, 4.5)], Stroke::new(1.6, ink));
+            p.add(Shape::convex_polygon(vec![c + vec2(0.0, -1.5), c + vec2(5.0, 1.0), c + vec2(-5.0, 1.0)], ink, Stroke::NONE));
+            p.line_segment([c + vec2(-2.2, 4.2), c + vec2(2.2, 4.2)], Stroke::new(1.4, ink));
+        }
+        3 => {
+            // bridge: deck and arch
+            p.circle_filled(c, 6.0, paper);
+            p.line_segment([c + vec2(-5.0, 1.5), c + vec2(5.0, 1.5)], Stroke::new(1.6, ink));
+            p.add(Shape::line((0..=8).map(|i| { let t = i as f32 / 8.0 * std::f32::consts::PI; c + vec2(-4.0 * t.cos(), 1.5 - 4.0 * t.sin()) }).collect(), line));
+        }
+        4 => {
+            // factory: saw-tooth roof and a chimney
+            p.circle_filled(c, 7.0, paper);
+            let base = c.y + 3.5;
+            p.rect_filled(egui::Rect::from_min_max(pos2(c.x + 2.0, c.y - 5.5), pos2(c.x + 4.0, base)), 0.0, ink);
+            for i in 0..2 {
+                let x0 = c.x - 5.0 + i as f32 * 3.5;
+                p.add(Shape::convex_polygon(vec![pos2(x0, base), pos2(x0, c.y - 2.5), pos2(x0 + 3.5, c.y), pos2(x0 + 3.5, base)], ink, Stroke::NONE));
+            }
+        }
+        _ => {
+            // military base: a flag on a pole
+            p.circle_filled(c, 6.5, paper);
+            p.line_segment([c + vec2(-2.5, -5.0), c + vec2(-2.5, 5.0)], Stroke::new(1.4, ink));
+            p.add(Shape::convex_polygon(vec![c + vec2(-2.5, -5.0), c + vec2(4.5, -3.0), c + vec2(-2.5, -1.0)], Color32::from_rgb(150, 40, 30), Stroke::NONE));
+        }
+    }
+}
+
 fn free_textures(renderer: &mut egui_wgpu::Renderer, delta: &egui::TexturesDelta) {
     for id in &delta.free {
         renderer.free_texture(id);
@@ -494,10 +570,10 @@ fn free_textures(renderer: &mut egui_wgpu::Renderer, delta: &egui::TexturesDelta
 
 impl App {
     /// Unit markers and order arrows, painted over the map and under the panels.
-    fn draw_overlay(&self, ctx: &egui::Context) {
+    fn draw_overlay(&self, ctx: &egui::Context, map_rect: egui::Rect) {
         let ppp = ctx.pixels_per_point() as f64;
         let to_pt = |p: (f64, f64)| egui::pos2((p.0 / ppp) as f32, (p.1 / ppp) as f32);
-        let painter = ctx.layer_painter(egui::LayerId::background());
+        let painter = ctx.layer_painter(egui::LayerId::background()).with_clip_rect(map_rect);
         if let Some(c) = self.selected_cell {
             let pts: Vec<egui::Pos2> = self.render.cell_ring(c as usize).map(|(x, y)| to_pt(self.camera.world_to_screen(x as f64, y as f64))).collect();
             painter.add(egui::Shape::closed_line(pts.clone(), egui::Stroke::new(4.0, egui::Color32::WHITE)));
@@ -507,22 +583,14 @@ impl App {
             let placed = client::labels::place(&self.render, &self.camera, ppp);
             for m in client::labels::place_sites(&self.map, &self.render, &self.camera, ppp, &placed) {
                 let pos = to_pt((m.x, m.y));
-                let r = 3.0;
-                let ink = egui::Color32::from_rgb(35, 22, 12);
-                let light = egui::Color32::from_rgb(255, 248, 225);
-                match m.kind {
-                    0 => { painter.circle(pos, r + 0.5, light, egui::Stroke::new(1.5, ink)); }
-                    1 => { painter.rect(egui::Rect::from_center_size(pos, egui::vec2(2.0 * r, 2.0 * r)), 0.0, egui::Color32::from_rgb(60, 110, 170), egui::Stroke::new(1.0, ink), egui::StrokeKind::Middle); }
-                    2 => { painter.add(egui::Shape::convex_polygon(vec![pos + egui::vec2(0.0, -r - 1.0), pos + egui::vec2(r + 1.0, r), pos + egui::vec2(-r - 1.0, r)], egui::Color32::from_rgb(190, 190, 190), egui::Stroke::new(1.0, ink))); }
-                    _ => { painter.circle(pos, r - 0.5, egui::Color32::from_rgb(150, 70, 50), egui::Stroke::new(1.0, ink)); }
-                }
+                draw_site_icon(&painter, m.kind, pos, m.population);
                 if let Some(name) = &m.name {
                     let font = egui::FontId::proportional((m.size_px / ppp) as f32);
-                    let at = pos + egui::vec2(5.0, 0.0);
+                    let at = pos + egui::vec2(8.0, 0.0);
                     for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
                         painter.text(at + egui::vec2(dx, dy), egui::Align2::LEFT_CENTER, name, font.clone(), egui::Color32::from_rgba_unmultiplied(255, 248, 225, 230));
                     }
-                    painter.text(at, egui::Align2::LEFT_CENTER, name, font, ink);
+                    painter.text(at, egui::Align2::LEFT_CENTER, name, font, egui::Color32::from_rgb(35, 22, 12));
                 }
             }
             for l in placed {

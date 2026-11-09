@@ -96,7 +96,7 @@ Payload: postcard of `Replay { scenario: String, seed: u64, map_checksum: Option
 - AI and headquarters commands are logged like player commands, so playing a replay never runs the AI.
 - `checkpoints` hold the state hash before the stated tick runs; the player stops at the first mismatch.
 
-## Render file (version 4)
+## Render file (version 5)
 
 Written by `crates/map-builder/build_render.py` (checked by `validate_render.py`), read by `meridian_data::load_render_file`. **Client only; the engine never reads it.** Same header and array directory as the baked map, with magic `MRRD` and kind 4 (CRC-32 checksum). **Coordinates are Equal Earth metres (EPSG:8857) as i32, the same equal-area plane the simulation uses, so the display has no stretch toward the poles.** Versions 1 to 3 (1: Equal Earth; 2 and 3: Web Mercator) are no longer read.
 
@@ -112,5 +112,6 @@ Written by `crates/map-builder/build_render.py` (checked by `validate_render.py`
 - Mercator inflates areas away from the equator (about 4x at 60 degrees), so the file's areas are not real areas.
 - Lines come from noding all province boundaries; a piece touching one province is coast, two provinces of one state a province border (province borders now include real admin-1 lines), two states a state border.
 - Not yet in the file: cell fill meshes, rivers, contours, names and label positions, sea zones.
+- Since version 5: `road_x`, `road_y`, `road_off`, `road_class` (0 major highway, 1 secondary, 2 other) and `rail_x`, `rail_y`, `rail_off`, `rail_class` (0 main, 1 regional, 2 other), each sorted by class; `urban_vx`, `urban_vy`, `urban_tri` (one triangle mesh of built-up areas).
 - Since version 3: `relief` (u8 hillshade raster, 8192 wide, Equal Earth plane, row 0 = top; byte 128 = no change, client multiplies colour by byte/128) with `relief_info` (i32: width, height, x0, y0, x1, y1 metres); rivers `river_x`, `river_y` (i32), `river_off` (u32), `river_rank` (u8, Natural Earth scalerank, lower = bigger); place names `country_*` (one per country in map order) and `region_*` (one per region): `_name_off` (u32), `_name_bytes` (u8 UTF-8), `_x`, `_y` (i32 Equal Earth label point inside the largest part), `_area_km2` (u32).
-- Size: about 189 MB (relief 30 MB). Earlier: about 191 MB for the whole world (cell outlines 34 MB and cell rings 32 MB of it).
+- Size: about 200 MB (relief 30 MB, roads and railways about 6 MB, urban areas 3 MB). Earlier: about 191 MB for the whole world (cell outlines 34 MB and cell rings 32 MB of it).

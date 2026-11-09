@@ -11,7 +11,7 @@ use crate::error::{DataError, ErrorKind};
 use std::collections::HashMap;
 use std::path::Path;
 
-pub const RENDER_FORMAT_VERSION: u32 = 4;
+pub const RENDER_FORMAT_VERSION: u32 = 5;
 const KIND_RENDER: u32 = 4;
 const HEADER_LEN: usize = 28;
 
@@ -69,6 +69,16 @@ pub struct Relief {
     pub pixels: Vec<u8>,
 }
 
+/// A set of polylines with a class each (lower class = more important), sorted by class.
+#[derive(Clone, Debug, Default)]
+pub struct LineLayer {
+    pub x: Vec<i32>,
+    pub y: Vec<i32>,
+    /// Line `i` is the points `off[i]..off[i + 1]`.
+    pub off: Vec<u32>,
+    pub class: Vec<u8>,
+}
+
 /// Place names with one point each (Equal Earth metres) and the area they cover.
 #[derive(Clone, Debug, Default)]
 pub struct Labels {
@@ -102,6 +112,13 @@ pub struct RenderData {
     pub river_y: Vec<i32>,
     pub river_off: Vec<u32>,
     pub river_rank: Vec<u8>,
+    /// Roads (class 0 major highway, 1 secondary, 2 other) and railways (0 main, 1 regional, 2 other).
+    pub roads: LineLayer,
+    pub rails: LineLayer,
+    /// Built-up areas as one triangle mesh.
+    pub urban_vx: Vec<i32>,
+    pub urban_vy: Vec<i32>,
+    pub urban_tri: Vec<u32>,
     /// One per country (the map's country order) and one per region of a country.
     pub countries: Labels,
     pub regions: Labels,
@@ -243,9 +260,18 @@ pub fn parse_render(file: &str, bytes: &[u8]) -> Result<RenderData, DataError> {
         river_y: d.i32s("river_y")?,
         river_off: d.u32s("river_off")?,
         river_rank: d.u8s("river_rank")?,
+        roads: read_lines(&d, "road")?,
+        rails: read_lines(&d, "rail")?,
+        urban_vx: d.i32s("urban_vx")?,
+        urban_vy: d.i32s("urban_vy")?,
+        urban_tri: d.u32s("urban_tri")?,
         countries: read_labels(&d, "country")?,
         regions: read_labels(&d, "region")?,
     };
+    let nu = data.urban_vx.len();
+    if data.urban_vy.len() != nu || !data.urban_tri.len().is_multiple_of(3) || data.urban_tri.iter().any(|&i| i as usize >= nu) {
+        return Err(d.bad("urban", "urban mesh is inconsistent".into()));
+    }
     if data.river_y.len() != data.river_x.len() || data.river_off.len() != data.river_rank.len() + 1 || data.river_off.last().map(|&e| e as usize) != Some(data.river_x.len()) || data.river_off.windows(2).any(|w| w[1] < w[0] + 2) {
         return Err(d.bad("rivers", "river arrays are inconsistent".into()));
     }
@@ -270,6 +296,19 @@ fn read_relief(d: &Dir) -> Result<Relief, DataError> {
         return Err(d.bad("relief", "raster size does not match relief_info".into()));
     }
     Ok(Relief { width: info[0] as u32, height: info[1] as u32, x0: info[2], y0: info[3], x1: info[4], y1: info[5], pixels })
+}
+
+fn read_lines(d: &Dir, prefix: &str) -> Result<LineLayer, DataError> {
+    let l = LineLayer {
+        x: d.i32s(&format!("{prefix}_x"))?,
+        y: d.i32s(&format!("{prefix}_y"))?,
+        off: d.u32s(&format!("{prefix}_off"))?,
+        class: d.u8s(&format!("{prefix}_class"))?,
+    };
+    if l.y.len() != l.x.len() || l.off.len() != l.class.len() + 1 || l.off.first() != Some(&0) || l.off.last().map(|&e| e as usize) != Some(l.x.len()) || l.off.windows(2).any(|w| w[1] < w[0] + 2) || l.class.windows(2).any(|w| w[1] < w[0]) {
+        return Err(d.bad(prefix, "line arrays are inconsistent or not sorted by class".into()));
+    }
+    Ok(l)
 }
 
 fn read_labels(d: &Dir, prefix: &str) -> Result<Labels, DataError> {
@@ -339,7 +378,7 @@ mod tests {
     /// One level: one square province made of two triangles, one coast line.
     fn tiny(tri: [u32; 6]) -> Vec<u8> {
         let mut p = Vec::new();
-        p.extend_from_slice(&33u32.to_le_bytes());
+        p.extend_from_slice(&44u32.to_le_bytes());
         let u = |v: &[u32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
         array(&mut p, "levels_tolerance_m", 3, &u(&[1000]), 1);
         array(&mut p, "l0_vx", 5, &le32(&[0, 10, 10, 0]), 4);
@@ -365,6 +404,15 @@ mod tests {
         array(&mut p, "river_y", 5, &le32(&[0, 5]), 2);
         array(&mut p, "river_off", 3, &u(&[0, 2]), 2);
         array(&mut p, "river_rank", 1, &[3], 1);
+        for pre in ["road", "rail"] {
+            array(&mut p, &format!("{pre}_x"), 5, &le32(&[0, 5]), 2);
+            array(&mut p, &format!("{pre}_y"), 5, &le32(&[0, 5]), 2);
+            array(&mut p, &format!("{pre}_off"), 3, &u(&[0, 2]), 2);
+            array(&mut p, &format!("{pre}_class"), 1, &[0], 1);
+        }
+        array(&mut p, "urban_vx", 5, &le32(&[0, 1, 0]), 3);
+        array(&mut p, "urban_vy", 5, &le32(&[0, 0, 1]), 3);
+        array(&mut p, "urban_tri", 3, &u(&[0, 1, 2]), 3);
         for pre in ["country", "region"] {
             array(&mut p, &format!("{pre}_name_off"), 3, &u(&[0, 3]), 2);
             array(&mut p, &format!("{pre}_name_bytes"), 1, b"Abc", 3);
@@ -373,7 +421,7 @@ mod tests {
             array(&mut p, &format!("{pre}_area_km2"), 3, &u(&[100]), 1);
         }
         let mut f = b"MRRD".to_vec();
-        f.extend_from_slice(&4u32.to_le_bytes());
+        f.extend_from_slice(&5u32.to_le_bytes());
         f.extend_from_slice(&4u32.to_le_bytes());
         f.extend_from_slice(&(p.len() as u64).to_le_bytes());
         f.extend_from_slice(&(crc32fast::hash(&p) as u64).to_le_bytes());

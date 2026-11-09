@@ -120,3 +120,78 @@ def labels(inter, A):
         p = _label_point(shape(f["geometry"]))
         names.append(f["properties"]["name"]); pts.append((p.x, p.y)); areas.append(f["properties"]["area_km2"])
     _pack(names, pts, areas, "region", A)
+
+
+def _read(ne_dir, name):
+    path = Path(ne_dir) / name / name
+    r = shapefile.Reader(str(path))
+    fields = [f[0] for f in r.fields[1:]]
+    return [(dict(zip(fields, sr.record)), sr.shape) for sr in r.shapeRecords()]
+
+
+def _lines(items, tolerance_m):
+    """items: (class, shape) in file order. Returns (x, y, off, cls) sorted by class (stable),
+    each line projected to Equal Earth and simplified."""
+    out = []
+    for k, (cls, shp) in enumerate(items):
+        pts = np.array(shp.points, dtype=np.float64)
+        if len(pts) < 2:
+            continue
+        parts = list(shp.parts) + [len(pts)]
+        for a, b in zip(parts[:-1], parts[1:]):
+            seg = pts[a:b]
+            seg = seg[np.abs(seg[:, 1]) < 89.0]
+            if len(seg) < 2:
+                continue
+            ex, ey = _LL_TO_EQ.transform(seg[:, 0], seg[:, 1])
+            line = shapely.simplify(shapely.LineString(np.column_stack([ex, ey])), tolerance_m)
+            c = np.rint(shapely.get_coordinates(line)).astype(np.int32)
+            # drop repeated points after rounding
+            keep = np.r_[True, (np.diff(c, axis=0) != 0).any(axis=1)]
+            c = c[keep]
+            if len(c) >= 2:
+                out.append((cls, k, c))
+    out.sort(key=lambda t: (t[0], t[1]))
+    xs = [c[:, 0] for _, _, c in out]; ys = [c[:, 1] for _, _, c in out]
+    off = np.zeros(len(out) + 1, dtype=np.uint32)
+    np.cumsum([len(c) for _, _, c in out], out=off[1:])
+    return np.concatenate(xs), np.concatenate(ys), off, np.array([t[0] for t in out], dtype=np.uint8)
+
+
+ROAD_CLASS = {"Major Highway": 0, "Beltway": 0, "Bypass": 0, "Secondary Highway": 1, "Road": 2, "Unknown": 2, "Track": 2}
+
+
+def roads(ne_dir):
+    """Natural Earth roads: class 0 major highway, 1 secondary, 2 other. Ferries are left out."""
+    items = [(ROAD_CLASS.get(rec["type"], 2), shp) for rec, shp in _read(ne_dir, "ne_10m_roads") if rec["featurecla"] == "Road"]
+    return _lines(items, 300.0)
+
+
+def rails(ne_dir):
+    """Natural Earth railways: class 0 main lines (scalerank <= 5), 1 regional (<= 8), 2 other."""
+    items = []
+    for rec, shp in _read(ne_dir, "ne_10m_railroads"):
+        if rec["featurecla"] != "Railroad":
+            continue
+        sr = int(rec["scalerank"] or 10)
+        items.append((0 if sr <= 5 else 1 if sr <= 8 else 2, shp))
+    return _lines(items, 300.0)
+
+
+def urban(ne_dir):
+    """Natural Earth urban areas as one triangle mesh: (vx, vy, tri)."""
+    polys = []
+    for rec, shp in _read(ne_dir, "ne_10m_urban_areas"):
+        g = shape(shp.__geo_interface__)
+        if not g.is_valid:
+            g = shapely.make_valid(g)
+        g = shapely.transform(g, lambda c: np.column_stack(_LL_TO_EQ.transform(c[:, 0], c[:, 1])))
+        g = shapely.simplify(g, 150.0)
+        for p in shapely.get_parts(g):
+            if p.geom_type == "Polygon" and not p.is_empty and p.area > 0:
+                polys.append(p)
+    tris = shapely.constrained_delaunay_triangles(np.array(polys, dtype=object))
+    parts = shapely.get_parts(tris)
+    c = np.rint(shapely.get_coordinates(parts).reshape(-1, 4, 2)[:, :3, :]).astype(np.int64).reshape(-1, 2)
+    uniq, inverse = np.unique(c, axis=0, return_inverse=True)
+    return uniq[:, 0].astype(np.int32), uniq[:, 1].astype(np.int32), inverse.astype(np.uint32).reshape(-1)
