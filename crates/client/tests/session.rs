@@ -48,13 +48,47 @@ fn client_session_matches_a_headless_run_of_the_same_log() {
             }
         }
     }
-    let total = s.refresh().tick;
-    assert!(total >= 400);
     assert!(!s.log().is_empty());
     let (done, log) = s.finish();
+    let total = done.clock().tick();
+    assert!(total >= 400);
     let headless = replay_headless(w2, &proving_ground::schedule(false), &log, total);
     assert_eq!(done.state_hash(), headless.state_hash());
     // the orders really did something: without them the run ends elsewhere
     let without = replay_headless(w3, &proving_ground::schedule(false), &[], total);
     assert_ne!(done.state_hash(), without.state_hash());
+}
+
+#[test]
+fn saving_and_loading_in_the_client_continues_exactly() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/baked/meridian-map.bin");
+    let map = path.exists().then(|| Arc::new(meridian_data::load_map_file(&path).unwrap()));
+    let make = || match &map {
+        Some(m) => proving_ground::scenario_on_map(7, m.clone()),
+        None => proving_ground::scenario(7, 60),
+    };
+    // uninterrupted: 600 ticks
+    let mut straight = Session::new(make(), Box::new(proving_ground::schedule(false)), CountryId(0));
+    straight.set_speed(Speed::Run(5));
+    straight.set_stop_at(Some(600));
+    run_until(&mut straight, 600);
+    let (straight_world, _) = straight.finish();
+
+    // 250 ticks, save, load into a NEW session, run to 600
+    let mut a = Session::new(make(), Box::new(proving_ground::schedule(false)), CountryId(0));
+    a.set_speed(Speed::Run(5));
+    a.set_stop_at(Some(250));
+    run_until(&mut a, 250);
+    a.set_speed(Speed::Paused);
+    let bytes = a.save_bytes().expect("save");
+    drop(a);
+    let loaded = meridian_data::load_world("quicksave", &bytes, map.clone()).unwrap_or_else(|e| panic!("{e}"));
+    let mut b = Session::new(loaded, Box::new(proving_ground::schedule(false)), CountryId(0));
+    b.set_speed(Speed::Run(5));
+    b.set_stop_at(Some(600));
+    run_until(&mut b, 600);
+    let (b_world, _) = b.finish();
+    assert_eq!(straight_world.clock().tick(), 600);
+    assert_eq!(b_world.clock().tick(), 600);
+    assert_eq!(straight_world.state_hash(), b_world.state_hash());
 }

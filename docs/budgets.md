@@ -78,4 +78,4 @@ Per-tick and per-system time budgets and the simulation memory budget are set in
 | Close (600 m/px) | 2 | 12.0 ms | 10.6 | 16.7 | 16.7 |
 | Closest (150 m/px) | 2 | 11.4 ms | 10.0 | 25.3 | 25.3 |
 
-Target not yet set (needs the windowed frame time with the panels). Cell edges are not culled; that is the first thing to fix if close-up frames miss 60 fps.
+Target: 60 fps (16.6 ms) at 2560x1440 with the whole world on screen. Met on average; the slowest close-up frames (16.7 and 25 ms) miss it. Windowed frame time with panels is shown in the top bar and not yet recorded. Cell edges are not culled; that is the first thing to fix if close-up frames miss 60 fps.

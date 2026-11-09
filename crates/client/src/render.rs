@@ -72,6 +72,8 @@ pub struct Renderer {
     cell_segment_count: u32,
     level_in_use: usize,
     draw_cells: bool,
+    /// Turn cell edges off entirely (a setting).
+    pub show_cells: bool,
 }
 
 fn segments_of(level: &RenderLevel) -> (Vec<[i32; 4]>, [std::ops::Range<u32>; 3]) {
@@ -188,6 +190,7 @@ impl Renderer {
             cell_segment_count: (data.cell_seg.len() / 4) as u32,
             level_in_use: 0,
             draw_cells: false,
+            show_cells: true,
         }
     }
 
@@ -201,7 +204,7 @@ impl Renderer {
     pub fn prepare(&mut self, queue: &wgpu::Queue, camera: &Camera, selected: u32, hover: u32) {
         let tolerances: Vec<u32> = self.levels.iter().map(|l| l.tolerance_m).collect();
         self.level_in_use = camera.level_for(&tolerances);
-        self.draw_cells = camera.m_per_px < CELL_LINES_BELOW_M_PER_PX;
+        self.draw_cells = self.show_cells && camera.m_per_px < CELL_LINES_BELOW_M_PER_PX;
         let g = Globals {
             center: [camera.cx.round() as i32, camera.cy.round() as i32],
             viewport: [camera.width_px as f32, camera.height_px as f32],

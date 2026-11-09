@@ -6,3 +6,4 @@ data/intermediate/
 crates/map-builder/.venv/
 __pycache__/
 .DS_Store
+saves/

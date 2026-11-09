@@ -6,7 +6,7 @@ use client::modes::{self, Mode};
 use client::render::{Renderer, NO_PROVINCE};
 use client::session::Session;
 use client::{Picker, Speed};
-use meridian_core::{CountryId, Map};
+use meridian_core::{Command, CountryId, Map, ProvinceId, UnitId};
 use meridian_data::RenderData;
 use std::sync::Arc;
 use std::time::Instant;
@@ -54,7 +54,17 @@ struct App {
     frame_ms: f32,
     last_frame: Instant,
     snapshot: client::Snapshot,
+    /// The unit that right-click orders go to: (unit id, owner).
+    selected_unit: Option<(u32, u16)>,
+    /// Move orders given and not yet finished: (unit id, destination province).
+    orders: Vec<(u32, u32)>,
+    status: String,
+    show_settings: bool,
+    show_cells: bool,
+    ui_scale: f32,
 }
+
+const SAVE_PATH: &str = "saves/quicksave.mrsv";
 
 pub fn run(inputs: Inputs) {
     let event_loop = EventLoop::new().expect("create event loop");
@@ -80,6 +90,12 @@ pub fn run(inputs: Inputs) {
         frame_ms: 16.0,
         last_frame: Instant::now(),
         snapshot: Default::default(),
+        selected_unit: None,
+        orders: Vec::new(),
+        status: String::new(),
+        show_settings: false,
+        show_cells: true,
+        ui_scale: 1.0,
         inputs: Some(inputs),
     };
     // The real session replaces the placeholder above (it cannot be moved out of `inputs` in the struct literal).
@@ -128,7 +144,59 @@ impl App {
             self.shown_tick = Some(snap.tick);
             self.colors_dirty = false;
         }
+        self.orders.retain(|&(u, to)| snap.units.iter().any(|x| x.0 == u && x.2 != to));
         self.snapshot = snap;
+    }
+
+    fn save(&mut self) {
+        self.status = match self.session.save_bytes() {
+            None => "save failed: the simulation thread has ended".into(),
+            Some(bytes) => match std::fs::create_dir_all("saves").and_then(|_| std::fs::write(SAVE_PATH, &bytes)) {
+                Ok(()) => format!("saved {} ({} bytes) at tick {}", SAVE_PATH, bytes.len(), self.snapshot.tick),
+                Err(e) => format!("save failed: {e}"),
+            },
+        };
+    }
+
+    fn load(&mut self) {
+        let bytes = match std::fs::read(SAVE_PATH) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status = format!("load failed: {SAVE_PATH}: {e}");
+                return;
+            }
+        };
+        match meridian_data::load_world(SAVE_PATH, &bytes, Some(self.map.clone())) {
+            Ok(world) => {
+                self.session = Session::new(world, Box::new(proving_ground::schedule(false)), CountryId(0));
+                self.orders.clear();
+                self.selected_unit = None;
+                self.shown_tick = None;
+                self.status = format!("loaded {SAVE_PATH}");
+            }
+            Err(e) => self.status = format!("load failed: {e}"),
+        }
+    }
+
+    /// Screen position (physical pixels) of a province's centre.
+    fn province_screen(&self, p: u32) -> (f64, f64) {
+        self.camera.world_to_screen(self.map.province_x[p as usize] as f64, self.map.province_y[p as usize] as f64)
+    }
+
+    /// Screen position of a unit's marker. Units sharing a province are fanned out sideways.
+    fn unit_markers(&self) -> Vec<(u32, u16, (f64, f64))> {
+        let mut seen: std::collections::BTreeMap<u32, u32> = Default::default();
+        self.snapshot
+            .units
+            .iter()
+            .map(|&(id, owner, prov)| {
+                let k = seen.entry(prov).or_insert(0);
+                let (x, y) = self.province_screen(prov);
+                let pos = (x + *k as f64 * 14.0, y);
+                *k += 1;
+                (id, owner, pos)
+            })
+            .collect()
     }
 
     fn pick(&self, p: PhysicalPosition<f64>) -> u32 {
@@ -178,6 +246,17 @@ impl App {
             self.session.set_speed(Speed::Paused);
             self.session.step();
         }
+        if ui_actions.pick_unit.is_some() {
+            self.selected_unit = ui_actions.pick_unit;
+        }
+        if ui_actions.save {
+            self.save();
+        }
+        if ui_actions.load {
+            self.load();
+        }
+        g.egui_ctx.set_pixels_per_point(g.window.scale_factor() as f32 * self.ui_scale);
+        g.map_renderer.show_cells = self.show_cells;
         let ppp = full.pixels_per_point;
         let jobs = g.egui_ctx.tessellate(full.shapes, ppp);
 
@@ -233,6 +312,23 @@ impl App {
         let snap = &self.snapshot;
         egui::Panel::top("time").show(ui, |ui| {
             ui.horizontal(|ui| {
+                egui::MenuBar::new().ui(ui, |ui| {
+                    ui.menu_button("Game", |ui| {
+                        if ui.button("Save").clicked() {
+                            act.save = true;
+                            ui.close();
+                        }
+                        if ui.button("Load").clicked() {
+                            act.load = true;
+                            ui.close();
+                        }
+                        if ui.button("Settings").clicked() {
+                            self.show_settings = true;
+                            ui.close();
+                        }
+                    });
+                });
+                ui.separator();
                 ui.strong(&snap.date);
                 ui.label(format!("tick {}", snap.tick));
                 ui.separator();
@@ -260,6 +356,16 @@ impl App {
                 ui.label(format!("{:.1} ms/frame, level {}, {:.0} km/px", self.frame_ms, self.gfx.as_ref().map_or(0, |g| g.map_renderer.level_in_use()), self.camera.m_per_px / 1000.0));
             });
         });
+        if !self.status.is_empty() {
+            egui::Panel::bottom("status").show(ui, |ui| {
+                ui.label(&self.status);
+            });
+        }
+        egui::Window::new("Settings").open(&mut self.show_settings).show(ui.ctx(), |ui| {
+            ui.checkbox(&mut self.show_cells, "Show cell edges when zoomed in");
+            ui.add(egui::Slider::new(&mut self.ui_scale, 0.75..=2.0).text("Interface scale"));
+        });
+        self.draw_overlay(ui.ctx());
         egui::Panel::right("province").default_size(260.0).show(ui, |ui| {
             ui.heading("Province");
             let shown = if self.selected != NO_PROVINCE { self.selected } else { self.hover };
@@ -283,11 +389,48 @@ impl App {
                 row("area", format!("{} km2", self.map.province_area_ha[p] / 100));
                 row("population", self.map.province_pop[p].to_string());
                 row("cells", self.map.cells_of(meridian_core::ProvinceId(shown)).len().to_string());
-                let units = snap.units.iter().filter(|u| u.1 == shown).count();
-                row("units here", units.to_string());
+                row("units here", snap.units.iter().filter(|u| u.2 == shown).count().to_string());
             });
+            for &(id, owner, _) in snap.units.iter().filter(|u| u.2 == shown) {
+                let name = self.map.state_names.get(owner as usize).cloned().unwrap_or_default();
+                if ui.selectable_label(self.selected_unit == Some((id, owner)), format!("unit {id} ({name})")).clicked() {
+                    act.pick_unit = Some((id, owner));
+                }
+            }
+            if self.selected_unit.is_some() {
+                ui.label("Right-click a province to order the unit there.");
+            }
         });
         act
+    }
+}
+
+impl App {
+    /// Unit markers and order arrows, painted over the map and under the panels.
+    fn draw_overlay(&self, ctx: &egui::Context) {
+        let ppp = ctx.pixels_per_point() as f64;
+        let to_pt = |p: (f64, f64)| egui::pos2((p.0 / ppp) as f32, (p.1 / ppp) as f32);
+        let painter = ctx.layer_painter(egui::LayerId::background());
+        let markers = self.unit_markers();
+        // arrows for orders that have not finished
+        for &(unit, to) in &self.orders {
+            if let Some(&(_, _, from)) = markers.iter().find(|m| m.0 == unit) {
+                let (a, b) = (to_pt(from), to_pt(self.province_screen(to)));
+                let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(20, 20, 20));
+                painter.line_segment([a, b], stroke);
+                let d = (b - a).normalized();
+                let n = egui::vec2(-d.y, d.x);
+                painter.add(egui::Shape::convex_polygon(vec![b, b - d * 12.0 + n * 5.0, b - d * 12.0 - n * 5.0], egui::Color32::from_rgb(20, 20, 20), egui::Stroke::NONE));
+            }
+        }
+        for (id, owner, pos) in markers {
+            let c = modes::country_color(owner);
+            let r = egui::Rect::from_center_size(to_pt(pos), egui::vec2(12.0, 12.0));
+            let selected = self.selected_unit == Some((id, owner));
+            painter.rect_filled(r, 1.0, egui::Color32::from_rgb(c[0], c[1], c[2]));
+            let stroke = if selected { egui::Stroke::new(3.0, egui::Color32::WHITE) } else { egui::Stroke::new(1.5, egui::Color32::BLACK) };
+            painter.rect_stroke(r, 1.0, stroke, egui::StrokeKind::Outside);
+        }
     }
 }
 
@@ -296,6 +439,9 @@ struct UiActions {
     mode: Option<Mode>,
     speed: Option<Speed>,
     step: bool,
+    save: bool,
+    load: bool,
+    pick_unit: Option<(u32, u16)>,
 }
 
 impl ApplicationHandler for App {
@@ -349,13 +495,27 @@ impl ApplicationHandler for App {
                 }
                 ElementState::Released => {
                     if self.press.is_some() && !self.dragging {
-                        self.selected = self.pick(self.cursor);
+                        let k = self.gfx.as_ref().map_or(1.0, |g| g.window.scale_factor() * self.ui_scale as f64);
+                        let hit = self.unit_markers().into_iter().find(|m| (m.2 .0 - self.cursor.x).abs() < 8.0 * k && (m.2 .1 - self.cursor.y).abs() < 8.0 * k);
+                        match hit {
+                            Some((id, owner, _)) => self.selected_unit = Some((id, owner)),
+                            None => self.selected = self.pick(self.cursor),
+                        }
                     }
                     self.press = None;
                     self.dragging = false;
                 }
                 _ => {}
             },
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } if !over_ui => {
+                let to = self.pick(self.cursor);
+                if let (Some((unit, owner)), true) = (self.selected_unit, to != NO_PROVINCE) {
+                    self.session.issue(Command::MoveUnit { issuer: CountryId(owner), unit: UnitId(unit), to: ProvinceId(to) });
+                    self.orders.retain(|o| o.0 != unit);
+                    self.orders.push((unit, to));
+                    self.status = format!("ordered unit {unit} to province {to}");
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } if !over_ui => {
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y as f64,

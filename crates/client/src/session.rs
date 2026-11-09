@@ -34,8 +34,8 @@ pub struct Snapshot {
     pub controllers: Vec<u16>,
     /// Raw per-province counter (zeros unless built with `inspect`).
     pub values: Vec<i64>,
-    /// (owner, province) of each unit the viewer can see.
-    pub units: Vec<(u16, u32)>,
+    /// (unit id, owner, province) of each unit the viewer can see.
+    pub units: Vec<(u32, u16, u32)>,
 }
 
 pub struct Session {
@@ -47,6 +47,8 @@ pub struct Session {
     /// Absolute tick the sim has been asked to reach (finished or not).
     requested: u64,
     step_once: bool,
+    /// Never ask for ticks beyond this one (run-until-date, and exact stops in tests).
+    stop_at: Option<u64>,
     queued: Vec<Command>,
     log: Vec<(u64, Command)>,
     last_refused: Vec<(Command, Rejection)>,
@@ -64,6 +66,7 @@ impl Session {
             base_tick: requested,
             requested,
             step_once: false,
+            stop_at: None,
             queued: Vec::new(),
             log: Vec::new(),
             last_refused: Vec::new(),
@@ -81,6 +84,10 @@ impl Session {
     /// Run exactly one tick at the next frame, whatever the speed.
     pub fn step(&mut self) {
         self.step_once = true;
+    }
+    /// Pause for good at this tick (the sim is asked for no more), or `None` to run on.
+    pub fn set_stop_at(&mut self, tick: Option<u64>) {
+        self.stop_at = tick;
     }
     /// Orders to send with the next tick.
     pub fn issue(&mut self, c: Command) {
@@ -115,8 +122,11 @@ impl Session {
         if !self.idle() {
             return 0;
         }
-        let n = if self.step_once { 1 } else { self.speed.ticks_per_frame() };
+        let mut n = if self.step_once { 1 } else { self.speed.ticks_per_frame() };
         self.step_once = false;
+        if let Some(stop) = self.stop_at {
+            n = n.min(stop.saturating_sub(self.requested));
+        }
         if n == 0 {
             // Orders given while paused wait for the next tick; they are not applied yet.
             return 0;
@@ -153,8 +163,23 @@ impl Session {
         &self.snapshot
     }
 
+    /// Block until the sim has finished every tick asked of it (at most a frame's worth).
+    pub fn wait_idle(&self) {
+        while !self.idle() {
+            std::thread::yield_now();
+        }
+    }
+
+    /// A save of the world between ticks, after the requested ticks have finished, so the saved
+    /// tick is exactly the one the session was asked to reach.
+    pub fn save_bytes(&self) -> Option<Vec<u8>> {
+        self.wait_idle();
+        self.sim.query(meridian_data::save_world)
+    }
+
     /// Finish: stop the thread and hand back the world and the command log.
     pub fn finish(self) -> (World, Vec<(u64, Command)>) {
+        self.wait_idle();
         let log = self.log;
         (self.sim.stop(), log)
     }
@@ -169,13 +194,13 @@ fn snapshot_of(w: &World, viewer: CountryId) -> Snapshot {
     let (controllers, values, units) = {
         let controllers = (0..n).map(|p| w.controller(ProvinceId(p)).0).collect();
         let values = (0..n).map(|p| w.value(ProvinceId(p))).collect();
-        let units = (0..w.unit_count()).filter_map(|u| w.unit(meridian_core::UnitId(u))).map(|u| (u.owner.0, u.location.0)).collect();
+        let units = (0..w.unit_count()).filter_map(|id| w.unit(meridian_core::UnitId(id)).map(|u| (id, u.owner.0, u.location.0))).collect();
         (controllers, values, units)
     };
     #[cfg(not(feature = "inspect"))]
     let (controllers, values, units) = {
         let controllers = (0..n).map(|p| view.province_controller(ProvinceId(p)).map_or(u16::MAX, |c| c.0)).collect();
-        let units = view.own_units().iter().map(|(_, u)| (u.owner.0, u.location.0)).collect();
+        let units = view.own_units().iter().map(|(id, u)| (id.0, u.owner.0, u.location.0)).collect();
         (controllers, vec![0; n as usize], units)
     };
     let _ = &view;

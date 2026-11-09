@@ -65,6 +65,13 @@ docs/
 - `scripts/check.sh` runs the map tests, `runner map-validate` and `runner map-bench` when the baked file exists. Budgets are in `docs/budgets.md`.
 - Hand-written data lives in `crates/map-builder/config/` (1990 states, chokepoints, strategic sites). Sources and licenses: `docs/attributions.md`.
 
+## Client (Phase 7)
+
+- Needs Rust 1.95 or newer (egui 0.37). Stack: wgpu, winit 0.30, egui; decisions in `docs/decisions.md`.
+- `crates/map-builder/build_map.sh` also writes `data/baked/meridian-render.bin` (render-only, client reads it, the engine never does).
+- Run from the repo root: `cargo run --release -p client` (window: drag to pan, wheel to zoom, click to select, right-click orders the selected unit, space pause, 1-5 speed, `.` step). `client --screenshot out.png [--view CX,CY,M_PER_PX] [--mode political|value|terrain] [--ticks N] [--bench N]` renders without a window.
+- The `inspect` feature (default on) lets the debug panel read raw values; leave it off for a player build.
+
 ## Formats
 
 - Authored content: RON. Baked runtime data: the map is a custom flat-array container with a CRC-32 (Phase 3; rkyv was benchmarked and equal, but Python cannot write it). Saves and replays: postcard-style binary with explicit version and migration (verify maintenance first). Source geometry is input to `map-builder` only.
