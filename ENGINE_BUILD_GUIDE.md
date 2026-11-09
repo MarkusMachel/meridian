@@ -1,6 +1,6 @@
 # Meridian: Engine Build Guide
 
-As of 2026-11-08. Draft for review. This guide covers the **engine only**. Economy, military, politics, diplomacy, AI behavior and the 1990 content are out of scope until the engine phases pass their tests (see section 7).
+As of 2026-11-09. Draft for review. Gameplay-facing design decisions from the 2026-11-08 and 2026-11-09 discussions are in `docs/design-notes.md`; this guide lists the engine work they add in section 3B and in each phase. This guide covers the **engine only**. Economy, military, politics, diplomacy, AI behavior and the 1990 content are out of scope until the engine phases pass their tests (see section 7).
 
 Companion document: "1990 Grand Strategy Engine: Build Plan by Phase" (the phase plan). This guide turns that plan into working instructions.
 
@@ -94,7 +94,7 @@ So use **three formats for three jobs**, and never put a text format on a hot pa
 | Job | Format | Why |
 | --- | --- | --- |
 | Authored content (scenarios, rules, unit and country definitions) | RON (decided 2026-11-08; TOML only for plain engine settings, if at all) | Humans edit it. Comments allowed. Parsed once, by the loader or baker, not by the running simulation. |
-| Baked runtime data (the data the game actually loads, including the map) | A binary, zero-copy-friendly format. Default candidate: rkyv. Fallback: a custom flat-array container | Loading approaches a straight read of bytes into the arrays the engine already uses. Produced by a baking tool, validated at bake time. |
+| Baked runtime data (the data the game actually loads, including the map) | A binary, zero-copy-friendly format. Decided in Phase 3: a custom flat-array container with a CRC-32 (rkyv benchmarked equal, but the Python map builder cannot write it) | Loading approaches a straight read of bytes into the arrays the engine already uses. Produced by a baking tool, validated at bake time. |
 | Saves and replays | A compact binary serde format with an explicit version and migration step. Default candidate: postcard, optionally compressed with zstd or lz4 | Small, simple, and stable across versions if you manage the version number yourself. |
 | Source geometry (GeoJSON, Shapefile, GeoPackage) | Whatever the dataset ships in | Input to `map-builder` only. Never read at runtime. |
 
@@ -122,10 +122,10 @@ This gives you: fast loads, errors found at bake time instead of mid-game, and h
 
 These were not fully confirmed when this guide was written. Check them on crates.io and each crate's repository before committing:
 
-- [ ] The current stable version of rkyv and its API. The one page that could be opened ([lib.rs](https://lib.rs/crates/rkyv)) listed 0.7.44 (February 2024) as the latest stable with a 0.8 alpha, but other search results mention later 0.7 and 0.8 release candidates, so that page looks stale. The page does confirm rkyv is a zero-copy framework with optional validation through the bytecheck crate.
-- [ ] That postcard is still actively maintained and which version to use. Its page could not be loaded, so nothing about it is verified here beyond the RustSec advisory naming it as an alternative.
-- [ ] That the RON crate is still actively maintained, and which version to use. Not checked when this guide was written.
-- [ ] A small benchmark: load the sample map as text, as postcard, as rkyv and as a custom flat-array file. Pick by measurement, and record the result in `docs/decisions.md`.
+- [x] (Resolved in Phase 2; see `docs/decisions.md`: ron 0.12.3, postcard 1.1.3, rkyv 0.8.18 checked on crates.io on 2026-11-08, and the format benchmark run.) The current stable version of rkyv and its API. The one page that could be opened ([lib.rs](https://lib.rs/crates/rkyv)) listed 0.7.44 (February 2024) as the latest stable with a 0.8 alpha, but other search results mention later 0.7 and 0.8 release candidates, so that page looks stale. The page does confirm rkyv is a zero-copy framework with optional validation through the bytecheck crate.
+- [x] (Resolved in Phase 2; see `docs/decisions.md`: ron 0.12.3, postcard 1.1.3, rkyv 0.8.18 checked on crates.io on 2026-11-08, and the format benchmark run.) That postcard is still actively maintained and which version to use. Its page could not be loaded, so nothing about it is verified here beyond the RustSec advisory naming it as an alternative.
+- [x] (Resolved in Phase 2; see `docs/decisions.md`: ron 0.12.3, postcard 1.1.3, rkyv 0.8.18 checked on crates.io on 2026-11-08, and the format benchmark run.) That the RON crate is still actively maintained, and which version to use. Not checked when this guide was written.
+- [x] (Resolved in Phase 2; see `docs/decisions.md`: ron 0.12.3, postcard 1.1.3, rkyv 0.8.18 checked on crates.io on 2026-11-08, and the format benchmark run.) A small benchmark: load the sample map as text, as postcard, as rkyv and as a custom flat-array file. Pick by measurement, and record the result in `docs/decisions.md`.
 
 ---
 
@@ -151,7 +151,7 @@ The counts are estimates from about 135 million km² of land, excluding Antarcti
 
 ### Cell state
 
-Static terrain is baked: terrain type, elevation, baseline urban density, road and rail flags, water. Dynamic state is a dense array indexed by cell ID, a few megabytes in total (estimate):
+Static terrain is baked: terrain type, elevation, baseline urban density, road and rail flags, water. Dynamic state is a dense array indexed by cell ID, a few MB in total for the fixed fields below, plus the population group table, which is variable and unmeasured (estimate; see `docs/design-notes.md` sections 4 and 14):
 
 | Field | Meaning | Size | Changes by |
 | --- | --- | --- | --- |
@@ -160,6 +160,10 @@ Static terrain is baked: terrain type, elevation, baseline urban density, road a
 | Fortification | Defensive works built | 1 byte | Unit engineering; destroyed by fire |
 | Hazards | Flag bits for mines, craters, fire, fallout | 1 byte | Weapons; cleared over time |
 | Last fought | Tick of the last fight, for recovery timers | 4 bytes | Fights |
+| Population | Not a per-cell number: stored as group records (culture, religion, head count, support shares), see `docs/design-notes.md` section 14; cell and province totals are derived | variable | Births, deaths, hunger, refugees |
+| Hunger | How short of food the cell is | 1 byte | Food balance between civilians and armies |
+| Local food | Remaining local food stock or depletion | 1 byte | Foraging, regrowth by season, damage |
+| Ground condition | Mud, snow depth or frozen ground | 1 byte | Weather and terrain, lagging behind weather |
 
 Damage here is to the place, not to units. Casualties live on the units, and sites keep their own condition. Province-level values, such as average damage, are derived from the cells on demand or cached, and never stored as a separate truth. Transient fight state (which brigades are in which cells) is sparse and kept only for open provinces. Saves store the dynamic arrays as differences from the starting state.
 
@@ -184,6 +188,26 @@ Damage here is to the place, not to units. Casualties live on the units, and sit
 - Chokepoints such as Hormuz, Suez, the Bosporus, Gibraltar, Malacca and Panama are explicit edges.
 - Large inland seas such as the Caspian are inland sea zones; smaller lakes are terrain.
 - Air reuses the land and sea regions at first.
+
+### 3B. Engine requirements from the design notes
+
+Full detail is in `docs/design-notes.md`. The engine provides generic primitives; rules and numbers stay in data and the gameplay backlog.
+
+- **Generic, data-defined entries:** supply classes (first set: fuel, ammunition, food), altitude bands (three), traits, equipment types, readiness levels, stances (attack, defend). The engine never hardcodes their names.
+- **More dynamic state:** population group records (culture, religion, head count, political support), per-cell hunger, local food stock and ground condition; unit, officer, pilot and hull tables with stable IDs and status; per-country contact lists; orders, stances and transit states. All in the hash and the save diffs.
+- **Primitives:** active-set scheduling, a modifier mechanism, a trait mechanism, multi-source supply propagation, shortage splitting, double-buffered flows with conservation tests.
+- **Derived caches (not hashed, rebuilt and tested):** zones of control, visibility, air-defense coverage by band, front segments.
+- **Read interface:** a per-country view limited by what that country knows, with a debug `omniscient` feature; commands that target enemies refer to contacts or places.
+- **Combat and special cells (design notes sections 12 and 13):** engagement state and contested-cell pressure; two fight types (ZOC fighting, direct engagement); unit status and prisoner pools; garrisons for cities, sites and towns; doctrine, country traits and tech state; directional fortifications; river classes and a bridge layer; amphibious landing suitability and queues. No hard stack limit, enemy units never share a cell, and supply plus attrition are the brake.
+- **Economy (design notes section 14):** extensible state tables declared by the ruleset but owned and hashed by the world (levelled building records, regional stocks, prices, construction projects, production orders, equipment stockpiles, treasury and debt); regional goods transport on the shared network; banded dynamic prices; labor staffing; construction and production as commands; money and debt. Economy systems run at daily, weekly and monthly rates.
+- **Politics (design notes section 15):** data-defined factions, regimes, laws, war levels (per side) and an internal-conflict ladder (unrest, insurrection, revolution, civil war); per-group unrest, per-unit and per-officer loyalty, movement entities; law changes by faction support; runtime country creation and a deterministic civil war split; command validation against war levels.
+- **Diplomacy (design notes section 16):** data-defined treaties (minor and major, major ones approved by faction support), alliances in two tiers (historic and regional) with a call-and-decide defense obligation, and a purpose-built UN with a binding Council (veto) and a non-binding Assembly.
+- **Intelligence (design notes section 17):** data-defined agencies with stored capability per discipline, derived soft reach, abstract networks per target plus named operations, and deterministic estimate views with a margin that shrinks as knowledge rises.
+- **Technology (design notes section 18):** stored field levels per country; specific development programs produce specific models (fields are prerequisites); research buildings plus learning by doing, capped by diffusion; transfers give the model but not the field.
+- **Events (design notes section 19):** data-defined events with scopes, triggers, options and effects; event chains with stored state; separate linked instances per party; data-only conditions and effects (no scripting language for now); pending events, chain state, flags and cooldowns in the hash.
+- **AI (design notes section 20):** a separate AI crate with the same rules and information as the player; data-driven utility AI with personalities, commitment and dedicated Rust planners; AI memory in its own save section outside the hash; difficulty by competence, with optional openly shown bonuses off by default.
+- **Player interface (design notes section 21):** map first with contextual panels; nine map modes; direct orders plus drawn operation plans for headquarters, executed through the military planners with logged orders; order validation without applying; plan state outside the hash.
+- **Map follow-ups:** cell latitude and longitude with an integer geodesic distance, finer sea zones near chokepoints, names, a render-only output file, river classes, a bridge layer, landing suitability, a settlement layer for towns, integer neighbor bearings, and new data layers (farmland, wetland, forest, climate) after license checks.
 
 ---
 
@@ -265,9 +289,22 @@ Each phase lists: goal, ordered steps, the done test, and common traps.
 
 **Common traps:** non-deterministic geometry processing (floating point and unordered iteration both bite here); provinces that are valid shapes but useless for play; unverified dataset licenses.
 
+**Follow-ups after the design discussion (see `docs/design-notes.md` section 22):** cell latitude and longitude plus integer geodesic distance (and a check of how cell-graph distances were computed); finer sea zones near chokepoints; antimeridian province links; province, sea and region names; the render-only output file; farmland, wetland and climate layers after license checks; the expected map checksum recorded in the repo; river classes (small and major) and a bridge layer at road and rail crossings; graded landing suitability per coast cell; a settlement layer for towns; integer neighbor bearings.
+
 ### Phase 4: System scheduler and events
 
 **Goal:** run game rules in a fixed order without the engine knowing what the rules are.
+
+**Sub-phases.** Phase 4 now holds 22 steps because the design notes grew. Build it as six sub-phases, each with its own done test, and run an early performance probe (a stub world with 600,000 cells, a stub group table and about 190 stub AI countries) at the end of 4A:
+
+- **4A Core scheduler and primitives:** steps 1 to 10 (systems, order, rates, events, hooks, parallelism, timing, active sets, modifiers, traits, flow primitives).
+- **4B World state, units and combat:** steps 11 to 14.
+- **4C Economy and population:** step 15.
+- **4D Politics, diplomacy and events:** steps 16, 17 and 20.
+- **4E Intelligence and technology:** steps 18 and 19.
+- **4F AI interface and view queries:** steps 21 and 22.
+
+The step numbers below stay as they are; the sub-phase labels group them.
 
 **Steps**
 
@@ -278,6 +315,21 @@ Each phase lists: goal, ordered steps, the done test, and common traps.
 5. Build the trigger-and-effect hook so data files can express conditions and actions. Do not choose a scripting language yet.
 6. Add deterministic parallel execution for systems that touch disjoint data. Verify it against the single-threaded run.
 7. Add per-system timing.
+8. Add active-set scheduling: sorted lists of cells or units that systems process, so quiet parts of the world cost almost nothing.
+9. Add the generic modifier mechanism (fixed-point multipliers, fixed stacking order) and the generic trait mechanism (sorted trait lists with modifier bundles and scopes).
+10. Add the shared primitives: multi-source supply propagation, shortage splitting (integer, remainders by ID) and double-buffered flows. Each gets a conservation test.
+11. Add the dynamic per-cell state (controller, damage, fortification, hazards, last fought, population, hunger, food stock, ground condition) and the open and close of a province into cells, deferred from Phase 3.
+12. Add the unit, officer, pilot and hull tables with stable IDs, plus transit states with arrival ticks.
+13. Add the derived caches (zones of control, visibility, air-defense coverage, front segments) and a test that rebuilding them gives identical results.
+14. Add the combat plumbing from `docs/design-notes.md` section 12: engagement state with a start-of-fight snapshot, contested-cell pressure, unit status and the days-encircled counter, prisoner pools, garrison records and the on-contact garrison function, doctrine, country-trait and tech state, directional fortification and bridge tables, per-cell unit lists with supply demand aggregation. Rules and numbers stay out of `meridian-core`.
+15. Add the extensible state tables and the economy plumbing from `docs/design-notes.md` section 14: the population group table, levelled building records, regional stocks, labor staffing, goods transport over the shared network, banded prices, trade routes, construction projects, production orders and equipment stockpiles, treasury and debt. Rules and numbers stay in data.
+16. Add the politics plumbing from `docs/design-notes.md` section 15: faction, regime, law and transition tables, legitimacy and stability, per-group unrest, movement entities, loyalty values, war levels per side with command validation, runtime country creation and the civil war split with conservation checks. Rules and numbers stay in data.
+17. Add the diplomacy plumbing from `docs/design-notes.md` section 16: treaty, alliance and UN tables, the deterministic UN voting engine, and command validation for treaties and resolutions. Rules and numbers stay in data.
+18. Add the intelligence plumbing from `docs/design-notes.md` section 17: agency, network and operation tables, and the deterministic estimate function for the view API. Rules and numbers stay in data.
+19. Add the technology plumbing from `docs/design-notes.md` section 18: field levels, development programs, research buildings, the unlocked-model set and a generic prerequisite check. Rules and numbers stay in data.
+20. Add the events plumbing from `docs/design-notes.md` section 19: the event queue with polled and raised triggers, pending event and chain state tables, and the generic condition and effect evaluator over a fixed primitive vocabulary. Rules and numbers stay in data.
+21. Add the AI interface from `docs/design-notes.md` section 20 in Phase 6 or later: the AI crate boundary, the AI save section, scheduling by importance tier and per-AI timing. The AI itself is built after the systems it decides on exist.
+22. Add the view queries for the map modes and the order dry-run validation from `docs/design-notes.md` section 21 to the Phase 6 interface. Layout and panel design belong to Phase 7.
 
 **Done test**
 
@@ -285,6 +337,10 @@ Each phase lists: goal, ordered steps, the done test, and common traps.
 - Single-threaded and multi-threaded runs give identical hashes over one simulated year.
 - An event raised in one system is handled at the documented point in the tick.
 - The timing report lists every system's cost per tick.
+- The tiny proving-ground economy conserves goods and money, and drafting lowers output.
+- A tiny diplomacy loop works: a major treaty passes or stalls by faction approval, an alliance call lets each member decide, and a UN vote respects a veto.
+- A tiny political loop works: a law change passes or stalls by faction support, a command outside a side's war level is refused, one unit defects, and a civil war split conserves people, goods, money and units.
+- Each flow primitive passes its conservation test, and each derived cache rebuilds to identical values after a save and load.
 
 **Common traps:** parallel systems that look disjoint but share a counter; ordering that depends on registration order.
 
@@ -301,6 +357,7 @@ Each phase lists: goal, ordered steps, the done test, and common traps.
 5. Build the divergence finder: given two runs, report the first tick where their hashes differ.
 6. Add a migration stub so older save versions either load or fail with a clear message.
 7. Add autosave hooks (no menus yet).
+8. Include the new dynamic state (population, hunger, contacts, orders, stances, transit states, careers) in the save differences, record AI and delegated-headquarters commands in the replay log, and rebuild derived caches on load.
 
 **Done test**
 
@@ -323,6 +380,11 @@ Each phase lists: goal, ordered steps, the done test, and common traps.
 4. Add a message stream for things the player should be told about.
 5. Add the thread boundary so the simulation can run on its own thread while the UI renders.
 6. Write a stub AI that gives orders through the command interface, to prove the path works.
+7. Add the per-tick event list for the client (hits, strikes, missions, movements, battles) next to the changed cells.
+8. Replace the visibility hook with the per-country view: contacts with knowledge levels, `World` internals `pub(crate)`, and a debug `omniscient` Cargo feature that the AI crate is built without. Commands that target an enemy refer to a contact or a place.
+9. Add the new commands: Launch, Mobilize, Demobilize, Appoint, SetStance and the air mission and transit orders, each validated with a specific rejection reason.
+10. Add the front query: boundary edges and contested cells between two countries, grouped into front segments.
+11. Add the combat commands: SetDoctrine, Withdraw, Hold, Fortify, Amphibious Assault, join-assault, and bridge build, dismantle and demolish orders, plus an optional per-engagement modifier trace for UI tooltips.
 
 **Done test**
 
@@ -347,6 +409,8 @@ Each phase lists: goal, ordered steps, the done test, and common traps.
 6. Add time controls: pause, speeds of 1 to 5 ticks per frame, single-step.
 7. Draw unit icons and movement arrows for the proving-ground ruleset.
 8. Add save and load menu entries and a settings screen.
+   - Style: the clean paper-map look drawn from the render-only vector file, with a political mode switch (see `docs/design-notes.md` section 2).
+   - Add an effects layer driven by the event list, contact markers with uncertainty, and hatching for contested cells.
 9. Set the frame-rate target at the full province count and record it.
 
 **Done test**
@@ -413,13 +477,13 @@ A deliberately tiny, throwaway ruleset that exercises the engine from Phase 1 on
 
 ## 7. Out of scope until the engine is done
 
-These are the gameplay phases, to be re-planned once the engine passes Phase 8:
+These are the gameplay phases, to be re-planned once the engine passes Phase 8. The systems themselves are designed in `docs/design-notes.md` sections 12 to 21; what is left here is rules, numbers and content:
 
 - **G1 Economy:** production, resources, trade, budget, population.
-- **G2 Military:** units, supply, combat, air power, occupation.
-- **G3 Politics and diplomacy:** stability, breakups, alliances, war and peace, nuclear deterrence.
-- **G4 AI:** strategic, operational, tactical and economic behavior.
-- **G5 Content and events:** the 1990 scenario, flashpoints, tech trees, scripting.
+- **G2 Military:** equipment and units, supply rules, combat, air power and air defense, missiles and nuclear release, naval, occupation, ZOC and control timers.
+- **G3 Politics and diplomacy:** regime and law content, factions, stability numbers, treaty and alliance content, UN resolutions, nuclear deterrence, civil war rules.
+- **G4 AI:** personalities, planners (strategic, operational, tactical, economic, diplomatic) and difficulty settings.
+- **G5 Content and events:** the 1990 scenario, equipment catalog, orders of battle, officers and traits, event chains, tech programs, intelligence agencies. Events are data-only (no scripting language). Start with the Persian Gulf slice.
 
 ---
 
@@ -427,19 +491,77 @@ These are the gameplay phases, to be re-planned once the engine passes Phase 8:
 
 - [x] Solo project; the user is a C# developer new to Rust, and will have AI write the Rust (decided 2026-11-08).
 - [x] Engine language: Rust, for performance (decided 2026-11-08).
-- [ ] Map-builder language: defaults to Python (best geographic libraries; output is a baked file, so determinism is unaffected). Veto if you prefer Rust or C#.
+- [x] Map-builder language: Python (output is a baked file, so determinism is unaffected).
 - [x] Hobby for now, commercial release left open, so prefer permissively licensed data (decided 2026-11-08).
 - [x] Province count: about 15,000 to 17,000 land provinces over irregular cells of about 225 km² (agreed 2026-11-08; adjust in Phase 3 if needed).
 - [x] Cell shape: irregular, generated by the map builder (decided 2026-11-08).
 - [x] Cell projection: Equal Earth, equal-area; used only by the offline map builder, with true cell areas and centers baked into the file (decided 2026-11-08).
 - [x] A regions layer above the provinces, for the AI, economy and UI (decided 2026-11-08).
 - [x] Authored text format: RON (decided 2026-11-08).
-- [ ] Baked data format: rkyv or a custom flat-array container (decide by benchmark, section 3.5).
-- [ ] Save format: postcard or another serde binary format (verify maintenance first).
+- [x] Baked data format: custom flat-array container with CRC-32 (decided in Phase 3; see `docs/decisions.md`).
+- [x] Save format: postcard (benchmarked in Phase 2; needs a version and migration step in Phase 5).
 - [ ] Client technology: custom wgpu or Bevy.
 - [ ] Historical-borders dataset for 1990 (deferred by the user until later).
-- [ ] Scripting: Lua, Rhai, or data files only (needed by Phase 4 only if the trigger hook proves too limited).
+- [x] Scripting: data files only for conditions and effects, no scripting language for now; revisit only if the primitive vocabulary proves too limited (decided 2026-11-09).
 - [ ] Platforms beyond macOS.
+- [x] The development slice is the Persian Gulf, 1990; Yugoslavia is the likely second slice (decided 2026-11-09).
+- [x] Climate and land-cover candidates checked 2026-11-09: CHELSA climatologies (CC0) and ESA WorldCover (CC BY 4.0) are fine; WorldClim is non-commercial and avoided (see `docs/data-sources.md`).
+- [ ] Rules still open (G-backlog): ZOC radius and control timers, ambush bonus, nuclear release rules, priorities in food shortages.
+- [x] Map style: clean paper-map look, vector-drawn, with a political mode (decided 2026-11-08).
+- [x] Supply: separate fuel, ammunition and food, with local foraging that hurts the population (decided 2026-11-08).
+- [x] Units: equipment-based, fixed historical structures, specific models everywhere, helicopters in ground formations (decided 2026-11-08).
+- [x] Commanders: generic officers with careers, plus commander and unit traits (decided 2026-11-08).
+- [x] Air: abstract daily missions, individual fixed-wing pilots, three altitude bands, simple airlift (decided 2026-11-08).
+- [x] Nuclear weapons: fully usable with strong gating (decided 2026-11-08).
+- [x] Naval: individual hulls for major ships (decided 2026-11-08).
+- [x] Information: full model with contacts, same information for the AI (decided 2026-11-08).
+- [x] Ground control: zones of control with contested cells; stances attack and defend only (decided 2026-11-08).
+- [x] Stacking: no hard limit, supply and attrition are the brake; enemy units never share a cell (decided 2026-11-09).
+- [x] Combat: two fight types (ZOC fighting, direct engagement), automatic support, joining an assault is an order, bounded random variance, modifier categories with caps (decided 2026-11-09).
+- [x] Retreat, rout, withdraw, hold, fight until death and surrender as in the design notes; no pursuit system (decided 2026-11-09).
+- [x] Doctrine can change; country traits; tech covers non-equipment (decided 2026-11-09).
+- [x] Cities are special: supply hubs with stocks, economy, population, strong defense; fixed garrisons by tier; difficulty comes from what is stationed there (decided 2026-11-09).
+- [x] Rivers: small and major classes, bridges destroyable, laid bridges attach to roads and can be dismantled (decided 2026-11-09).
+- [x] Fortifications are directional, per neighbor edge (decided 2026-11-09).
+- [x] Amphibious landings build up over time, only on suitable coast cells (graded), and not everywhere (decided 2026-11-09).
+- [x] Economy: light Victoria 3; about 14 goods; levelled building records with fixed capacity; regions as the economic unit; banded dynamic prices with a world price; goods move over the shared network; labor staffing from working-age population; construction and production from goods and labor; treasury with debt, printing and inflation, one currency; equipment from bills of materials (decided 2026-11-09).
+- [x] Population identity: group records with culture, religion and political support (option 2, decided 2026-11-09). Strata stay open.
+- [x] Politics: factions, regimes, laws, legitimacy, stability, national and faction cohesion; war levels (insurgency, limited, total, nuclear) set per side; laws change by faction support with no political-capital currency; internal conflict ladder unrest, insurrection, revolution, civil war; unrest per population group; rebels are movement entities promoted to countries; defections per unit and officer; the capital-holding government continues as the original country after a split (decided 2026-11-09).
+- [x] Legitimacy is an integer 0 to 100 with a per-regime illegitimacy and collapse threshold; coups are played out with real units in three data-defined types (military, cabinet, foreign); movement goals are fixed at formation and coalitions fracture by faction cohesion (decided 2026-11-09).
+- [x] Diplomacy: treaties minor and major (major need domestic faction approval); alliances in two tiers (historic and regional) with a call and each member decides; the UN is purpose-built with a binding Security Council (veto, rotating seats on a fixed data schedule) and a non-binding Assembly; resolutions are clause packages voted as a whole with no amendments; members choose compliance with detection; peacekeepers are voluntary contributions with host consent and reimbursement; a UN budget funded by dues; incidents open sessions automatically (decided 2026-11-09).
+- [x] Country tiers: two axes, a derived power tier (hegemon, great power, regional power, minor) and bilateral recognition with a derived status; a tier is an automatic country trait that grants modifiers and unlocks actions (decided 2026-11-09).
+- [x] Relations and standing: bilateral opinion with a derived baseline plus sparse decaying modifiers; standing is a derived 0 to 200 number (100 neutral), the tier-weighted average of others' opinions; actions affect only observers; seven standing bands (pariah, distrusted, wary, neutral, regarded, respected, esteemed) as automatic traits with hysteresis; opinion modifiers are discrete events with decay, observers and category caps, and some leave a residual scar (decided 2026-11-09).
+- [x] Intelligence (in progress): agencies with stored capability per discipline (six: human sources, signals, imagery and space, open sources, counterintelligence, covert action); reach derived and soft; abstract networks plus named operations; estimate views with a shrinking, deterministic margin (decided 2026-11-09).
+- [x] Covert action exposure and attribution are separate steps, and attribution can be wrong (decided 2026-11-09).
+- [x] Covert actions: support a movement, foreign coup, sabotage, propaganda, election interference, sanctions busting and arms smuggling, special operations, and targeted removal with heavy consequences (decided 2026-11-09).
+- [x] Deception and turned networks are deferred to a later expansion (decided 2026-11-09).
+- [x] Agencies are separate and flagged foreign, domestic or both (decided 2026-11-09).
+- [x] Internal operations: infiltrate movements, suppress and crack down, censorship and domestic propaganda, purge the officer corps, election control, counter-subversion; a country always knows its own factions and groups exactly (decided 2026-11-09).
+- [x] Technology: fields are prerequisites, specific development programs produce specific models; fields grow by research buildings plus learning by doing, capped by diffusion; transfers give the model but not the field (decided 2026-11-09).
+- [x] Tech starts with 13 fields: ground systems, aircraft, naval systems, missiles and guidance, electronics and sensors, nuclear, space, computing and information, materials and manufacturing, energy and heavy industry, agriculture and food, logistics and transport, medicine and public health (decided 2026-11-09).
+- [x] Tech level is a 0 to 100 progress number per country and field, with eras derived for display (decided 2026-11-09).
+- [x] Research buildings are specialized institutes, one type per field (decided 2026-11-09).
+- [x] Development programs have delays and cost overruns, not outright failure (decided 2026-11-09).
+- [x] Doctrine: one doctrine per branch (land, air, naval, strategic), unlocked by prerequisites, changed with a long transition, spread by alliances and training (decided 2026-11-09).
+- [x] Events: data-defined events with scopes, options, chains and effects; separate linked instances per party; data-only conditions and effects, no scripting language for now (decided 2026-11-09).
+- [x] Event tooltips and "why did this fire" text are generated from the primitives; every event also has authored flavor text for the event and each option (decided 2026-11-09).
+- [x] Events have a data-defined severity; the client decides pause, ping, inbox or ticker (decided 2026-11-09).
+- [x] AI: data-driven utility AI with personalities, commitment and historical tendencies, plus dedicated Rust planners; same rules and information as the player; memory outside the hash in its own save section; difficulty by competence with optional openly shown bonuses off by default (decided 2026-11-09).
+- [x] Player interface: map first with contextual panels; nine map modes; direct orders plus drawn operation plans for headquarters (decided 2026-11-09).
+- [ ] Interface open: layout and panel design, time controls, onboarding, accessibility, render budget.
+- [ ] AI open: considerations and weights, personalities, planners, importance tiers.
+- [ ] Events open: the final primitive list, the severity list, content workload.
+- [ ] Tech open: program parameters, research buildings, diffusion cap, doctrine links.
+- [ ] Intelligence open: effects and numbers of each covert action, deception, starting capability values for 1990.
+- [x] Casus belli is a stored justification record with an expiry (events, claims, treaties, UN, fabrication); wars end by a negotiated peace as a major treaty accepted by the derived war position, no war score points (decided 2026-11-09).
+- [ ] Diplomacy open: casus belli types and war goals, opinion modifier lists and exact standing band effects, treaty, alliance and resolution lists, UN membership details.
+- [x] Civil war trigger: when a revolution meets its win conditions, a raised critical event offers the ruling entity yield, negotiate a transition or resist; the default is derived from loyal forces and army backing (decided 2026-11-09).
+- [ ] Politics open: the dynamics of the special revolutionary country during a civil war (a data-defined country kind, rules later), the events list, lists of regimes, laws, factions and ideologies, treasury and debt split rule.
+- [ ] Economy data sources: partly checked in `docs/data-sources.md` (USGS public domain; FAOSTAT promotion clause; GeoEPR non-commercial; World Bank CC BY 4.0, Factbook discontinued Feb 2026 and secondhand, Wikipedia text CC BY-SA 4.0; no oil field or industry source yet). Also open: region size for the economy and strata.
+- [x] Settlements (GeoNames CC BY 4.0, Natural Earth public domain), rivers (Natural Earth, HydroRIVERS) and land cover (ESA WorldCover) are verified in `docs/data-sources.md`; landing suitability is hand-graded for the Gulf slice.
+- [x] Data source policy: facts we extract and author ourselves are not limited by the source's license (record provenance, write our own wording, no bulk copying); datasets we import and bake must be public domain, CC0 or attribution-only, and non-commercial ones stay out (decided 2026-11-09; see `docs/data-sources.md`).
+- [ ] Data-source follow-ups: GHS-BUILT and GHS-SMOD terms (GHS-POP verified; SIPRI is commercial-only), HydroSHEDS documentation, an oil field and industry source, whether to use OpenStreetMap (share-alike). Add a license field per data layer and a commercial-build check in the bake step.
+- [x] Bulk tables as CSV, structured data as RON (decided 2026-11-08).
 
 ---
 
