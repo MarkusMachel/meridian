@@ -730,4 +730,4 @@ fn check_graph(name: &str, off: &[u32], dst: &[u32], nodes: usize, kind: Option<
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

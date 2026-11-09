@@ -1,7 +1,10 @@
 //! World state: parallel arrays indexed by ID, plus the clock and RNG.
 
+use crate::cells::CellState;
+use crate::combat::CombatState;
 use crate::clock::{Clock, Signals};
 use crate::command::{Command, Rejection};
+use crate::forces::{Destination, Forces, UnitExt};
 use crate::hash::StateHasher;
 use crate::ids::{CountryId, ProvinceId, UnitId};
 use crate::map::Map;
@@ -93,10 +96,16 @@ pub struct World {
     value: Vec<i64>,
     /// Indexed by UnitId; None means the slot is empty.
     units: Vec<Option<Unit>>,
+    /// Extra unit attributes, always the same length as `units`.
+    unit_ext: Vec<UnitExt>,
+    forces: Forces,
+    combat: CombatState,
     /// Indexed by SiteId order of creation.
     sites: Vec<Site>,
     /// Events waiting for the next event phase. Normally empty at the end of a tick.
     events: Vec<Event>,
+    /// Present only on a world with a map.
+    cells: Option<CellState>,
     map: Option<MapRef>,
 }
 
@@ -111,8 +120,12 @@ impl World {
             controller: vec![CountryId(0); province_count as usize],
             value: vec![0; province_count as usize],
             units: Vec::new(),
+            unit_ext: Vec::new(),
+            forces: Forces::default(),
+            combat: CombatState::default(),
             sites: Vec::new(),
             events: Vec::new(),
+            cells: None,
             map: None,
         }
     }
@@ -124,8 +137,52 @@ impl World {
         for (p, &st) in map.province_state.iter().enumerate() {
             w.controller[p] = CountryId(st);
         }
+        let cell_controller = map.cell_province.iter().map(|&p| map.province_state[p as usize]).collect();
+        w.cells = Some(CellState::new(cell_controller));
         w.map = Some(MapRef(map));
         w
+    }
+
+    /// Per-cell dynamic state, if the world has a map.
+    pub fn cells(&self) -> Option<&CellState> {
+        self.cells.as_ref()
+    }
+    pub fn cells_mut(&mut self) -> Option<&mut CellState> {
+        self.cells.as_mut()
+    }
+
+    /// Start simulating a province cell by cell. Every cell takes the province's
+    /// controller. Returns false if the world has no map, the province does not exist
+    /// or it is already open.
+    pub fn open_province(&mut self, p: ProvinceId) -> bool {
+        let (Some(map), Some(cells)) = (self.map.as_ref(), self.cells.as_mut()) else { return false };
+        if p.0 >= map.0.province_count() || !cells.opened.insert(p.0) {
+            return false;
+        }
+        let c = self.controller[p.index()].0;
+        for &cell in map.0.cells_of(p) {
+            cells.controller[cell as usize] = c;
+        }
+        true
+    }
+
+    /// Stop simulating a province cell by cell. The province goes to whoever controls
+    /// most of its cells (ties to the lower country ID) and every cell follows it.
+    /// Returns false if the province was not open.
+    pub fn close_province(&mut self, p: ProvinceId) -> bool {
+        let (Some(map), Some(cells)) = (self.map.as_ref(), self.cells.as_mut()) else { return false };
+        if !cells.opened.remove(p.0) {
+            return false;
+        }
+        let list = map.0.cells_of(p);
+        if let Some(winner) = cells.majority_controller(list) {
+            self.controller[p.index()] = winner;
+        }
+        let c = self.controller[p.index()].0;
+        for &cell in list {
+            cells.controller[cell as usize] = c;
+        }
+        true
     }
 
     pub fn map(&self) -> Option<&Map> {
@@ -141,6 +198,7 @@ impl World {
     pub fn add_unit_for_setup(&mut self, unit: Unit) -> UnitId {
         let id = UnitId(self.units.len() as u32);
         self.units.push(Some(unit));
+        self.unit_ext.push(UnitExt::default());
         id
     }
 
@@ -175,6 +233,37 @@ impl World {
     pub fn unit(&self, u: UnitId) -> Option<&Unit> {
         self.units.get(u.index()).and_then(|x| x.as_ref())
     }
+    pub fn unit_ext(&self, u: UnitId) -> Option<&UnitExt> {
+        self.units.get(u.index()).and_then(|x| x.as_ref()).map(|_| &self.unit_ext[u.index()])
+    }
+    pub fn unit_ext_mut(&mut self, u: UnitId) -> Option<&mut UnitExt> {
+        if self.units.get(u.index()).is_some_and(|x| x.is_some()) { Some(&mut self.unit_ext[u.index()]) } else { None }
+    }
+    pub fn forces(&self) -> &Forces {
+        &self.forces
+    }
+    pub fn forces_mut(&mut self) -> &mut Forces {
+        &mut self.forces
+    }
+    pub fn combat(&self) -> &CombatState {
+        &self.combat
+    }
+    pub fn combat_mut(&mut self) -> &mut CombatState {
+        &mut self.combat
+    }
+
+    /// Put a unit in transit: it arrives at `destination` on `arrive_tick`.
+    /// Returns false if the unit does not exist or is already in transit.
+    pub fn start_transit(&mut self, u: UnitId, destination: Destination, arrive_tick: u64) -> bool {
+        match self.unit_ext_mut(u) {
+            Some(e) if e.transit.is_none() => {
+                e.transit = Some(crate::forces::Transit { destination, arrive_tick });
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn unit_count(&self) -> u32 {
         self.units.len() as u32
     }
@@ -209,6 +298,7 @@ impl World {
                 report.rejected.push((cmd.clone(), why));
             }
         }
+        self.complete_transits();
         ruleset.run(self, signals);
         // Event phase: everything raised so far is applied in a fixed order.
         // `sort_by_key` is stable, so equal keys keep their raise order.
@@ -219,6 +309,34 @@ impl World {
         }
         self.clock.advance();
         report
+    }
+
+    /// Units whose arrival tick has come land now, in unit ID order.
+    fn complete_transits(&mut self) {
+        let now = self.clock.tick();
+        for i in 0..self.units.len() {
+            let Some(t) = self.unit_ext[i].transit else { continue };
+            if t.arrive_tick > now {
+                continue;
+            }
+            self.unit_ext[i].transit = None;
+            match t.destination {
+                Destination::Province(p) => {
+                    if let Some(u) = self.units[i].as_mut() {
+                        u.location = p;
+                    }
+                    self.unit_ext[i].cell = None;
+                }
+                Destination::Cell(c) => {
+                    if let (Some(map), Some(u)) = (self.map.as_ref(), self.units[i].as_mut()) {
+                        if c.0 < map.0.cell_count() {
+                            u.location = ProvinceId(map.0.cell_province[c.index()]);
+                            self.unit_ext[i].cell = Some(c);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Validate fully, then mutate. On Err the world is untouched.
@@ -284,6 +402,19 @@ impl World {
                 }
             }
         }
+        // Military extras are hashed only once something non-default exists, so worlds
+        // that never use them keep their old hashes.
+        if !self.forces.is_empty() || self.unit_ext.iter().any(|e| *e != UnitExt::default()) {
+            h.write_u8(4);
+            for e in &self.unit_ext {
+                e.hash_into(&mut h);
+            }
+            self.forces.hash_into(&mut h);
+        }
+        if !self.combat.is_empty() {
+            h.write_u8(5);
+            self.combat.hash_into(&mut h);
+        }
         h.write_u32(self.sites.len() as u32);
         for site in &self.sites {
             h.write_u8(site.kind as u8);
@@ -309,6 +440,10 @@ impl World {
                 h.write_u32(e.source);
                 h.write_i64(e.amount);
             }
+        }
+        if let Some(c) = &self.cells {
+            h.write_u8(3);
+            c.hash_into(&mut h);
         }
         // Only worlds with a map hash it, so map-less hashes are unchanged.
         if let Some(m) = &self.map {
@@ -351,6 +486,27 @@ mod tests {
         let mut w = base.clone(); w.units[0].as_mut().unwrap().owner = CountryId(1); variants.push(w);
         let mut w = base.clone(); w.units.push(None); variants.push(w);
         let mut w = base.clone(); w.raise_event(Event { kind: 1, target: 2, source: 3, amount: 4 }); variants.push(w);
+        let mut w = base.clone(); w.unit_ext_mut(UnitId(0)).unwrap().morale = 5; variants.push(w);
+        let mut w = base.clone(); w.unit_ext_mut(UnitId(0)).unwrap().encircled_days = 2; variants.push(w);
+        let mut w = base.clone(); w.combat_mut().add_pressure(crate::ids::CellId(1), 4); variants.push(w);
+        let mut w = base.clone(); w.combat_mut().add_prisoners(CountryId(0), CountryId(1), 3); variants.push(w);
+        let mut w = base.clone(); w.combat_mut().set_fortification(crate::ids::CellId(1), crate::ids::CellId(2), 3); variants.push(w);
+        let mut w = base.clone(); w.combat_mut().country_traits_mut(CountryId(1)).add(1); variants.push(w);
+        let mut w = base.clone(); w.unit_ext_mut(UnitId(0)).unwrap().parent = Some(UnitId(0)); variants.push(w);
+        let mut w = base.clone(); w.unit_ext_mut(UnitId(0)).unwrap().traits.add(3); variants.push(w);
+        let mut w = base.clone(); w.start_transit(UnitId(0), Destination::Province(ProvinceId(1)), 9); variants.push(w);
+        let mut w = base.clone();
+        w.forces_mut().add_officer(crate::forces::Officer { country: CountryId(0), birth_days_before_start: 9000, rank: 1, experience: 0, status: 0, assignment: None, traits: Default::default() });
+        let h_off = w.state_hash();
+        variants.push(w.clone());
+        w.forces_mut().officers[0].experience = 1;
+        assert_ne!(w.state_hash(), h_off, "officer experience not hashed");
+        let mut w = base.clone();
+        w.forces_mut().add_hull(crate::forces::Hull { model: 1, owner: CountryId(0), location: 3, parent: None, condition: 1000, fuel: 5, status: 0 });
+        variants.push(w);
+        let mut w = base.clone();
+        w.forces_mut().add_pilot(crate::forces::Pilot { country: CountryId(0), wing: None, birth_days_before_start: 1, rank: 0, experience: 0, kills: 0, status: 0 });
+        variants.push(w);
         let site = Site { kind: SiteKind::City, province: ProvinceId(1), owner: CountryId(0), condition: 100, built_year: 1900, destroyed_year: None };
         let mut w = base.clone(); w.sites.push(site.clone()); variants.push(w);
         let mut w = base.clone(); w.sites.push(site.clone()); let h1 = w.state_hash();
@@ -363,6 +519,22 @@ mod tests {
         for (i, v) in variants.iter().enumerate() {
             assert_ne!(v.state_hash(), h0, "variant {i} not reflected in hash");
         }
+    }
+
+    #[test]
+    fn units_in_transit_land_on_their_arrival_tick_in_order() {
+        let mut w = world();
+        w.add_unit_for_setup(Unit { owner: CountryId(1), location: ProvinceId(0) });
+        assert!(w.start_transit(UnitId(0), Destination::Province(ProvinceId(2)), 3));
+        assert!(!w.start_transit(UnitId(0), Destination::Province(ProvinceId(3)), 5), "already moving");
+        assert!(!w.start_transit(UnitId(7), Destination::Province(ProvinceId(3)), 5), "no such unit");
+        for _ in 0..3 {
+            w.tick(&[], &Nothing);
+            assert_eq!(w.unit(UnitId(0)).unwrap().location, ProvinceId(0));
+        }
+        w.tick(&[], &Nothing); // tick 3
+        assert_eq!(w.unit(UnitId(0)).unwrap().location, ProvinceId(2));
+        assert!(w.unit_ext(UnitId(0)).unwrap().transit.is_none());
     }
 
     #[test]

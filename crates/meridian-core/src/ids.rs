@@ -18,3 +18,6 @@ id_type!(CountryId, u16);
 id_type!(UnitId, u32);
 id_type!(CellId, u32);
 id_type!(SiteId, u32);
+id_type!(OfficerId, u32);
+id_type!(PilotId, u32);
+id_type!(HullId, u32);
