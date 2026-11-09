@@ -231,9 +231,10 @@ impl App {
 
     fn redraw(&mut self) {
         let now = Instant::now();
-        self.frame_ms = self.frame_ms * 0.9 + now.duration_since(self.last_frame).as_secs_f32() * 1000.0 * 0.1;
+        let dt = now.duration_since(self.last_frame).as_secs_f64();
+        self.frame_ms = self.frame_ms * 0.9 + dt as f32 * 1000.0 * 0.1;
         self.last_frame = now;
-        self.session.frame();
+        self.session.advance(dt.min(0.25));
         self.refresh_colors();
         if std::env::var_os("MERIDIAN_DEBUG").is_some() {
             self.debug_frames += 1;
@@ -371,7 +372,8 @@ impl App {
                     act.step = true;
                 }
                 for n in 1..=5u8 {
-                    if ui.selectable_label(speed == Speed::Run(n), format!("{n}")).clicked() {
+                    let tip = format!("{} game hours per second", Speed::Run(n).ticks_per_second());
+                    if ui.selectable_label(speed == Speed::Run(n), format!("{n}")).on_hover_text(tip).clicked() {
                         act.speed = Some(Speed::Run(n));
                     }
                 }

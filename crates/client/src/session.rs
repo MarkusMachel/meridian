@@ -8,19 +8,24 @@
 
 use meridian_core::{Command, CountryId, ProvinceId, Rejection, Ruleset, SimHandle, TickReport, World};
 
-/// How fast time runs. Speeds are ticks per frame (a tick is one in-game hour).
+/// How fast time runs. A tick is one in-game hour, and the speeds are in real time, so they do not
+/// depend on the frame rate: speed 1 is one game hour per real second.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Speed {
     Paused,
-    /// 1 to 5 ticks per frame.
+    /// 1 to 5.
     Run(u8),
 }
 
+/// Game hours per real second for speeds 1 to 5: an hour, then 3 hours, 8 hours, a day and 3 days
+/// per second. Adjust here; nothing else depends on the numbers.
+pub const HOURS_PER_SECOND: [u64; 5] = [1, 3, 8, 24, 72];
+
 impl Speed {
-    pub fn ticks_per_frame(self) -> u64 {
+    pub fn ticks_per_second(self) -> u64 {
         match self {
             Speed::Paused => 0,
-            Speed::Run(n) => n.clamp(1, 5) as u64,
+            Speed::Run(n) => HOURS_PER_SECOND[(n.clamp(1, 5) - 1) as usize],
         }
     }
 }
@@ -47,6 +52,8 @@ pub struct Session {
     /// Absolute tick the sim has been asked to reach (finished or not).
     requested: u64,
     step_once: bool,
+    /// Fractions of a tick carried over between frames.
+    budget: f64,
     /// Never ask for ticks beyond this one (run-until-date, and exact stops in tests).
     stop_at: Option<u64>,
     queued: Vec<Command>,
@@ -66,6 +73,7 @@ impl Session {
             base_tick: requested,
             requested,
             step_once: false,
+            budget: 0.0,
             stop_at: None,
             queued: Vec::new(),
             log: Vec::new(),
@@ -113,16 +121,26 @@ impl Session {
         self.done() == self.requested
     }
 
-    /// Call once per frame. Returns the number of ticks asked of the sim this frame (0 if paused,
-    /// or if the sim has not finished the last request yet).
-    pub fn frame(&mut self) -> u64 {
+    /// Call once per frame with the real time since the last call, in seconds. Asks the sim for the
+    /// ticks that time is worth at the current speed (carrying fractions over), and returns how many.
+    /// Which ticks run never depends on timing, only how soon they run, so a client run still
+    /// matches a headless run of its command log.
+    pub fn advance(&mut self, dt_secs: f64) -> u64 {
         for r in self.sim.drain_reports() {
             self.take_report(r);
+        }
+        let rate = self.speed.ticks_per_second() as f64;
+        if rate == 0.0 {
+            self.budget = 0.0;
+        } else {
+            // never owe more than a quarter second, so a long pause (a stall, a drag) does not become a burst
+            self.budget = (self.budget + rate * dt_secs).min(rate * 0.25 + 1.0);
         }
         if !self.idle() {
             return 0;
         }
-        let mut n = if self.step_once { 1 } else { self.speed.ticks_per_frame() };
+        let stepping = self.step_once;
+        let mut n = if stepping { 1 } else { self.budget as u64 };
         self.step_once = false;
         if let Some(stop) = self.stop_at {
             n = n.min(stop.saturating_sub(self.requested));
@@ -130,6 +148,9 @@ impl Session {
         if n == 0 {
             // Orders given while paused wait for the next tick; they are not applied yet.
             return 0;
+        }
+        if !stepping {
+            self.budget -= n as f64;
         }
         if !self.queued.is_empty() {
             let cmds = std::mem::take(&mut self.queued);
@@ -141,6 +162,11 @@ impl Session {
         self.sim.run(n);
         self.requested += n;
         n
+    }
+
+    /// One frame at a nominal 60 per second (for tests and headless use, where there is no real clock).
+    pub fn frame(&mut self) -> u64 {
+        self.advance(1.0 / 60.0)
     }
 
     fn take_report(&mut self, r: TickReport) {
