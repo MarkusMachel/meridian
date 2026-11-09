@@ -64,6 +64,7 @@ docs/
 - Python 3.15 venv at `crates/map-builder/.venv` (`pip install -r crates/map-builder/requirements.txt`). Run `crates/map-builder/build_map.sh` to fetch pinned sources and build `data/baked/meridian-map.bin` (about 4 minutes; not committed). `check_determinism.sh <scratch-dir>` builds twice and compares.
 - `scripts/check.sh` runs the map tests, `runner map-validate` and `runner map-bench` when the baked file exists. Budgets are in `docs/budgets.md`.
 - Hand-written data lives in `crates/map-builder/config/` (1990 states, chokepoints, strategic sites). Sources and licenses: `docs/attributions.md`.
+- Provinces follow real admin-1 lines: `build_regions.py` cuts each state into regions (Natural Earth admin-1), and provinces and cells never cross a region edge (decisions.md, "Province rebuild").
 
 ## Client (Phase 7)
 

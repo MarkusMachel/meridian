@@ -1,7 +1,7 @@
 """Step 3 of the map builder: irregular tactical cells (about 225 km2 each).
 
 Usage: python -I build_cells.py <intermediate-dir> [TAG,TAG,...]   (tags = test subset)
-Reads  states_1990.geojson, provinces.csv, province_points_*.npy
+Reads  states_1990.geojson, regions_1990.geojson, provinces.csv, province_points_*.npy
 Writes cells/ : cell_state.npy cell_province.npy cell_x.npy cell_y.npy cell_area_ha.npy
                 cell_landmass.npy cell_edges.npy (a, b, shared length m) cells.wkb states.txt
 Also rewrites province areas (exact) into provinces_exact.csv.
@@ -9,10 +9,11 @@ Also rewrites province areas (exact) into provinces_exact.csv.
 Method (deterministic, no random numbers; jitter comes from an integer hash):
   * a global jittered hex lattice supplies seeds; a state keeps the seeds inside it
     (states too small for that get one seed per province);
-  * per state, a Voronoi diagram of its seeds is clipped to the state outline, so
-    cells never cross borders and follow the coast exactly;
-  * cell -> province by nearest labelled province sample point, then repaired so every
-    province has cells and is connected within each landmass;
+  * per region (a piece of a state bounded by real admin-1 lines), a Voronoi diagram of its
+    seeds is clipped to the region outline, so cells never cross state or region borders and
+    follow the coast exactly;
+  * cell -> province by nearest labelled province sample point of the same region, then
+    repaired so every province has cells and is connected within each landmass;
   * neighbours: Voronoi ridges clipped to land (same state), plus a border pass between
     states and a wrap across the 180-degree seam.
 """
@@ -128,6 +129,14 @@ def cells_for_part(p):
     return polys, sx, sy, np.column_stack([a[keep], b[keep], np.rint(length[keep])]).astype(np.int64)
 
 
+def valid_polygons(g):
+    """A valid MultiPolygon: repair if needed and keep only the polygonal parts."""
+    if not g.is_valid:
+        g = shapely.make_valid(g)
+    polys = [q for part in shapely.get_parts(g) for q in shapely.get_parts(part) if q.geom_type == "Polygon" and not q.is_empty]
+    return shapely.MultiPolygon(polys)
+
+
 def process_state(tag, geom, prov_ids, prov_pts, cell_budget_min):
     """Cells for one state. Returns dict of arrays (local indices)."""
     parts = sorted(shapely.get_parts(geom), key=lambda p: (-p.area, p.bounds))
@@ -187,32 +196,40 @@ def main(inter, only=None):
     order = np.argsort(pl, kind="stable")
     bounds = np.searchsorted(pl[order], np.arange(len(prow) + 1))
     prov_pts = {pid: (px[order[bounds[pid]:bounds[pid + 1]]], py[order[bounds[pid]:bounds[pid + 1]]]) for pid in range(len(prow))}
-    prov_by_state = {}
+    prov_by_region = {}
     for r in prow:
-        prov_by_state.setdefault(r["state"], []).append(int(r["id"]))
+        prov_by_region.setdefault(int(r["region"]), []).append(int(r["id"]))
 
-    tags = sorted(f["properties"]["tag"] for f in fc["features"])
-    feats = {f["properties"]["tag"]: f for f in fc["features"]}
+    sfc = json.loads((inter / "states_1990.geojson").read_text(encoding="utf-8"))
+    rfc = json.loads((inter / "regions_1990.geojson").read_text(encoding="utf-8"))
+    tags = sorted(f["properties"]["tag"] for f in sfc["features"])
+    regions = sorted(rfc["features"], key=lambda f: f["properties"]["region"])
     if only:
         tags = [t for t in tags if t in only]
+    tag_index = {t: i for i, t in enumerate(tags)}
+    # cells are numbered state by state, region by region (regions are already sorted by state tag)
+    regions = sorted((f for f in regions if f["properties"]["tag"] in tag_index), key=lambda f: (f["properties"]["tag"], f["properties"]["region"]))
 
-    C = {k: [] for k in ["state", "prov", "x", "y", "area", "land", "seedx", "seedy"]}
+    C = {k: [] for k in ["state", "region", "prov", "x", "y", "area", "land", "seedx", "seedy"]}
     polys_all, edges_all, offsets = [], [], {}
     base = 0
     land_base = 0
-    for si, tag in enumerate(tags):
-        geom = bp.project(shape(feats[tag]["geometry"]))
-        r = process_state(tag, geom, prov_by_state[tag], prov_pts, None)
+    for feat in regions:
+        tag, rid = feat["properties"]["tag"], feat["properties"]["region"]
+        si = tag_index[tag]
+        geom = valid_polygons(bp.project(shape(feat["geometry"])))
+        r = process_state(tag, geom, None, None, None)
         n = len(r["sx"])
         # sort cells by (rounded y, rounded x) of centroid for stable ids
         idx = np.lexsort((np.round(r["cx"] / 1000), np.round(r["cy"] / 1000)))
         inv = np.empty(n, dtype=np.int64); inv[idx] = np.arange(n)
-        # nearest province point
-        ppts = np.vstack([np.column_stack(prov_pts[p]) for p in prov_by_state[tag]])
-        plab = np.concatenate([np.full(len(prov_pts[p][0]), p) for p in prov_by_state[tag]])
+        # nearest province point, among the provinces of this region only
+        pids = prov_by_region[rid]
+        ppts = np.vstack([np.column_stack(prov_pts[p]) for p in pids])
+        plab = np.concatenate([np.full(len(prov_pts[p][0]), p) for p in pids])
         _, nn = cKDTree(ppts).query(np.column_stack([r["cx"], r["cy"]]))
         prov = plab[nn]
-        C["state"].append(np.full(n, si, dtype=np.int32)); C["prov"].append(prov[idx])
+        C["state"].append(np.full(n, si, dtype=np.int32)); C["region"].append(np.full(n, rid, dtype=np.int32)); C["prov"].append(prov[idx])
         C["x"].append(r["cx"][idx]); C["y"].append(r["cy"][idx]); C["area"].append(r["area"][idx])
         C["land"].append(r["land"][idx] + land_base); C["seedx"].append(r["sx"][idx]); C["seedy"].append(r["sy"][idx])
         polys_all.append(r["polys"][idx])
@@ -220,10 +237,9 @@ def main(inter, only=None):
         if len(e):
             e[:, 0] = inv[e[:, 0]] + base; e[:, 1] = inv[e[:, 1]] + base
             edges_all.append(e)
-        offsets[tag] = (base, base + n)
+        offsets[rid] = (base, base + n)
         base += n
         land_base += r["nparts"]
-        print(f"{tag} cells {n}", flush=True) if only else None
 
     cat = {k: np.concatenate(v) for k, v in C.items()}
     polys = np.concatenate(polys_all)
@@ -232,10 +248,10 @@ def main(inter, only=None):
 
     # ---- province repair: every province has a cell, connected within each landmass ----
     prov = cat["prov"].copy()
-    prov = repair_provinces(prov, cat, edges, prov_by_state, tags, offsets, prow)
+    prov = repair_provinces(prov, cat, edges, prov_by_region, offsets, prow)
 
     # ---- cross-state borders and the 180-degree seam ----
-    cross = cross_edges(polys, cat["state"])
+    cross = cross_edges(polys, cat["region"])
     seam = seam_edges(polys)
     edges = np.vstack([edges, cross, seam]) if len(cross) or len(seam) else edges
     # canonical order: a<b, sorted, merged duplicates keep the longest
@@ -247,6 +263,7 @@ def main(inter, only=None):
 
     # ---- write ----
     np.save(out / "cell_state.npy", cat["state"].astype(np.uint16))
+    np.save(out / "cell_region.npy", cat["region"].astype(np.uint32))
     np.save(out / "cell_province.npy", prov.astype(np.uint32))
     np.save(out / "cell_x.npy", np.rint(cat["x"]).astype(np.int32))
     np.save(out / "cell_y.npy", np.rint(cat["y"]).astype(np.int32))
@@ -270,13 +287,13 @@ def main(inter, only=None):
           f"cells/province mean {ncell/ max(1,len(set(prov.tolist()))):.1f}")
 
 
-def repair_provinces(prov, cat, edges, prov_by_state, tags, offsets, prow):
+def repair_provinces(prov, cat, edges, prov_by_region, offsets, prow):
     n = len(prov)
     area = cat["area"]
     # 1. give every province at least one cell (take the nearest cell from a donor with spare cells)
-    for tag in tags:
-        lo, hi = offsets[tag]
-        for pid in prov_by_state[tag]:
+    for rid in sorted(offsets):
+        lo, hi = offsets[rid]
+        for pid in prov_by_region[rid]:
             if (prov[lo:hi] == pid).any():
                 continue
             mx, my = float(prow[pid]["lon"]), float(prow[pid]["lat"])
@@ -319,7 +336,7 @@ def repair_provinces(prov, cat, edges, prov_by_state, tags, offsets, prow):
                 if (u in ms) == (v in ms):
                     continue
                 o = v if u in ms else u
-                if cat["land"][o] != cat["land"][members[0]] or cat["state"][o] != cat["state"][members[0]]:
+                if cat["land"][o] != cat["land"][members[0]] or cat["region"][o] != cat["region"][members[0]]:
                     continue
                 votes[prov[o]] = votes.get(prov[o], 0) + ln
             if votes:
@@ -332,7 +349,7 @@ def repair_provinces(prov, cat, edges, prov_by_state, tags, offsets, prow):
 
 
 def cross_edges(polys, state):
-    """Cells of different states that touch along a border."""
+    """Cells of different regions (so also of different states) that touch along a border."""
     bnd = shapely.boundary(polys)
     tree = shapely.STRtree(polys)
     qa, qb = tree.query(polys, predicate="dwithin", distance=BORDER_TOL_M)

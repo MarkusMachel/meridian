@@ -110,6 +110,6 @@ Written by `crates/map-builder/build_render.py` (checked by `validate_render.py`
 
 - Provinces are the union of their cells, simplified as one coverage per level (neighbours keep fitting) in Equal Earth, then projected vertex by vertex and repaired where the projection made a polygon invalid. Small islands may vanish at the coarse levels; the finest level keeps every province within 2 % (or 100 km2) of its true projected area.
 - Mercator inflates areas away from the equator (about 4x at 60 degrees), so the file's areas are not real areas.
-- Lines come from noding all province boundaries; a piece touching one province is coast, two provinces of one state a province border, two states a state border.
+- Lines come from noding all province boundaries; a piece touching one province is coast, two provinces of one state a province border (province borders now include real admin-1 lines), two states a state border.
 - Not yet in the file: cell fill meshes, rivers, contours, names and label positions, sea zones.
-- Size: about 149 MB for the whole world (cell outlines 34 MB and cell rings 32 MB of it).
+- Size: about 191 MB for the whole world (cell outlines 34 MB and cell rings 32 MB of it).

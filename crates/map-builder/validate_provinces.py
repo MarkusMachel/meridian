@@ -75,6 +75,13 @@ def main(inter):
     if broken:
         warnings.append(f"{len(broken)} single-landmass provinces are in more than one piece (ids {broken[:10]}...)")
 
+    # every region has at least one province, and provinces never span two regions
+    regions = json.loads((inter / "regions_1990.geojson").read_text(encoding="utf-8"))["features"]
+    have = Counter(int(r["region"]) for r in rows)
+    for f in regions:
+        if have[f["properties"]["region"]] == 0:
+            errors.append(f"region {f['properties']['region']} ({f['properties']['tag']} {f['properties']['name']}) has no provinces")
+    print(f"{len(regions)} regions")
     print(f"{len(rows)} provinces, {len(by_state)} states")
     print(f"over 15,000 km2: {(sizes > 15000).sum()}; over 20,000 km2: {(sizes > 20000).sum()}; under 3,000 km2: {(sizes < 3000).sum()}")
     print(f"size min/median/mean/max: {sizes.min():.1f} / {np.median(sizes):,.0f} / {sizes.mean():,.0f} / {sizes.max():,.0f} km2")

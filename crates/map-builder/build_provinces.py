@@ -1,7 +1,7 @@
 """Step 2 of the map builder: split each 1990 state into provinces.
 
 Usage: python -I build_provinces.py <intermediate-dir>
-Reads  states_1990.geojson
+Reads  states_1990.geojson, regions_1990.geojson
 Writes provinces.csv, provinces_report.txt, province_points_{x,y,label}.npy
 
 Method (deterministic, no random numbers):
@@ -169,63 +169,74 @@ def repair_fragments(x, y, lab, spacing):
 
 def main(inter):
     inter = Path(inter)
-    fc = json.loads((inter / "states_1990.geojson").read_text(encoding="utf-8"))
+    fc = json.loads((inter / "regions_1990.geojson").read_text(encoding="utf-8"))
+    sfc = json.loads((inter / "states_1990.geojson").read_text(encoding="utf-8"))
+    state_area = {f["properties"]["tag"]: sum(p.area for p in shapely.get_parts(project(shape(f["geometry"])))) / 1e6 for f in sfc["features"]}
+    state_names = {f["properties"]["tag"]: f["properties"]["name"] for f in sfc["features"]}
+    regions_of = {}
+    for feat in sorted(fc["features"], key=lambda f: f["properties"]["region"]):
+        regions_of.setdefault(feat["properties"]["tag"], []).append(feat)
     rows = []          # (tag, name, cx, cy, area_km2, npts, nparts)
     all_x, all_y, all_l = [], [], []
     report = []
     gid = 0
-    for feat in sorted(fc["features"], key=lambda f: f["properties"]["tag"]):
-        tag, name = feat["properties"]["tag"], feat["properties"]["name"]
-        geom = project(shape(feat["geometry"]))
-        parts = sorted(shapely.get_parts(geom), key=lambda p: (-p.area, p.bounds))
-        area_km2 = sum(p.area for p in parts) / 1e6
-        n_state = provinces_for_area(area_km2)
-        target_m2 = (area_km2 * 1e6) / n_state
-
-        large = [p for p in parts if p.area >= SMALL_PART_FRACTION * target_m2]
-        small = [p for p in parts if p.area < SMALL_PART_FRACTION * target_m2]
-        if not large and small:  # state made only of small parts: treat the biggest as a group seed
-            large, small = [], small
-        groups = [[p] for p in large]
-        if small:
-            cents = np.array([[p.centroid.x, p.centroid.y] for p in small])
-            if len(small) == 1:
-                groups.append(small)
-            else:
-                cl = fcluster(linkage(cents, "single"), POOL_DISTANCE_M, criterion="distance")
-                for c in sorted(set(cl)):
-                    groups.append([small[i] for i in range(len(small)) if cl[i] == c])
-
-        spacing = min(MAX_SPACING_M, math.sqrt(target_m2 / POINTS_PER_PROVINCE))
+    for tag in sorted(regions_of):
+        name = state_names[tag]
+        feats = regions_of[tag]
+        geoms = [project(shape(f["geometry"])) for f in feats]
+        r_areas = [sum(p.area for p in shapely.get_parts(g)) / 1e6 for g in geoms]
+        # provinces per region: about one per TARGET_KM2, at least one; a small state still gets its floor
+        ks_region = [max(1, round(a / TARGET_KM2)) for a in r_areas]
+        n_state = max(sum(ks_region), provinces_for_area(state_area[tag]))
+        if sum(ks_region) < n_state:
+            ks_region = allocate(r_areas, n_state)
         state_rows = []
-        ks = allocate([sum(p.area for p in g) for g in groups], n_state)
-        for g, k in zip(groups, ks):
-            x, y = grid_points(g, spacing)
-            if len(x) == 0:  # tiny group the grid missed: one province at a representative point
-                rp = shapely.union_all(g).representative_point()
-                x, y = np.array([rp.x]), np.array([rp.y])
-            k = min(k, len(x))
-            lab = kmeans(x, y, k)
-            if k > 1:
-                lab = repair_fragments(x, y, lab, spacing)
-            for l in sorted(set(lab.tolist())):
-                m = lab == l
-                state_rows.append([x[m].mean(), y[m].mean(), m.sum() * spacing * spacing / 1e6, int(m.sum()), len(g), x[m], y[m], spacing])
-        # deterministic ids: sort by (rounded y, rounded x)
-        state_rows.sort(key=lambda r: (round(r[1] / 1000), round(r[0] / 1000)))
+        for feat, geom, area_km2, n_reg in zip(feats, geoms, r_areas, ks_region):
+            region_id = feat["properties"]["region"]
+            parts = sorted(shapely.get_parts(geom), key=lambda p: (-p.area, p.bounds))
+            target_m2 = (area_km2 * 1e6) / n_reg
+            large = [p for p in parts if p.area >= SMALL_PART_FRACTION * target_m2]
+            small = [p for p in parts if p.area < SMALL_PART_FRACTION * target_m2]
+            groups = [[p] for p in large]
+            if small:
+                cents = np.array([[p.centroid.x, p.centroid.y] for p in small])
+                if len(small) == 1:
+                    groups.append(small)
+                else:
+                    cl = fcluster(linkage(cents, "single"), POOL_DISTANCE_M, criterion="distance")
+                    for c in sorted(set(cl)):
+                        groups.append([small[i] for i in range(len(small)) if cl[i] == c])
+            spacing = min(MAX_SPACING_M, math.sqrt(target_m2 / POINTS_PER_PROVINCE))
+            ks = allocate([sum(p.area for p in g) for g in groups], n_reg)
+            reg_rows = []
+            for g, k in zip(groups, ks):
+                x, y = grid_points(g, spacing)
+                if len(x) == 0:  # tiny group the grid missed: one province at a representative point
+                    rp = shapely.union_all(g).representative_point()
+                    x, y = np.array([rp.x]), np.array([rp.y])
+                k = min(k, len(x))
+                lab = kmeans(x, y, k)
+                if k > 1:
+                    lab = repair_fragments(x, y, lab, spacing)
+                for l in sorted(set(lab.tolist())):
+                    m = lab == l
+                    reg_rows.append([x[m].mean(), y[m].mean(), m.sum() * spacing * spacing / 1e6, int(m.sum()), len(g), x[m], y[m], spacing, region_id])
+            # deterministic ids inside a region: sort by (rounded y, rounded x)
+            reg_rows.sort(key=lambda r: (round(r[1] / 1000), round(r[0] / 1000)))
+            state_rows.extend(reg_rows)
         for r in state_rows:
-            rows.append((tag, name, r[0], r[1], r[2], r[3], r[4], r[7]))
+            rows.append((tag, name, r[0], r[1], r[2], r[3], r[4], r[7], r[8]))
             all_x.append(r[5]); all_y.append(r[6]); all_l.append(np.full(len(r[5]), gid, dtype=np.int32))
             gid += 1
         areas = [r[2] for r in state_rows]
-        report.append(f"{tag:4} {name[:30]:30} area {area_km2:12,.0f}  provinces {len(state_rows):4}  target {n_state:4}  size min/avg/max {min(areas):8,.0f} {np.mean(areas):8,.0f} {max(areas):8,.0f}")
+        report.append(f"{tag:4} {name[:30]:30} area {state_area[tag]:12,.0f}  regions {len(feats):4}  provinces {len(state_rows):4}  size min/avg/max {min(areas):8,.0f} {np.mean(areas):8,.0f} {max(areas):8,.0f}")
 
     inv = pyproj.Transformer.from_crs("EPSG:8857", "EPSG:4326", always_xy=True)
     with open(inter / "provinces.csv", "w", encoding="utf-8", newline="\n") as f:
-        f.write("id,state,lon,lat,area_km2_est,points,landmasses,spacing_m\n")
+        f.write("id,state,region,lon,lat,area_km2_est,points,landmasses,spacing_m\n")
         for i, r in enumerate(rows):
             lon, lat = inv.transform(r[2], r[3])
-            f.write(f"{i},{r[0]},{lon:.4f},{lat:.4f},{r[4]:.0f},{r[5]},{r[6]},{r[7]:.1f}\n")
+            f.write(f"{i},{r[0]},{r[8]},{lon:.4f},{lat:.4f},{r[4]:.0f},{r[5]},{r[6]},{r[7]:.1f}\n")
     np.save(inter / "province_points_x.npy", np.concatenate(all_x).astype(np.float64))
     np.save(inter / "province_points_y.npy", np.concatenate(all_y).astype(np.float64))
     np.save(inter / "province_points_label.npy", np.concatenate(all_l))

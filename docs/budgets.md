@@ -8,7 +8,7 @@ emulated machines.
 
 ## Map (set in Phase 3, 2026-11-08)
 
-Map size: 15,240 provinces, 862 sea zones, 599,261 cells, 2,492 sites. File 74.5 MB.
+Map size: 16,182 provinces (in 3,019 regions), 862 sea zones, 599,300 cells, 2,492 sites. File 74.7 MB.
 
 | What | Measured | Budget |
 | --- | --- | --- |
@@ -52,7 +52,7 @@ Measured, not budgeted (no time budget is set for save and load yet; set in Phas
 | Save | Size |
 | --- | --- |
 | Proving-ground world (64 provinces, 6 units), tick 2000 | 441 bytes |
-| Map world, fresh (15,240 provinces, 173 countries, no play) | 35,933 bytes |
+| Map world, fresh (16,182 provinces, 173 countries, no play) | 35,933 bytes |
 | Map world after opening one province and changing 5 cells | 36,039 bytes |
 
 Per-cell state is stored as differences from the starting state, so the 599,261 cells add nothing until they change. Save and replay files are byte-identical on macOS and Linux arm64 for the same run (checked with sha256).
@@ -67,7 +67,7 @@ Per-tick and per-system time budgets and the simulation memory budget are set in
 
 ## Render file (client data)
 
-- `data/baked/meridian-render.bin` (version 2, Mercator, with cell rings): about 149 MB, built in about 40 s from the intermediate files, byte-identical across runs. Loads in about 55 ms (release). Level sizes: coarse 368k triangles, medium 768k, fine 960k.
+- `data/baked/meridian-render.bin` (version 2, Mercator, with cell rings): about 191 MB, built in about 40 s from the intermediate files, byte-identical across runs. Loads in about 55 ms (release). Level sizes: coarse 368k triangles, medium 768k, fine 960k.
 
 ## Client frame time (offscreen, with readback, Apple M4 Pro, 2560x1440, whole world drawn each frame)
 

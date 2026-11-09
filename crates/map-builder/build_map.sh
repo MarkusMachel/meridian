@@ -15,6 +15,7 @@ NE=data/source/natural-earth
 $B/fetch_sources.sh
 mkdir -p "$INTER"
 $PY $B/build_states.py $NE "$INTER"
+$PY $B/build_regions.py $NE "$INTER"
 $PY $B/build_provinces.py "$INTER"
 $PY $B/validate_provinces.py "$INTER"
 $PY $B/build_cells.py "$INTER"
