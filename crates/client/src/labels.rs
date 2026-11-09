@@ -10,7 +10,6 @@ use crate::camera::Camera;
 use crate::camera::Bounds;
 use meridian_data::{Labels, RenderData};
 
-const EARTH_RADIUS_M: f64 = 6_378_137.0;
 /// Average glyph width as a share of the font size.
 const GLYPH: f64 = 0.62;
 // Sizes in logical points (multiplied by the screen's scale factor, so they stay readable on
@@ -37,11 +36,6 @@ pub struct PlacedLabel {
     pub kind: LabelKind,
 }
 
-/// How much Mercator stretches lengths at this northing (1 at the equator).
-fn stretch(y_m: f64) -> f64 {
-    (y_m / EARTH_RADIUS_M).cosh()
-}
-
 struct Candidate {
     i: usize,
     kind: LabelKind,
@@ -62,7 +56,7 @@ fn candidates(out: &mut Vec<Candidate>, labels: &Labels, kind: LabelKind, camera
             continue;
         }
         let n = labels.names[i].chars().count().max(1) as f64;
-        let extent_px = (labels.area_km2[i] as f64).sqrt() * 1000.0 * stretch(labels.y[i] as f64) / camera.m_per_px;
+        let extent_px = (labels.area_km2[i] as f64).sqrt() * 1000.0 / camera.m_per_px;
         let size = (extent_px * 0.8 / (n * GLYPH)).min(max_px);
         if size < min_px {
             continue;
@@ -163,10 +157,4 @@ mod tests {
         assert_eq!(placed[0].text, "Bigland");
     }
 
-    #[test]
-    fn mercator_stretch_grows_toward_the_poles() {
-        assert!((stretch(0.0) - 1.0).abs() < 1e-9);
-        // 60 degrees north is about 8.4 million metres in Web Mercator; the stretch there is 1 / cos 60 = 2
-        assert!((stretch(8_399_737.0) - 2.0).abs() < 0.01);
-    }
 }

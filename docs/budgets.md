@@ -67,7 +67,7 @@ Per-tick and per-system time budgets and the simulation memory budget are set in
 
 ## Render file (client data)
 
-- `data/baked/meridian-render.bin` (version 2, Mercator, with cell rings): about 204 MB, built in about 40 s from the intermediate files, byte-identical across runs. Loads in about 55 ms (release). Level sizes: coarse 368k triangles, medium 768k, fine 960k.
+- `data/baked/meridian-render.bin` (version 2, Mercator, with cell rings): about 189 MB, built in about 40 s from the intermediate files, byte-identical across runs. Loads in about 55 ms (release). Level sizes: coarse 368k triangles, medium 768k, fine 960k.
 
 ## Client frame time (offscreen, with readback, Apple M4 Pro, 2560x1440, whole world drawn each frame)
 

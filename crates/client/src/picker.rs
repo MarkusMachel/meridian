@@ -98,7 +98,7 @@ pub struct CellPicker {
 
 impl CellPicker {
     pub fn new(data: &RenderData, bounds: Bounds) -> CellPicker {
-        // Squares of about 50 km: cells are about 15 km across (up to 75 km at high latitudes in Mercator).
+        // Squares of about 50 km: cells are about 15 km across (a little more near the edges of the projection).
         let square_m = 50_000.0;
         let cols = (bounds.width() / square_m).ceil() as usize + 1;
         let rows = (bounds.height() / square_m).ceil() as usize + 1;

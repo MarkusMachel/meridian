@@ -1,6 +1,6 @@
 """Extra layers of the render file (client only): shaded relief, rivers and place names.
 
-All coordinates are Web Mercator metres (EPSG:3857), like the rest of the render file.
+All coordinates are Equal Earth metres (EPSG:8857), like the rest of the render file.
 Deterministic: no random numbers, fixed sampling, sorted or file-order iteration.
 """
 import json
@@ -13,42 +13,41 @@ import shapely
 from scipy import ndimage
 from shapely.geometry import shape
 
-R = 6378137.0
-HALF = np.pi * R                      # half the Web Mercator world width
-RELIEF_W = 8192                       # pixels across the whole world (about 4.9 km each)
-_LL_TO_M = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+RELIEF_W = 8192                       # pixels across the map (about 4.2 km each)
+_EQ_TO_LL = pyproj.Transformer.from_crs("EPSG:8857", "EPSG:4326", always_xy=True)
+_LL_TO_EQ = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:8857", always_xy=True)
 
 
-def relief(inter, y_min, y_max):
-    """Hillshade as a u8 raster in Mercator. Byte 128 means "no change"; the client multiplies the
-    province colour by byte/128. Returns (pixels, info) with info = width, height, x0, y0, x1, y1
-    (metres; row 0 is the top edge y1)."""
+def relief(inter, extent):
+    """Hillshade as a u8 raster in the Equal Earth plane. Byte 128 means "no change"; the client
+    multiplies the province colour by byte/128. `extent` = (x_min, x_max, y_min, y_max) of the data.
+    Returns (pixels, info) with info = width, height, x0, y0, x1, y1 (metres; row 0 is the top edge y1)."""
     elev = np.load(Path(inter) / "elev_60s_int16.npy", mmap_mode="r")
-    px = 2 * HALF / RELIEF_W
+    x_min, x_max, y_min, y_max = extent
+    px = (x_max - x_min + 600_000) / RELIEF_W
+    x0 = np.floor((x_min - 300_000) / px) * px
     y0 = np.floor((y_min - 300_000) / px) * px
     y1 = np.ceil((y_max + 300_000) / px) * px
     H = int(round((y1 - y0) / px))
-    xs = -HALF + (np.arange(RELIEF_W) + 0.5) * px
-    lon = np.degrees(xs / R)
-    col = np.clip(np.floor((lon + 180.0) * 60.0).astype(np.int64), 0, 21599)
+    xs = x0 + (np.arange(RELIEF_W) + 0.5) * px
     Z = np.zeros((H, RELIEF_W), dtype=np.float32)
-    lat_row = np.empty(H)
-    for i in range(H):
-        y = y1 - (i + 0.5) * px
-        lat = np.degrees(np.arctan(np.sinh(y / R)))
-        lat_row[i] = lat
-        # average two 1-arc-minute rows and the columns between neighbouring pixels
-        r0 = int(np.clip(np.floor((90.0 - lat) * 60.0), 0, 10799))
-        rows = elev[r0:r0 + 1, :]  # one row read; columns averaged below
-        v = np.maximum(np.asarray(rows[0]).astype(np.float32), 0.0)
-        c1 = np.clip(col + 1, 0, 21599)
-        Z[i] = 0.5 * (v[col] + v[c1])
+    step = 256
+    for r0 in range(0, H, step):
+        rows = np.arange(r0, min(H, r0 + step))
+        ys = y1 - (rows + 0.5) * px
+        X, Y = np.meshgrid(xs, ys)
+        lon, lat = _EQ_TO_LL.transform(X.ravel(), Y.ravel())
+        lon = np.asarray(lon).reshape(X.shape); lat = np.asarray(lat).reshape(X.shape)
+        ok = np.isfinite(lon) & np.isfinite(lat) & (np.abs(lon) <= 180.0) & (np.abs(lat) <= 90.0)
+        row = np.clip(np.floor((90.0 - np.where(ok, lat, 0.0)) * 60.0).astype(np.int64), 0, 10799)
+        col = np.clip(np.floor((np.where(ok, lon, 0.0) + 180.0) * 60.0).astype(np.int64), 0, 21599)
+        v = np.maximum(np.asarray(elev)[row, col].astype(np.float32), 0.0)
+        Z[rows] = np.where(ok, v, 0.0)
     Z = ndimage.gaussian_filter(Z, 1.0)
-    cosl = np.cos(np.radians(lat_row)).astype(np.float32)[:, None]
-    ground = px * cosl                                  # metres on the ground per pixel
+    # the plane is equal-area, so a pixel is about px metres on the ground (shape distortion is small)
     dzdx = np.zeros_like(Z); dzdy = np.zeros_like(Z)
-    dzdx[:, 1:-1] = (Z[:, 2:] - Z[:, :-2]) / (2 * ground)
-    dzdy[1:-1, :] = -(Z[2:, :] - Z[:-2, :]) / (2 * ground[1:-1])   # north is up, rows go down
+    dzdx[:, 1:-1] = (Z[:, 2:] - Z[:, :-2]) / (2 * px)
+    dzdy[1:-1, :] = -(Z[2:, :] - Z[:-2, :]) / (2 * px)   # north is up, rows go down
     ez = 6.0
     gx, gy = ez * dzdx, ez * dzdy
     norm = np.sqrt(gx * gx + gy * gy + 1.0)
@@ -58,7 +57,7 @@ def relief(inter, y_min, y_max):
     mult = np.clip(shade, 0.35, 1.6) * (1.0 + 0.12 * np.minimum(Z / 3000.0, 1.0))
     out = np.clip(np.rint(mult * 128.0), 0, 255).astype(np.uint8)
     out[Z <= 0] = 128
-    info = np.array([RELIEF_W, H, int(round(-HALF)), int(round(y0)), int(round(HALF)), int(round(y1))], dtype="<i4")
+    info = np.array([RELIEF_W, H, int(round(x0)), int(round(y0)), int(round(x0 + RELIEF_W * px)), int(round(y1))], dtype="<i4")
     return out.reshape(-1), info
 
 
@@ -79,7 +78,7 @@ def rivers(ne_dir):
             seg = seg[np.abs(seg[:, 1]) < 84.0] if (np.abs(seg[:, 1]) >= 84.0).any() else seg
             if len(seg) < 2:
                 continue
-            mx, my = _LL_TO_M.transform(seg[:, 0], seg[:, 1])
+            mx, my = _LL_TO_EQ.transform(seg[:, 0], seg[:, 1])
             xs.append(np.rint(mx).astype(np.int32)); ys.append(np.rint(my).astype(np.int32))
             off.append(off[-1] + len(seg)); rank.append(min(int(rec["scalerank"]), 255))
     return np.concatenate(xs), np.concatenate(ys), np.array(off, dtype=np.uint32), np.array(rank, dtype=np.uint8)
@@ -98,7 +97,7 @@ def _pack(names, pts, areas, prefix, A):
     np.cumsum([len(b) for b in blobs], out=off[1:])
     A[f"{prefix}_name_off"] = off
     A[f"{prefix}_name_bytes"] = np.frombuffer(b"".join(blobs), dtype=np.uint8) if blobs else np.zeros(0, dtype=np.uint8)
-    mx, my = _LL_TO_M.transform([p[0] for p in pts], [p[1] for p in pts])
+    mx, my = _LL_TO_EQ.transform([p[0] for p in pts], [p[1] for p in pts])
     A[f"{prefix}_x"] = np.rint(mx).astype(np.int32); A[f"{prefix}_y"] = np.rint(my).astype(np.int32)
     A[f"{prefix}_area_km2"] = np.minimum(np.rint(areas), 4e9).astype("<u4")
 

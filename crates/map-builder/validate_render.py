@@ -3,7 +3,7 @@
 Usage: python -I validate_render.py <intermediate-dir> <render-file>
 Fails (exit 1) if: the header or checksum is wrong; a province has no triangles at some level;
 a level's total fill area differs from the true land area by more than 0.5 %; a triangle index is
-out of range; at the finest level a province's fill area is off by more than 2 % and 100 km2 (areas are the Mercator-inflated ones, so high-latitude coasts lose more) (coarser levels
+out of range; at the finest level a province's fill area is off by more than 2 % and 100 km2 (areas are in the Equal Earth plane) (coarser levels
 may lose small islands on purpose, so they only report how many provinces are off by more than
 10 %); line offsets are not increasing; or the three line kinds are not all present.
 """
@@ -21,7 +21,7 @@ def read(path):
     b = Path(path).read_bytes()
     assert b[:4] == b"MRRD", "bad magic"
     ver, kind, n, crc = struct.unpack_from("<IIQQ", b, 4)
-    assert ver == 3 and kind == 4, f"version {ver} kind {kind}"
+    assert ver == 4 and kind == 4, f"version {ver} kind {kind}"
     payload = b[28:28 + n]
     assert len(payload) == n and zlib.crc32(payload) == crc, "bad checksum"
     (count,) = struct.unpack_from("<I", payload, 0)

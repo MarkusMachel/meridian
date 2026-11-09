@@ -1,7 +1,7 @@
 //! Meridian client. `client` opens the window (keys: space pause, 1-5 speed, . step); `client --screenshot out.png` renders one frame
 //! without a window (for checking the map). Run from the repository root, or pass `--data DIR`.
 //!
-//! Options: --data DIR (default data/baked) | --size WxH | --view CX,CY,M_PER_PX (Web Mercator metres)
+//! Options: --data DIR (default data/baked) | --size WxH | --view CX,CY,M_PER_PX (Equal Earth metres)
 //!          --mode political|value|terrain | --ticks N | --select PROVINCE | --bench FRAMES
 
 mod app;

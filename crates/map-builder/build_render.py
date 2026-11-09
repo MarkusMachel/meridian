@@ -12,9 +12,9 @@ Method (deterministic, no random numbers):
   * per level: a triangle mesh of every province (fill) and noded border lines, each
     classified as province border, state border or coast;
   * one extra set of cell outline segments at full detail.
-Coordinates are Web Mercator metres (EPSG:3857), the projection the client displays, rounded to
-whole metres (i32). The simulation's own coordinates stay Equal Earth (equal area); this file is
-display-only. Geometry is simplified in Equal Earth first, then projected, so neighbours still fit.
+Coordinates are Equal Earth metres (EPSG:8857), the same equal-area plane the simulation uses, so
+the display has no area stretch toward the poles. They are rounded to whole metres (i32).
+Version 3 and earlier used Web Mercator; that is no longer read.
 """
 import csv
 import struct
@@ -30,18 +30,15 @@ from shapely import STRtree
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import render_extras  # noqa: E402
 
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 KIND_RENDER = 4
 LEVELS_M = [8000.0, 2500.0, 800.0]
 KIND_PROVINCE, KIND_STATE, KIND_COAST = 0, 1, 2
 
-_TO_MERCATOR = pyproj.Transformer.from_crs("EPSG:8857", "EPSG:3857", always_xy=True)
-
-
-def to_mercator(coords):
-    """(n, 2) Equal Earth metres -> (n, 2) Web Mercator metres."""
-    x, y = _TO_MERCATOR.transform(coords[:, 0], coords[:, 1])
-    return np.column_stack([x, y])
+def to_display(coords):
+    """(n, 2) simulation coordinates -> display coordinates. The display plane is the simulation's
+    own Equal Earth plane, so this is the identity (kept as one place to change the projection)."""
+    return coords
 
 
 def read_wkb(path):
@@ -70,9 +67,9 @@ def rounded(geoms):
 
 
 def project(geoms):
-    """Equal Earth -> Mercator, rounded to whole metres vertex by vertex (so a vertex shared by two
-    provinces stays shared), then repair any polygon the rounding or the projection made invalid."""
-    out = shapely.transform(geoms, lambda c: np.rint(to_mercator(c)))
+    """Rounded to whole metres vertex by vertex (so a vertex shared by two
+    provinces stays shared), then repair any polygon the rounding made invalid."""
+    out = shapely.transform(geoms, lambda c: np.rint(to_display(c)))
     bad = ~shapely.is_valid(out)
     if bad.any():
         out[bad] = shapely.make_valid(out[bad])
@@ -173,8 +170,8 @@ def main(inter, out_file, levels, ne_dir):
     print(f"{len(cells)} cells, {P} provinces")
 
     full = province_polygons(cells, cell_prov, P)
-    cells_m = shapely.transform(cells, to_mercator)
-    # the projected, unsimplified area of each province (km2): what the validator holds the fills to
+    cells_m = shapely.transform(cells, to_display)
+    # the unsimplified area of each province (km2): what the validator holds the fills to
     A = {}
     A["province_ref_area_km2"] = np.rint(shapely.area(project(full)) / 1e6).astype("<u4")
     A["levels_tolerance_m"] = np.array(levels, dtype="<u4")
@@ -197,15 +194,15 @@ def main(inter, out_file, levels, ne_dir):
     # centres in the display projection (area-weighted province centres, as in the baked map)
     cx = np.load(c / "cell_x.npy").astype(np.float64); cy = np.load(c / "cell_y.npy").astype(np.float64)
     carea = np.load(c / "cell_area_ha.npy").astype(np.float64)
-    cm = np.rint(to_mercator(np.column_stack([cx, cy]))).astype(np.int32)
+    cm = np.rint(to_display(np.column_stack([cx, cy]))).astype(np.int32)
     A["cell_mx"], A["cell_my"] = cm[:, 0].copy(), cm[:, 1].copy()
     wsum = np.maximum(np.bincount(cell_prov, weights=carea, minlength=P), 1)
     pe = np.column_stack([np.bincount(cell_prov, weights=cx * carea, minlength=P) / wsum, np.bincount(cell_prov, weights=cy * carea, minlength=P) / wsum])
-    pm = np.rint(to_mercator(pe)).astype(np.int32)
+    pm = np.rint(to_display(pe)).astype(np.int32)
     A["province_mx"], A["province_my"] = pm[:, 0].copy(), pm[:, 1].copy()
     print(f"cell rings: {len(A['cell_ring_x'])} points; x range {cm[:,0].min()}..{cm[:,0].max()}, y range {cm[:,1].min()}..{cm[:,1].max()}")
     # shaded relief, rivers and place names
-    A["relief"], A["relief_info"] = render_extras.relief(inter, int(cm[:, 1].min()), int(cm[:, 1].max()))
+    A["relief"], A["relief_info"] = render_extras.relief(inter, (int(cm[:, 0].min()), int(cm[:, 0].max()), int(cm[:, 1].min()), int(cm[:, 1].max())))
     print(f"relief: {A['relief_info'][0]} x {A['relief_info'][1]} pixels")
     A["river_x"], A["river_y"], A["river_off"], A["river_rank"] = render_extras.rivers(ne_dir)
     print(f"rivers: {len(A['river_off']) - 1} lines, {len(A['river_x'])} points")

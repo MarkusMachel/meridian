@@ -1,4 +1,4 @@
-//! Pan and zoom over the display plane (Web Mercator metres). Screen y grows downward, world y upward.
+//! Pan and zoom over the display plane (Equal Earth metres). Screen y grows downward, world y upward.
 
 /// Closest zoom: metres per screen pixel.
 pub const MIN_M_PER_PX: f64 = 100.0;

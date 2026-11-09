@@ -36,12 +36,12 @@ fn render_file_fits_the_baked_map() {
         }
         let missing = has.iter().filter(|&&h| !h).count();
         assert_eq!(missing, 0, "level {k}: {missing} provinces have no fill");
-        // all three line kinds present, and every point lies in Web Mercator range (x within +-20,038 km)
+        // all three line kinds present, and every point lies in the Equal Earth range (x within +-17,300 km)
         for kind in [LineKind::ProvinceBorder, LineKind::StateBorder, LineKind::Coast] {
             assert!((0..l.line_count()).any(|i| l.kind(i) == kind), "level {k}: no {kind:?} lines");
         }
-        assert!(l.line_x.iter().chain(&l.vx).all(|x| x.abs() <= 20_037_509), "level {k}: x out of range");
-        assert!(l.line_y.iter().chain(&l.vy).all(|y| (-9_000_000..19_000_000).contains(y)), "level {k}: y out of range");
+        assert!(l.line_x.iter().chain(&l.vx).all(|x| x.abs() <= 17_300_000), "level {k}: x out of range");
+        assert!(l.line_y.iter().chain(&l.vy).all(|y| (-8_500_000..8_500_000).contains(y)), "level {k}: y out of range");
     }
     assert!(r.cell_seg.len() / 4 > 1_000_000);
     assert_eq!(r.cell_mx.len(), m.cell_count() as usize);

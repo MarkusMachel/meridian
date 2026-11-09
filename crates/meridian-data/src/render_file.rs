@@ -3,15 +3,15 @@
 //! Only the client reads this; the engine never does. Container (little-endian):
 //! magic "MRRD" | format_version u32 | kind u32 (4) | payload_len u64 | checksum u64 (CRC-32 of
 //! the payload, zero-extended). The payload uses the same array directory as the baked map.
-//! Coordinates are Web Mercator metres (EPSG:3857), the display projection. The simulation's own
-//! coordinates (`cell_x`, `cell_y` in the map) stay Equal Earth; the file carries the cell and
-//! province centres in the display projection so the client never converts between them.
+//! Coordinates are Equal Earth metres (EPSG:8857), the same equal-area plane the simulation uses,
+//! so the display has no stretch toward the poles. The file carries cell and province centres in
+//! this plane too.
 
 use crate::error::{DataError, ErrorKind};
 use std::collections::HashMap;
 use std::path::Path;
 
-pub const RENDER_FORMAT_VERSION: u32 = 3;
+pub const RENDER_FORMAT_VERSION: u32 = 4;
 const KIND_RENDER: u32 = 4;
 const HEADER_LEN: usize = 28;
 
@@ -55,13 +55,13 @@ impl RenderLevel {
     }
 }
 
-/// Shaded relief: a greyscale raster over the Mercator plane. Row 0 is the top edge (`y1`).
+/// Shaded relief: a greyscale raster over the Equal Earth plane. Row 0 is the top edge (`y1`).
 /// A byte of 128 means "no change"; the client multiplies colours by `byte / 128`.
 #[derive(Clone, Debug)]
 pub struct Relief {
     pub width: u32,
     pub height: u32,
-    /// Edges of the raster in Mercator metres.
+    /// Edges of the raster in Equal Earth metres.
     pub x0: i32,
     pub y0: i32,
     pub x1: i32,
@@ -69,7 +69,7 @@ pub struct Relief {
     pub pixels: Vec<u8>,
 }
 
-/// Place names with one point each (Mercator metres) and the area they cover.
+/// Place names with one point each (Equal Earth metres) and the area they cover.
 #[derive(Clone, Debug, Default)]
 pub struct Labels {
     pub names: Vec<String>,
@@ -373,7 +373,7 @@ mod tests {
             array(&mut p, &format!("{pre}_area_km2"), 3, &u(&[100]), 1);
         }
         let mut f = b"MRRD".to_vec();
-        f.extend_from_slice(&3u32.to_le_bytes());
+        f.extend_from_slice(&4u32.to_le_bytes());
         f.extend_from_slice(&4u32.to_le_bytes());
         f.extend_from_slice(&(p.len() as u64).to_le_bytes());
         f.extend_from_slice(&(crc32fast::hash(&p) as u64).to_le_bytes());
