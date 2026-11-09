@@ -14,6 +14,16 @@ echo "$a"; echo "$c"
 [ "$a" = "$b" ] || { echo "FAIL: same seed gave different results"; exit 1; }
 [ "${a##*hash=}" != "${c##*hash=}" ] || { echo "FAIL: different seeds gave same hash"; exit 1; }
 ./target/release/runner validate data/scenarios/sample.ron
+# Phase 5: save/load and replay round trips (scratch files go in a temp directory).
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+./target/release/runner record 4 3000 "$tmp/a.mrrp"
+./target/release/runner replay "$tmp/a.mrrp"
+./target/release/runner save 4 2000 "$tmp/s.mrsv"
+l=$(./target/release/runner load "$tmp/s.mrsv" 1000)
+s4=$(./target/release/runner 4 3000)
+echo "$l"
+[ "${l##*hash=}" = "${s4##*hash=}" ] || { echo "FAIL: save at tick 2000 + 1000 ticks differs from an uninterrupted run"; exit 1; }
 # The baked world map (made by crates/map-builder/build_map.sh, not committed).
 if [ -f data/baked/meridian-map.bin ]; then
   MERIDIAN_REQUIRE_MAP=1 cargo test --release -p meridian-data --test world_map

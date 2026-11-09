@@ -1,6 +1,6 @@
 //! World state: parallel arrays indexed by ID, plus the clock and RNG.
 
-use crate::cells::CellState;
+use crate::cells::{CellChanges, CellState};
 use crate::combat::CombatState;
 use crate::clock::{Clock, Signals};
 use crate::command::{Command, Rejection};
@@ -16,13 +16,13 @@ use std::sync::Arc;
 use crate::rng::Rng;
 use crate::tech::Tech;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Unit {
     pub owner: CountryId,
     pub location: ProvinceId,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 pub enum SiteKind {
     City = 0,
@@ -35,7 +35,7 @@ pub enum SiteKind {
 
 /// A city, port, airfield, bridge, facility or base. Anchored to a province
 /// for now; Phase 3 adds the cell anchor.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Site {
     pub kind: SiteKind,
     pub province: ProvinceId,
@@ -69,7 +69,7 @@ pub trait Ruleset {
 }
 
 /// A deferred effect such as bombardment damage. `kind` is defined by the ruleset.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Event {
     pub kind: u16,
     pub target: u32,
@@ -99,7 +99,7 @@ impl PartialEq for MapRef {
 }
 impl Eq for MapRef {}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct World {
     seed: u64,
     clock: Clock,
@@ -128,7 +128,9 @@ pub struct World {
     /// Events waiting for the next event phase. Normally empty at the end of a tick.
     events: Vec<Event>,
     /// Present only on a world with a map.
+    #[serde(skip)]
     cells: Option<CellState>,
+    #[serde(skip)]
     map: Option<MapRef>,
 }
 
@@ -167,8 +169,7 @@ impl World {
         for (p, &st) in map.province_state.iter().enumerate() {
             w.controller[p] = CountryId(st);
         }
-        let cell_controller = map.cell_province.iter().map(|&p| map.province_state[p as usize]).collect();
-        w.cells = Some(CellState::new(cell_controller));
+        w.cells = Some(Self::fresh_cells(&map));
         w.map = Some(MapRef(map));
         w
     }
@@ -213,6 +214,34 @@ impl World {
             cells.controller[cell as usize] = c;
         }
         true
+    }
+
+    /// The checksum of the attached map, if any (saves record it so they load on the right map).
+    pub fn map_checksum(&self) -> Option<u32> {
+        self.map.as_ref().map(|m| m.0.checksum)
+    }
+
+    /// Per-cell state as differences from a fresh world on the same map.
+    pub fn cell_changes(&self) -> Option<CellChanges> {
+        let (map, cells) = (self.map.as_ref()?, self.cells.as_ref()?);
+        Some(cells.changes_from(&Self::fresh_cells(&map.0)))
+    }
+
+    fn fresh_cells(map: &Map) -> CellState {
+        CellState::new(map.cell_province.iter().map(|&p| map.province_state[p as usize]).collect())
+    }
+
+    /// Re-attach a map to a world that was loaded without one (cells and map are not part
+    /// of the serialized body), then apply the saved cell differences.
+    pub fn attach_map(&mut self, map: Arc<Map>, changes: &CellChanges) -> Result<(), String> {
+        if map.province_count() != self.province_count() || map.state_count() > self.country_count as u32 {
+            return Err("the save does not fit this map (province or country counts differ)".into());
+        }
+        let mut cells = Self::fresh_cells(&map);
+        cells.apply_changes(changes)?;
+        self.cells = Some(cells);
+        self.map = Some(MapRef(map));
+        Ok(())
     }
 
     pub fn map(&self) -> Option<&Map> {
@@ -627,6 +656,10 @@ impl World {
             }
             self.forces.hash_into(&mut h);
         }
+        if self.treaty_threshold != 500 {
+            h.write_u8(12);
+            h.write_u32(self.treaty_threshold);
+        }
         if !self.tech.is_empty() {
             h.write_u8(10);
             self.tech.hash_into(&mut h);
@@ -730,6 +763,7 @@ mod tests {
         let mut w = base.clone(); w.unit_ext_mut(UnitId(0)).unwrap().encircled_days = 2; variants.push(w);
         let mut w = base.clone(); w.econ_mut().pop.add_for_setup(crate::econ::PopGroup { cell: 0, culture: 0, religion: 0, heads: 1, support: [0; 4] }); variants.push(w);
         let mut w = base.clone(); w.econ_mut().finance_mut(CountryId(0)).treasury = 5; variants.push(w);
+        let mut w = base.clone(); w.set_treaty_threshold(700); variants.push(w);
         let mut w = base.clone(); w.polity_mut().set_law(CountryId(0), 1, 2); variants.push(w);
         let mut w = base.clone(); w.diplomacy_mut().add_alliance(0, vec![0, 1]); variants.push(w);
         let mut w = base.clone(); w.event_state_mut().set_flag(CountryId(0), 3, true); variants.push(w);

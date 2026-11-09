@@ -30,13 +30,13 @@ pub struct EventDef {
     pub severity: u8,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Pending {
     pub event: u32,
     pub raised_tick: u64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EventState {
     /// Sorted by event ID; at most one pending instance per event.
     pending: Vec<Pending>,

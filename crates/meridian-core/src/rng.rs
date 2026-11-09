@@ -1,7 +1,7 @@
 //! xoshiro256** seeded with splitmix64. Pure integer math, so the sequence
 //! is identical on every platform. State is exposed for hashing and saving.
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Rng {
     s: [u64; 4],
 }

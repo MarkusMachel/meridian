@@ -3,7 +3,7 @@
 
 use crate::ids::{CellId, CountryId, ProvinceId, UnitId};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Command {
     /// Order a unit to a province. (Placeholder: teleports. Pathing is Phase 3.)
     MoveUnit { issuer: CountryId, unit: UnitId, to: ProvinceId },

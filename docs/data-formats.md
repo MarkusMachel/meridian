@@ -63,3 +63,35 @@ Units: coordinates are Equal Earth (EPSG:8857) metres as i32; areas are hectares
 | Sites | `site_kind` (0 city, 1 port, 2 airfield, 3 crossing, 4 industry, 5 base), `site_cell`, `site_province`, `site_size` (city population estimate), `site_built`, `site_destroyed` (32767 = never), `site_verified` (0 = assumed present in 1990, from modern data), `site_names` |
 
 The loader checks the checksum, every array's length, value ranges, that cells form an exact partition into provinces, and that both graphs are sorted and symmetric (and edge kinds agree in both directions). `Map::validate_world()` then checks the world rules.
+
+## Save file (version 1)
+
+Written by `meridian_data::save_world`, read by `load_world`. Header is little-endian, same shape as the other containers.
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | magic `MRSV` |
+| 4 | 4 | format version (u32) |
+| 8 | 4 | kind (u32; 3 = save) |
+| 12 | 8 | payload length (u64) |
+| 20 | 8 | checksum (u64: CRC-32 of the payload, zero-extended) |
+| 28 | n | payload |
+
+Payload: postcard encoding (serde) of `SaveBody { map_checksum: Option<u32>, state_hash: u64, changes: Option<CellChanges>, world: World }`.
+
+- `world` is every field of `World` except the attached map and the per-cell arrays. Field order is the declaration order in `meridian-core` (postcard has no field names), so reordering or adding fields to a serialized type is a format change: bump `SAVE_VERSION` and add a step to `migrate`.
+- `changes` holds only the cells whose state differs from a fresh world on the same map (ascending by cell) plus the list of opened provinces.
+- The map is never inside a save. `map_checksum` must match the map given to `load_world`.
+- After decoding, `load_world` recomputes the state hash and refuses the file if it differs from `state_hash`.
+- Derived caches (zones of control, front segments, units by cell) are not saved; callers rebuild them after loading.
+- Versions: a newer version than the build knows fails with "written by a newer build"; an older one than `OLDEST_MIGRATABLE` fails with "older than the oldest this build can migrate". Version 1 is the first, so there are no migration steps yet.
+
+## Replay file (version 1)
+
+Written by `meridian_data::replay::write_replay`. Same 28-byte header with magic `MRRP`, kind 4, CRC-32 checksum.
+
+Payload: postcard of `Replay { scenario: String, seed: u64, map_checksum: Option<u32>, ticks: u64, commands: Vec<Entry>, checkpoints: Vec<(tick, hash)>, final_hash: u64 }`.
+
+- `Entry` is `{ tick, source (Player, Ai, Headquarters), command }`, in the order the commands were applied.
+- AI and headquarters commands are logged like player commands, so playing a replay never runs the AI.
+- `checkpoints` hold the state hash before the stated tick runs; the player stops at the first mismatch.

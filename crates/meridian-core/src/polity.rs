@@ -9,7 +9,7 @@ use crate::ids::CountryId;
 
 // ------------------------------------------------------------------ politics
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CountryPolity {
     pub regime: u16,
     /// 0 to 100.
@@ -20,7 +20,7 @@ pub struct CountryPolity {
 
 /// A faction inside a country. `support` is its share of influence in thousandths;
 /// `cohesion` how united it is (0 to 1000).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Faction {
     pub country: CountryId,
     pub kind: u16,
@@ -29,7 +29,7 @@ pub struct Faction {
 }
 
 /// A rebel or political movement; becomes a country when it wins.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Movement {
     pub id: u32,
     pub origin: CountryId,
@@ -42,7 +42,7 @@ pub struct Movement {
 
 /// War level of one side against another: 0 none, then rules-defined steps
 /// (insurgency, limited, total, nuclear by convention).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct War {
     /// `a < b`.
     pub a: CountryId,
@@ -53,7 +53,7 @@ pub struct War {
 
 pub const MAX_WAR_LEVEL: u8 = 4;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Polity {
     countries: Vec<CountryPolity>,
     factions: Vec<Faction>,
@@ -283,7 +283,7 @@ impl Polity {
 
 // ------------------------------------------------------------------ diplomacy
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Treaty {
     pub id: u32,
     pub kind: u16,
@@ -296,14 +296,14 @@ pub struct Treaty {
 }
 
 /// An alliance in a tier (0 historic, 1 regional by convention).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Alliance {
     pub id: u32,
     pub tier: u8,
     pub members: Vec<u16>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Decision {
     Pending,
     Join,
@@ -311,7 +311,7 @@ pub enum Decision {
 }
 
 /// A call to arms: `caller` was attacked by `enemy`; each other member decides.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AllianceCall {
     pub alliance: u32,
     pub caller: CountryId,
@@ -320,14 +320,14 @@ pub struct AllianceCall {
     pub decisions: Vec<(u16, Decision)>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Vote {
     Yes,
     No,
     Abstain,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Diplomacy {
     treaties: Vec<Treaty>,
     alliances: Vec<Alliance>,

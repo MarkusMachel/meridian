@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+serde = { version = "1.0", features = ["derive"] }
 
 [features]
 # Raw access to the true world through a view. For tests and debug builds only; the AI crate must not enable it.

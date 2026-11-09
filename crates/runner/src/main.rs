@@ -33,6 +33,11 @@ fn main() {
         Some("run") => std::process::exit(cmd_run(&args[1..])),
         Some("map-validate") => std::process::exit(cmd_map_validate(&args[1..])),
         Some("map-bench") => std::process::exit(cmd_map_bench(&args[1..])),
+        Some("record") => std::process::exit(cmd_record(&args[1..])),
+        Some("replay") => std::process::exit(cmd_replay(&args[1..])),
+        Some("diff") => std::process::exit(cmd_diff(&args[1..])),
+        Some("save") => std::process::exit(cmd_save(&args[1..])),
+        Some("load") => std::process::exit(cmd_load(&args[1..])),
         Some("probe") => std::process::exit(cmd_probe(&args[1..])),
         _ => {}
     }
@@ -401,4 +406,145 @@ fn cmd_probe(args: &[String]) -> i32 {
     let bytes = CELLS * (2 + 4) + groups.len() * std::mem::size_of::<Group>();
     println!("stub state size: {:.1} MB", bytes as f64 / 1e6);
     (!same) as i32
+}
+
+const PG_SCENARIO: &str = "proving-ground:64";
+
+fn read_file(path: &str) -> Option<Vec<u8>> {
+    match std::fs::read(path) {
+        Ok(b) => Some(b),
+        Err(e) => {
+            eprintln!("{path}: {e}");
+            None
+        }
+    }
+}
+
+/// `runner record <seed> <ticks> <out.mrrp>` : run the proving ground, log every command, write a replay.
+/// Every third command is logged as coming from the AI, to exercise the log.
+fn cmd_record(args: &[String]) -> i32 {
+    use meridian_data::replay::Recorder;
+    let [seed, ticks, out] = args else {
+        eprintln!("usage: runner record <seed> <ticks> <out.mrrp>");
+        return 2;
+    };
+    let (seed, ticks): (u64, u64) = (seed.parse().expect("seed must be an integer"), ticks.parse().expect("ticks must be an integer"));
+    let mut world = scenario(seed, 64);
+    let mut rec = Recorder::new(&world, PG_SCENARIO, 240);
+    for t in 0..ticks {
+        let cmds = commands_for(t, 64);
+        let (player, ai) = cmds.split_at(cmds.len().min(1));
+        rec.step(&mut world, &ProvingGround, player, ai, &[]);
+    }
+    let replay = rec.finish(&world);
+    let bytes = meridian_data::replay::write_replay(&replay);
+    std::fs::write(out, &bytes).expect("cannot write output file");
+    println!("{out}: {} commands, {} checkpoints, {} bytes, final hash {:016x}", replay.commands.len(), replay.checkpoints.len(), bytes.len(), replay.final_hash);
+    0
+}
+
+/// `runner replay <file.mrrp>` : re-run a recorded run and compare every checkpoint.
+fn cmd_replay(args: &[String]) -> i32 {
+    let Some(path) = args.first() else {
+        eprintln!("usage: runner replay <file.mrrp>");
+        return 2;
+    };
+    let Some(bytes) = read_file(path) else { return 1 };
+    let replay = match meridian_data::replay::read_replay(path, &bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    if replay.scenario != PG_SCENARIO {
+        eprintln!("{path}: this runner can only replay scenario '{PG_SCENARIO}', not '{}'", replay.scenario);
+        return 1;
+    }
+    let mut world = scenario(replay.seed, 64);
+    match meridian_data::replay::play(&mut world, &ProvingGround, &replay) {
+        Ok(h) => {
+            println!("{path}: replayed {} ticks, final hash {h:016x} matches", replay.ticks);
+            0
+        }
+        Err(d) => {
+            eprintln!("{path}: {d}");
+            1
+        }
+    }
+}
+
+/// `runner diff <a.mrrp> <b.mrrp>` : replay both from their starts and name the first tick whose hashes differ.
+fn cmd_diff(args: &[String]) -> i32 {
+    let [a, b] = args else {
+        eprintln!("usage: runner diff <a.mrrp> <b.mrrp>");
+        return 2;
+    };
+    let mut traces = Vec::new();
+    for path in [a, b] {
+        let Some(bytes) = read_file(path) else { return 1 };
+        let r = match meridian_data::replay::read_replay(path, &bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("{e}");
+                return 1;
+            }
+        };
+        let mut w = scenario(r.seed, 64);
+        traces.push(meridian_data::replay::hash_trace(&mut w, &ProvingGround, &r.commands, r.ticks));
+    }
+    match meridian_data::replay::first_divergence(&traces[0], &traces[1]) {
+        None => {
+            println!("identical for {} ticks", traces[0].len() - 1);
+            0
+        }
+        Some(i) => {
+            if i == 0 {
+                println!("the runs differ before tick 0 (different starting state)");
+            } else {
+                println!("first difference is in the state after tick {} (the state hash at tick {i} is the first that differs)", i - 1);
+            }
+            1
+        }
+    }
+}
+
+/// `runner save <seed> <ticks> <out.mrsv>` : run the proving ground and write a save.
+fn cmd_save(args: &[String]) -> i32 {
+    let [seed, ticks, out] = args else {
+        eprintln!("usage: runner save <seed> <ticks> <out.mrsv>");
+        return 2;
+    };
+    let (seed, ticks): (u64, u64) = (seed.parse().expect("seed must be an integer"), ticks.parse().expect("ticks must be an integer"));
+    let mut world = scenario(seed, 64);
+    for t in 0..ticks {
+        world.tick(&commands_for(t, 64), &ProvingGround);
+    }
+    let bytes = meridian_data::save_world(&world);
+    std::fs::write(out, &bytes).expect("cannot write output file");
+    println!("{out}: tick {ticks}, {} bytes, hash {:016x}", bytes.len(), world.state_hash());
+    0
+}
+
+/// `runner load <file.mrsv> <more ticks>` : load a save (checking its hash) and keep running.
+fn cmd_load(args: &[String]) -> i32 {
+    let [path, more] = args else {
+        eprintln!("usage: runner load <file.mrsv> <more ticks>");
+        return 2;
+    };
+    let more: u64 = more.parse().expect("ticks must be an integer");
+    let Some(bytes) = read_file(path) else { return 1 };
+    let mut world = match meridian_data::load_world(path, &bytes, None) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    let start = world.clock().tick();
+    for t in start..start + more {
+        world.tick(&commands_for(t, 64), &ProvingGround);
+    }
+    println!("{path}: loaded at tick {start}, ran {more} more, hash={:016x}", world.state_hash());
+    0
 }

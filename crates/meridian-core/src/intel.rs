@@ -12,7 +12,7 @@ pub const DISCIPLINES: usize = 6;
 pub const AGENCY_FOREIGN: u8 = 1;
 pub const AGENCY_DOMESTIC: u8 = 2;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Agency {
     pub country: CountryId,
     pub flags: u8,
@@ -21,14 +21,14 @@ pub struct Agency {
 }
 
 /// An abstract network of sources inside a target country.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Network {
     pub owner: CountryId,
     pub target: CountryId,
     pub strength: u16,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Operation {
     pub id: u32,
     pub owner: CountryId,
@@ -41,7 +41,7 @@ pub struct Operation {
 }
 
 /// What `observer` knows about a thing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Contact {
     pub observer: CountryId,
     pub target_kind: u8,
@@ -54,7 +54,7 @@ pub struct Contact {
     pub strength_est: u16,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Intel {
     agencies: Vec<Agency>,
     networks: Vec<Network>,

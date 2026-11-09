@@ -8,7 +8,7 @@
 
 use crate::hash::StateHasher;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActiveSet {
     ids: Vec<u32>,
 }

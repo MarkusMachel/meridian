@@ -13,7 +13,7 @@ use crate::ids::{CellId, CountryId, HullId, OfficerId, PilotId, UnitId};
 use crate::modifiers::TraitSet;
 
 /// Where a unit in transit will arrive.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Destination {
     Cell(CellId),
     Province(crate::ids::ProvinceId),
@@ -21,14 +21,14 @@ pub enum Destination {
 
 /// A move in progress (by air, sea or other long hop): not a tracked flight or ship,
 /// just a destination and an arrival tick.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Transit {
     pub destination: Destination,
     pub arrive_tick: u64,
 }
 
 /// Attributes of a unit that live beside `Unit { owner, location }`, indexed by UnitId.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UnitExt {
     /// Command chain (brigade -> division -> corps ...). The engine gives it no meaning.
     pub parent: Option<UnitId>,
@@ -68,7 +68,7 @@ impl Default for UnitExt {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Officer {
     pub country: CountryId,
     /// Days before 1990-01-01 (so age is derived from the clock).
@@ -81,7 +81,7 @@ pub struct Officer {
     pub traits: TraitSet,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Pilot {
     pub country: CountryId,
     pub wing: Option<UnitId>,
@@ -92,7 +92,7 @@ pub struct Pilot {
     pub status: u8,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Hull {
     /// Catalog model (index into rules data).
     pub model: u16,
@@ -108,7 +108,7 @@ pub struct Hull {
     pub status: u8,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Forces {
     pub officers: Vec<Officer>,
     pub pilots: Vec<Pilot>,

@@ -30,7 +30,7 @@ pub mod view;
 pub mod world;
 
 pub use active::ActiveSet;
-pub use cells::CellState;
+pub use cells::{CellChanges, CellDiff, CellState};
 pub use clock::{Clock, Date, Signals};
 pub use command::{Command, Rejection};
 pub use fixed::Fixed;

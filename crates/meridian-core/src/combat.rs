@@ -12,7 +12,7 @@ use crate::modifiers::TraitSet;
 
 /// One unit's condition when a fight began. Rout is decided from this, not from how
 /// the fight goes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StartSnapshot {
     pub unit: UnitId,
     pub cohesion: u16,
@@ -21,7 +21,7 @@ pub struct StartSnapshot {
 }
 
 /// A direct engagement (assault) in progress on one cell.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Engagement {
     pub cell: CellId,
     pub start_tick: u64,
@@ -31,7 +31,7 @@ pub struct Engagement {
 }
 
 /// Prisoners held by `captor`, originally from `origin`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PrisonerPool {
     pub captor: CountryId,
     pub origin: CountryId,
@@ -40,7 +40,7 @@ pub struct PrisonerPool {
 
 pub const DOCTRINE_TRACKS: usize = 3; // land, air, naval; the names live in rules data
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DoctrineState {
     pub current: u16,
     /// Thousandths.
@@ -51,7 +51,7 @@ pub struct DoctrineState {
 }
 
 /// A bridge across a river edge between two cells (`a < b`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Bridge {
     pub a: u32,
     pub b: u32,
@@ -62,7 +62,7 @@ pub struct Bridge {
     pub owner: CountryId,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CombatState {
     engagements: Vec<Engagement>,
     /// (cell, signed pressure), sorted by cell. Zero entries are removed.

@@ -45,6 +45,18 @@ What this tells us:
 - Hashing is the one real cost: 19.5 ms. Do not hash every tick. If per-tick hashing is wanted for desync checks, switch to a faster hash or hash only changed regions; decide in Phase 5 or 8.
 - No budget is set yet. Real budgets come when the real systems exist (Phase 8).
 
+## Phase 5 save sizes (2026-11-09)
+
+Measured, not budgeted (no time budget is set for save and load yet; set in Phase 8 with real systems):
+
+| Save | Size |
+| --- | --- |
+| Proving-ground world (64 provinces, 6 units), tick 2000 | 441 bytes |
+| Map world, fresh (15,240 provinces, 173 countries, no play) | 35,933 bytes |
+| Map world after opening one province and changing 5 cells | 36,039 bytes |
+
+Per-cell state is stored as differences from the starting state, so the 599,261 cells add nothing until they change. Save and replay files are byte-identical on macOS and Linux arm64 for the same run (checked with sha256).
+
 ## Not yet set
 
 Per-tick and per-system time budgets and the simulation memory budget are set in Phase 8.

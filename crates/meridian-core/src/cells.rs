@@ -20,7 +20,7 @@ pub mod hazard {
     pub const FLOOD: u8 = 8;
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CellState {
     pub controller: Vec<u16>,
     /// 0 (none) to 255 (flattened).
@@ -35,6 +35,71 @@ pub struct CellState {
     pub ground: Vec<u8>,
     /// Provinces currently simulated cell by cell. Sorted.
     pub opened: ActiveSet,
+}
+
+/// One cell whose state differs from the starting state.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CellDiff {
+    pub cell: u32,
+    pub controller: u16,
+    pub damage: u8,
+    pub hazards: u8,
+    pub last_fought: u32,
+    pub hunger: u8,
+    pub food: u8,
+    pub ground: u8,
+}
+
+/// Per-cell state saved as differences from the starting state of the map.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CellChanges {
+    /// Ascending by cell.
+    pub cells: Vec<CellDiff>,
+    pub opened: Vec<u32>,
+}
+
+impl CellState {
+    fn row(&self, i: usize) -> CellDiff {
+        CellDiff {
+            cell: i as u32,
+            controller: self.controller[i],
+            damage: self.damage[i],
+            hazards: self.hazards[i],
+            last_fought: self.last_fought[i],
+            hunger: self.hunger[i],
+            food: self.food[i],
+            ground: self.ground[i],
+        }
+    }
+
+    /// The cells that differ from `base` (the state a fresh map world starts with).
+    pub fn changes_from(&self, base: &CellState) -> CellChanges {
+        let cells = (0..self.len()).filter(|&i| self.row(i) != base.row(i)).map(|i| self.row(i)).collect();
+        CellChanges { cells, opened: self.opened.iter().collect() }
+    }
+
+    /// Apply saved differences on top of a fresh state. Fails if a cell is out of range
+    /// or the list is not strictly ascending.
+    pub fn apply_changes(&mut self, ch: &CellChanges) -> Result<(), String> {
+        let mut last: Option<u32> = None;
+        for d in &ch.cells {
+            if d.cell as usize >= self.len() || last.is_some_and(|l| d.cell <= l) {
+                return Err(format!("cell change for cell {} is out of range or out of order", d.cell));
+            }
+            last = Some(d.cell);
+            let i = d.cell as usize;
+            self.controller[i] = d.controller;
+            self.damage[i] = d.damage;
+            self.hazards[i] = d.hazards;
+            self.last_fought[i] = d.last_fought;
+            self.hunger[i] = d.hunger;
+            self.food[i] = d.food;
+            self.ground[i] = d.ground;
+        }
+        self.opened = ActiveSet::new();
+        self.opened.extend(&ch.opened);
+        Ok(())
+    }
 }
 
 impl CellState {

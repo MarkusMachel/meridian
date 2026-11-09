@@ -14,7 +14,7 @@ use crate::ids::CountryId;
 // ---------------------------------------------------------------- population groups
 
 /// A group of people in one cell with a shared culture and religion.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PopGroup {
     pub cell: u32,
     pub culture: u16,
@@ -25,7 +25,7 @@ pub struct PopGroup {
 }
 
 /// Groups sorted by (cell, culture, religion). Identity survives movement.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PopTable {
     groups: Vec<PopGroup>,
     /// Running totals, hashed, so conservation is checkable at any time:
@@ -129,7 +129,7 @@ impl PopTable {
 // ---------------------------------------------------------------- buildings, stocks
 
 /// A levelled building. One per (cell, kind).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Building {
     pub cell: u32,
     pub kind: u16,
@@ -195,7 +195,7 @@ pub struct ProjectTemplate {
 }
 
 /// Where and what to build.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProjectSpec {
     pub owner: CountryId,
     pub region: u32,
@@ -204,7 +204,7 @@ pub struct ProjectSpec {
     pub target_level: u8,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Project {
     pub id: u32,
     pub owner: CountryId,
@@ -227,7 +227,7 @@ impl Project {
 
 // ---------------------------------------------------------------- production, trade, money
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProductionOrder {
     pub country: CountryId,
     pub model: u16,
@@ -236,7 +236,7 @@ pub struct ProductionOrder {
     pub priority: u8,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TradeRoute {
     pub from_region: u32,
     pub to_region: u32,
@@ -245,7 +245,7 @@ pub struct TradeRoute {
     pub tariff_permille: u16,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Finance {
     pub treasury: i64,
     pub debt: i64,
@@ -253,7 +253,7 @@ pub struct Finance {
     pub inflation: i32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Economy {
     pub goods: u16,
     pub regions: u32,

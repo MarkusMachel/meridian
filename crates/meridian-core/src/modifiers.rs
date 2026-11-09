@@ -14,7 +14,7 @@
 
 use crate::fixed::Fixed;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Modifier {
     /// Which quantity this changes. Meaning is defined by rules data.
     pub key: u16,
@@ -25,7 +25,7 @@ pub struct Modifier {
 }
 
 /// Per-category clamp on the summed value.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CategoryRules {
     caps: Vec<(Fixed, Fixed)>,
 }
@@ -63,7 +63,7 @@ pub fn apply_modifiers<'a>(base: Fixed, key: u16, mods: impl Iterator<Item = &'a
 }
 
 /// Which holders a trait's modifiers reach.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Scope {
     /// Only the entity holding the trait.
     Holder,
@@ -71,14 +71,14 @@ pub enum Scope {
     HolderAndBelow,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TraitDef {
     pub scope: Scope,
     pub modifiers: Vec<Modifier>,
 }
 
 /// Trait definitions indexed by trait ID (`u16`).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct TraitTable {
     defs: Vec<TraitDef>,
 }
@@ -123,7 +123,7 @@ impl TraitTable {
 }
 
 /// A sorted list of trait IDs held by one entity.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TraitSet {
     ids: Vec<u16>,
 }

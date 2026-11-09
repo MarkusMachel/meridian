@@ -5,7 +5,7 @@
 /// Days from 1970-01-01 to the start date 1990-01-01.
 const START_DAYS_SINCE_1970: i64 = 7305;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Date {
     pub year: i32,
     pub month: u8, // 1..=12
@@ -14,14 +14,14 @@ pub struct Date {
 }
 
 /// Rollover signals for the tick that is about to run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Signals {
     pub new_day: bool,
     pub new_month: bool,
     pub new_year: bool,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Clock {
     tick: u64,
 }

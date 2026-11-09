@@ -5,7 +5,7 @@
 use crate::hash::StateHasher;
 use crate::ids::CountryId;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Program {
     pub id: u32,
     pub country: CountryId,
@@ -14,7 +14,7 @@ pub struct Program {
     pub progress: u32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Tech {
     fields: u8,
     /// `[country * fields + field]`, 0 to 100.

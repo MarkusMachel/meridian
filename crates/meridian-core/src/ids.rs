@@ -2,7 +2,7 @@
 
 macro_rules! id_type {
     ($name:ident, $inner:ty) => {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub $inner);
         impl $name {
             #[inline]

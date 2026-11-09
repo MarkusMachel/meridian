@@ -2,7 +2,7 @@
 //! Multiplication and division use i128 intermediates so they cannot
 //! overflow midway. Results that do not fit saturate (documented, tested).
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub struct Fixed(i64);
 
 const FRAC_BITS: u32 = 32;

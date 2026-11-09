@@ -137,3 +137,21 @@ All of this is plumbing: tables, conserving primitives, votes and validation. No
   - Visibility and air-defense caches, goods transport over the network beyond the flow primitive, trade-route execution, price updates as systems, and the civil-war trigger rules are rules/systems work and not built.
   - The "caches rebuild identically after save and load" test waits for Phase 5.
   - Only the map-less paths of economy, politics and events were exercised on the full map; none of this has run on the real 600,000-cell world yet.
+
+## Phase 5: save, load and replay (2026-11-09)
+
+- **Encoding: serde + postcard on the core types, not a hand-written writer.** `meridian-core` now depends on `serde` (derive only, no I/O); state types derive `Serialize`/`Deserialize`, and the attached map and the per-cell arrays are `#[serde(skip)]`. Data definitions that are not state (hooks, event definitions, recipes, schedules, rejections) deliberately do not derive it. Postcard has no field names, so field order is the format: adding or reordering a serialized field means bumping `SAVE_VERSION` and adding a `migrate` step. This is written in `docs/data-formats.md`.
+- **Save** (`meridian-data/src/save.rs`): container `MRSV` v1 with CRC-32, body = map checksum, state hash, cell differences, world. Per-cell state is saved as differences from a fresh world on the same map (35.9 KB for a whole map world). The loader recomputes the state hash after decoding and refuses a mismatch; a wrong or missing map is refused with the checksums in the message. Derived caches are never saved.
+- **Versions:** newer than known fails with "written by a newer build"; older than `OLDEST_MIGRATABLE` fails with "older than the oldest this build can migrate". Version 1 is the first, so `migrate` is a stub with one arm.
+- **Replay** (`replay.rs`): container `MRRP` v1. Commands are logged with tick, source (player, AI, headquarters) and order of application; checkpoints every N ticks. Playing stops at the first mismatching checkpoint and reports its tick. `hash_trace` plus `first_divergence` compare two runs tick by tick. Replays never run the AI.
+- **Autosave** (`autosave.rs`): policy only (when to save, file names, which old ones to delete); no menus, no file writing in the engine.
+- **Tools:** `runner record | replay | diff | save | load`; `scripts/check.sh` now round-trips a replay and a save and compares against an uninterrupted run.
+- **Fixed on the way:** `treaty_threshold` was a world field missing from the state hash; it is now hashed when it differs from the default (so older hashes are unchanged), and the hash-coverage test covers it.
+- **Done test results:**
+  - Save at 10 random ticks of a year, load, continue: hash equals the uninterrupted run every time.
+  - A recorded replay (with AI-tagged commands) reproduces its final hash after a file round trip; tampering is caught at the next checkpoint (tick 400 for a change on tick 300 with checkpoints every 100); a wrong seed is caught at tick 0.
+  - The divergence finder names tick 301 for a command removed on tick 300.
+  - Version 0, version 99, a flipped byte, a truncated file and a non-save file each fail with a specific message.
+  - On the real map, a world with an opened province and changed cells loads to an identical hash, and `ZocCache` rebuilt from the loaded world equals the original (this also closes the Phase 4 "caches rebuild identically after save and load" item).
+  - Save and replay bytes are identical on macOS and Linux arm64 (sha256); tests pass in Docker `rust:1.91`.
+- **Not done:** Linux x86_64 was not re-run for this phase; the map-world save was not timed (sizes only); a migration has never been exercised because no old version exists.
