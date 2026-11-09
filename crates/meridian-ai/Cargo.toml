@@ -1,0 +1,9 @@
+[package]
+name = "meridian-ai"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# Deliberately no `omniscient` feature: the AI sees only what its country knows.
+[dependencies]
+meridian-core = { path = "../meridian-core" }

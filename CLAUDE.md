@@ -46,6 +46,7 @@ A 1990 grand strategy game. This repo is currently the **engine only**. The full
 crates/
   meridian-core/   engine: state, clock, commands, scheduler, map queries
   meridian-data/   schemas, loader, validator, baker, save/replay formats
+  meridian-ai/     AI boundary: reads a country view, returns commands (no omniscient feature)
   map-builder/     offline Python tool: boundary data -> baked map
   proving-ground/  throwaway test ruleset
   runner/          headless runs, hashes, benchmarks

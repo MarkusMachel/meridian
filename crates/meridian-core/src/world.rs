@@ -4,12 +4,17 @@ use crate::cells::CellState;
 use crate::combat::CombatState;
 use crate::clock::{Clock, Signals};
 use crate::command::{Command, Rejection};
+use crate::econ::{Economy, ProductionOrder, ProjectSpec, ProjectTemplate};
+use crate::events::{EventSet, EventState};
 use crate::forces::{Destination, Forces, UnitExt};
 use crate::hash::StateHasher;
+use crate::intel::Intel;
+use crate::polity::{Diplomacy, Polity, MAX_WAR_LEVEL};
 use crate::ids::{CountryId, ProvinceId, UnitId};
 use crate::map::Map;
 use std::sync::Arc;
 use crate::rng::Rng;
+use crate::tech::Tech;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unit {
@@ -51,6 +56,16 @@ pub trait Ruleset {
     /// (target, source, kind, then raise order). Events raised from here wait for
     /// the next tick. The default ignores events.
     fn on_event(&self, _world: &mut World, _event: &Event) {}
+
+    /// Cost of building something of this kind; `None` means it cannot be built.
+    /// Event definitions, if this ruleset has any (used to validate `ChooseEvent`).
+    fn event_set(&self) -> Option<&EventSet> {
+        None
+    }
+
+    fn project_template(&self, _kind: u16) -> Option<ProjectTemplate> {
+        None
+    }
 }
 
 /// A deferred effect such as bombardment damage. `kind` is defined by the ruleset.
@@ -100,6 +115,14 @@ pub struct World {
     unit_ext: Vec<UnitExt>,
     forces: Forces,
     combat: CombatState,
+    econ: Economy,
+    scripted: EventState,
+    tech: Tech,
+    intel: Intel,
+    polity: Polity,
+    diplomacy: Diplomacy,
+    /// How many factions per treaty approval must pass, in thousandths (a world setting).
+    treaty_threshold: u32,
     /// Indexed by SiteId order of creation.
     sites: Vec<Site>,
     /// Events waiting for the next event phase. Normally empty at the end of a tick.
@@ -123,6 +146,13 @@ impl World {
             unit_ext: Vec::new(),
             forces: Forces::default(),
             combat: CombatState::default(),
+            econ: Economy::default(),
+            scripted: EventState::default(),
+            tech: Tech::default(),
+            intel: Intel::default(),
+            polity: Polity::default(),
+            diplomacy: Diplomacy::default(),
+            treaty_threshold: 500,
             sites: Vec::new(),
             events: Vec::new(),
             cells: None,
@@ -251,6 +281,122 @@ impl World {
     pub fn combat_mut(&mut self) -> &mut CombatState {
         &mut self.combat
     }
+    pub fn tech(&self) -> &Tech {
+        &self.tech
+    }
+    pub fn tech_mut(&mut self) -> &mut Tech {
+        &mut self.tech
+    }
+    pub fn intel(&self) -> &Intel {
+        &self.intel
+    }
+    pub fn intel_mut(&mut self) -> &mut Intel {
+        &mut self.intel
+    }
+    pub fn event_state(&self) -> &EventState {
+        &self.scripted
+    }
+    pub fn event_state_mut(&mut self) -> &mut EventState {
+        &mut self.scripted
+    }
+    pub fn polity(&self) -> &Polity {
+        &self.polity
+    }
+    pub fn polity_mut(&mut self) -> &mut Polity {
+        &mut self.polity
+    }
+    pub fn diplomacy(&self) -> &Diplomacy {
+        &self.diplomacy
+    }
+    pub fn diplomacy_mut(&mut self) -> &mut Diplomacy {
+        &mut self.diplomacy
+    }
+    pub fn set_treaty_threshold(&mut self, permille: u32) {
+        self.treaty_threshold = permille;
+    }
+
+    /// Add a country at run time (a breakaway state or a successor). IDs are never reused.
+    pub fn create_country(&mut self) -> CountryId {
+        let id = CountryId(self.country_count);
+        self.country_count += 1;
+        id
+    }
+
+    /// A unit changes sides (a defection or a transfer). Returns false if it does not exist.
+    pub fn set_unit_owner(&mut self, u: UnitId, to: CountryId) -> bool {
+        match self.units.get_mut(u.index()).and_then(|x| x.as_mut()) {
+            Some(unit) if to.0 < self.country_count => {
+                unit.owner = to;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Split a country in two (the civil war outcome). The original government keeps its
+    /// ID; a new country takes the listed provinces and units plus `share_permille` of the
+    /// treasury, debt and equipment stockpile. Nothing is created or destroyed: people,
+    /// goods and units stay where they are, and the money and equipment shares add back
+    /// up to the original totals. Returns the new country, or None if the origin is unknown.
+    pub fn split_country(&mut self, origin: CountryId, provinces: &[ProvinceId], units: &[UnitId], share_permille: u32) -> Option<CountryId> {
+        if origin.0 >= self.country_count || share_permille > 1000 {
+            return None;
+        }
+        let new = self.create_country();
+        for &p in provinces {
+            if p.0 >= self.province_count() || self.controller[p.index()] != origin {
+                continue;
+            }
+            self.controller[p.index()] = new;
+            if let (Some(map), Some(cells)) = (self.map.as_ref(), self.cells.as_mut()) {
+                for &c in map.0.cells_of(p) {
+                    cells.controller[c as usize] = new.0;
+                }
+                for b in self.econ.buildings().to_vec() {
+                    if b.owner == origin && map.0.cell_province[b.cell as usize] == p.0 {
+                        self.econ.set_building(crate::econ::Building { owner: new, ..b });
+                    }
+                }
+            }
+            for s in self.sites.iter_mut() {
+                if s.province == p && s.owner == origin {
+                    s.owner = new;
+                }
+            }
+        }
+        for &u in units {
+            if self.unit(u).is_some_and(|x| x.owner == origin) {
+                self.set_unit_owner(u, new);
+            }
+        }
+        let f = self.econ.finance(origin);
+        let (t, d) = (f.treasury * share_permille as i64 / 1000, f.debt * share_permille as i64 / 1000);
+        self.econ.finance_mut(origin).treasury -= t;
+        self.econ.finance_mut(origin).debt -= d;
+        self.econ.finance_mut(new).treasury += t;
+        self.econ.finance_mut(new).debt += d;
+        for model in self.econ.models_held_by(origin) {
+            let give = self.econ.equipment(origin, model) * share_permille as u64 / 1000;
+            self.econ.take_equipment(origin, model, give);
+            self.econ.add_equipment(new, model, give);
+        }
+        let c = self.polity.country(origin);
+        *self.polity.country_mut(new) = c;
+        Some(new)
+    }
+
+    /// Check a command against the current state without changing it. Works on a copy of
+    /// the world, so it is exact but not free; use it for player previews, not every tick.
+    pub fn dry_run(&self, cmd: &Command, ruleset: &dyn Ruleset) -> Result<(), Rejection> {
+        self.clone().apply(cmd, ruleset)
+    }
+
+    pub fn econ(&self) -> &Economy {
+        &self.econ
+    }
+    pub fn econ_mut(&mut self) -> &mut Economy {
+        &mut self.econ
+    }
 
     /// Put a unit in transit: it arrives at `destination` on `arrive_tick`.
     /// Returns false if the unit does not exist or is already in transit.
@@ -294,7 +440,7 @@ impl World {
         let signals = self.clock.signals();
         let mut report = TickReport::default();
         for cmd in commands {
-            if let Err(why) = self.apply(cmd) {
+            if let Err(why) = self.apply(cmd, ruleset) {
                 report.rejected.push((cmd.clone(), why));
             }
         }
@@ -340,7 +486,7 @@ impl World {
     }
 
     /// Validate fully, then mutate. On Err the world is untouched.
-    fn apply(&mut self, cmd: &Command) -> Result<(), Rejection> {
+    fn apply(&mut self, cmd: &Command, ruleset: &dyn Ruleset) -> Result<(), Rejection> {
         match *cmd {
             Command::MoveUnit { issuer, unit, to } => {
                 self.check_country(issuer)?;
@@ -359,6 +505,76 @@ impl World {
                 self.check_country(controller)?;
                 self.check_province(province)?;
                 self.controller[province.index()] = controller;
+                Ok(())
+            }
+            Command::StartConstruction { issuer, region, cell, kind, level } => {
+                self.check_country(issuer)?;
+                let owner = {
+                    let (Some(map), Some(cells)) = (self.map.as_ref(), self.cells.as_ref()) else { return Err(Rejection::NoSuchCell(cell)) };
+                    if cell.0 >= map.0.cell_count() {
+                        return Err(Rejection::NoSuchCell(cell));
+                    }
+                    cells.controller[cell.index()]
+                };
+                if owner != issuer.0 {
+                    return Err(Rejection::Refused("cell is not under your control"));
+                }
+                if region >= self.econ.regions {
+                    return Err(Rejection::Refused("no such region"));
+                }
+                if level == 0 {
+                    return Err(Rejection::Refused("target level must be above zero"));
+                }
+                let t = ruleset.project_template(kind).ok_or(Rejection::Refused("cannot be built"))?;
+                let now = self.clock.tick();
+                self.econ.start_project(ProjectSpec { owner: issuer, region, cell: cell.0, kind, target_level: level }, &t, now);
+                Ok(())
+            }
+            Command::SetWarLevel { issuer, against, level } => {
+                self.check_country(issuer)?;
+                self.check_country(against)?;
+                if issuer == against {
+                    return Err(Rejection::Refused("cannot be at war with yourself"));
+                }
+                if level > MAX_WAR_LEVEL {
+                    return Err(Rejection::Refused("no such war level"));
+                }
+                if level < self.polity.war_level(issuer, against) {
+                    return Err(Rejection::Refused("war levels are lowered by treaty"));
+                }
+                self.polity.set_war_level(issuer, against, level);
+                Ok(())
+            }
+            Command::HostileAct { issuer, against, required_level } => {
+                self.check_country(issuer)?;
+                self.check_country(against)?;
+                if self.polity.war_level(issuer, against) < required_level {
+                    return Err(Rejection::Refused("not permitted at your current war level"));
+                }
+                Ok(())
+            }
+            Command::SignTreaty { issuer, treaty } => {
+                self.check_country(issuer)?;
+                let t = self.diplomacy.treaty(treaty).ok_or(Rejection::Refused("no such treaty"))?;
+                if !t.parties.contains(&issuer.0) {
+                    return Err(Rejection::Refused("you are not a party to this treaty"));
+                }
+                let now = self.clock.tick();
+                let (polity, threshold) = (&self.polity, self.treaty_threshold);
+                // A country approves when the factions that do not oppose this kind of treaty
+                // carry the world's threshold of weighted support. No factions: it stalls.
+                let kind = t.kind;
+                let approved = |c: CountryId| polity.faction_vote(c, |f| !polity.opposes(c, f, kind), threshold);
+                if self.diplomacy.sign(treaty, now, approved) { Ok(()) } else { Err(Rejection::Refused("treaty not signed yet")) }
+            }
+            Command::ChooseEvent { issuer, event, option } => {
+                self.check_country(issuer)?;
+                let set = ruleset.event_set().ok_or(Rejection::Refused("no events in this ruleset"))?;
+                set.choose(self, issuer, event, option as usize).map_err(Rejection::Refused)
+            }
+            Command::SetProductionOrder { issuer, model, quantity, priority } => {
+                self.check_country(issuer)?;
+                self.econ.set_order(ProductionOrder { country: issuer, model, quantity, priority });
                 Ok(())
             }
         }
@@ -410,6 +626,30 @@ impl World {
                 e.hash_into(&mut h);
             }
             self.forces.hash_into(&mut h);
+        }
+        if !self.tech.is_empty() {
+            h.write_u8(10);
+            self.tech.hash_into(&mut h);
+        }
+        if !self.intel.is_empty() {
+            h.write_u8(11);
+            self.intel.hash_into(&mut h);
+        }
+        if !self.scripted.is_empty() {
+            h.write_u8(9);
+            self.scripted.hash_into(&mut h);
+        }
+        if !self.polity.is_empty() {
+            h.write_u8(7);
+            self.polity.hash_into(&mut h);
+        }
+        if !self.diplomacy.is_empty() {
+            h.write_u8(8);
+            self.diplomacy.hash_into(&mut h);
+        }
+        if !self.econ.is_empty() {
+            h.write_u8(6);
+            self.econ.hash_into(&mut h);
         }
         if !self.combat.is_empty() {
             h.write_u8(5);
@@ -488,6 +728,13 @@ mod tests {
         let mut w = base.clone(); w.raise_event(Event { kind: 1, target: 2, source: 3, amount: 4 }); variants.push(w);
         let mut w = base.clone(); w.unit_ext_mut(UnitId(0)).unwrap().morale = 5; variants.push(w);
         let mut w = base.clone(); w.unit_ext_mut(UnitId(0)).unwrap().encircled_days = 2; variants.push(w);
+        let mut w = base.clone(); w.econ_mut().pop.add_for_setup(crate::econ::PopGroup { cell: 0, culture: 0, religion: 0, heads: 1, support: [0; 4] }); variants.push(w);
+        let mut w = base.clone(); w.econ_mut().finance_mut(CountryId(0)).treasury = 5; variants.push(w);
+        let mut w = base.clone(); w.polity_mut().set_law(CountryId(0), 1, 2); variants.push(w);
+        let mut w = base.clone(); w.diplomacy_mut().add_alliance(0, vec![0, 1]); variants.push(w);
+        let mut w = base.clone(); w.event_state_mut().set_flag(CountryId(0), 3, true); variants.push(w);
+        let mut w = base.clone(); w.tech_mut().configure(2); w.tech_mut().set_level(CountryId(0), 1, 5); variants.push(w);
+        let mut w = base.clone(); w.intel_mut().set_network(crate::intel::Network { owner: CountryId(0), target: CountryId(1), strength: 3 }); variants.push(w);
         let mut w = base.clone(); w.combat_mut().add_pressure(crate::ids::CellId(1), 4); variants.push(w);
         let mut w = base.clone(); w.combat_mut().add_prisoners(CountryId(0), CountryId(1), 3); variants.push(w);
         let mut w = base.clone(); w.combat_mut().set_fortification(crate::ids::CellId(1), crate::ids::CellId(2), 3); variants.push(w);

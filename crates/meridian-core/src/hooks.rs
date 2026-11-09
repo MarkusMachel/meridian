@@ -23,6 +23,8 @@ pub enum Condition {
     /// The province's value slot is at least `amount`.
     ValueAtLeast { province: ProvinceId, amount: i64 },
     ControllerIs { province: ProvinceId, country: CountryId },
+    /// A flag set by an event or effect.
+    FlagSet { country: CountryId, flag: u16 },
     All(Vec<Condition>),
     Any(Vec<Condition>),
     Not(Box<Condition>),
@@ -33,6 +35,8 @@ pub enum Effect {
     AddValue { province: ProvinceId, amount: i64 },
     SetController { province: ProvinceId, country: CountryId },
     RaiseEvent(Event),
+    SetFlag { country: CountryId, flag: u16 },
+    ClearFlag { country: CountryId, flag: u16 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -111,7 +115,7 @@ impl HookSet {
         let fired: Vec<&Rule> = self.rules.iter().filter(|r| r.rate_due(signals) && holds(&r.condition, world)).collect();
         for r in fired {
             for e in &r.effects {
-                apply(e, world);
+                apply_effect(e, world);
             }
         }
     }
@@ -144,23 +148,29 @@ fn check_condition(c: &Condition, provinces: u32, countries: u16, bad: &mut dyn 
                 bad(format!("country {} does not exist", country.0));
             }
         }
+        Condition::FlagSet { country, .. } => {
+            if country.0 >= countries {
+                bad(format!("country {} does not exist", country.0));
+            }
+        }
         Condition::All(v) | Condition::Any(v) => v.iter().for_each(|c| check_condition(c, provinces, countries, bad)),
         Condition::Not(c) => check_condition(c, provinces, countries, bad),
     }
 }
 
-fn holds(c: &Condition, w: &World) -> bool {
+pub(crate) fn holds(c: &Condition, w: &World) -> bool {
     match c {
         Condition::Always => true,
         Condition::ValueAtLeast { province, amount } => province.0 < w.province_count() && w.value(*province) >= *amount,
         Condition::ControllerIs { province, country } => province.0 < w.province_count() && w.controller(*province) == *country,
+        Condition::FlagSet { country, flag } => w.event_state().flag(*country, *flag),
         Condition::All(v) => v.iter().all(|c| holds(c, w)),
         Condition::Any(v) => v.iter().any(|c| holds(c, w)),
         Condition::Not(c) => !holds(c, w),
     }
 }
 
-fn apply(e: &Effect, w: &mut World) {
+pub(crate) fn apply_effect(e: &Effect, w: &mut World) {
     match e {
         Effect::AddValue { province, amount } => {
             if let Some(v) = w.values_mut().get_mut(province.index()) {
@@ -173,6 +183,8 @@ fn apply(e: &Effect, w: &mut World) {
             }
         }
         Effect::RaiseEvent(ev) => w.raise_event(*ev),
+        Effect::SetFlag { country, flag } => w.event_state_mut().set_flag(*country, *flag, true),
+        Effect::ClearFlag { country, flag } => w.event_state_mut().set_flag(*country, *flag, false),
     }
 }
 

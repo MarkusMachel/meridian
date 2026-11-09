@@ -10,6 +10,7 @@
 //! the `World`, so the state hash sees it.
 
 use crate::clock::Signals;
+use crate::events::EventSet;
 use crate::hooks::HookSet;
 use crate::world::{Event, Ruleset, World};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -74,6 +75,7 @@ pub struct ScheduleBuilder {
     systems: Vec<System>,
     handlers: Vec<(u16, EventFn)>,
     hooks: HookSet,
+    events: Option<EventSet>,
 }
 
 impl ScheduleBuilder {
@@ -89,6 +91,12 @@ impl ScheduleBuilder {
     /// Data-driven rules, run after all systems each tick.
     pub fn hooks(mut self, hooks: HookSet) -> ScheduleBuilder {
         self.hooks = hooks;
+        self
+    }
+
+    /// Event definitions: polled after the hooks, and used to validate `ChooseEvent`.
+    pub fn events(mut self, events: EventSet) -> ScheduleBuilder {
+        self.events = Some(events);
         self
     }
 
@@ -146,7 +154,7 @@ impl ScheduleBuilder {
         let ordered: Vec<System> = order.iter().map(|&i| systems[i].clone()).collect();
         let nanos = (0..ordered.len()).map(|_| AtomicU64::new(0)).collect();
         let runs = (0..ordered.len()).map(|_| AtomicU64::new(0)).collect();
-        Ok(Schedule { systems: ordered, handlers, hooks: self.hooks, nanos, runs })
+        Ok(Schedule { systems: ordered, handlers, hooks: self.hooks, events: self.events, nanos, runs })
     }
 }
 
@@ -156,6 +164,7 @@ pub struct Schedule {
     /// Sorted by event kind.
     handlers: Vec<(u16, EventFn)>,
     hooks: HookSet,
+    events: Option<EventSet>,
     /// Diagnostics only: total time and run count per system. Never read by the
     /// simulation and never hashed.
     nanos: Vec<AtomicU64>,
@@ -203,6 +212,13 @@ impl Ruleset for Schedule {
             self.runs[i].fetch_add(1, Ordering::Relaxed);
         }
         self.hooks.run(world, signals);
+        if let Some(e) = &self.events {
+            e.poll(world, signals);
+        }
+    }
+
+    fn event_set(&self) -> Option<&EventSet> {
+        self.events.as_ref()
     }
 
     fn on_event(&self, world: &mut World, event: &Event) {

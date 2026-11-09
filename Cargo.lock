@@ -193,6 +193,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "meridian-ai"
+version = "0.1.0"
+dependencies = [
+ "meridian-core",
+]
+
+[[package]]
 name = "meridian-core"
 version = "0.1.0"
 
