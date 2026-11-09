@@ -69,7 +69,7 @@ docs/
 
 - Needs Rust 1.95 or newer (egui 0.37). Stack: wgpu, winit 0.30, egui; decisions in `docs/decisions.md`.
 - `crates/map-builder/build_map.sh` also writes `data/baked/meridian-render.bin` (render-only, client reads it, the engine never does).
-- Run from the repo root: `cargo run --release -p client` (window: drag to pan, wheel to zoom, click to select, right-click orders the selected unit, space pause, 1-5 speed, `.` step). `client --screenshot out.png [--view CX,CY,M_PER_PX] [--mode political|value|terrain] [--ticks N] [--bench N]` renders without a window.
+- Run from the repo root: `cargo run --release -p client` (window: drag to pan, wheel to zoom, click to select, right-click orders the selected unit, space pause, 1-5 speed, `.` step). `client --screenshot out.png [--view CX,CY,M_PER_PX (Web Mercator metres)] [--mode political|value|terrain] [--ticks N] [--bench N]` renders without a window.
 - The `inspect` feature (default on) lets the debug panel read raw values; leave it off for a player build.
 
 ## Formats

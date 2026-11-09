@@ -96,18 +96,20 @@ Payload: postcard of `Replay { scenario: String, seed: u64, map_checksum: Option
 - AI and headquarters commands are logged like player commands, so playing a replay never runs the AI.
 - `checkpoints` hold the state hash before the stated tick runs; the player stops at the first mismatch.
 
-## Render file (version 1)
+## Render file (version 2)
 
-Written by `crates/map-builder/build_render.py` (checked by `validate_render.py`), read by `meridian_data::load_render_file`. **Client only; the engine never reads it.** Same header and array directory as the baked map, with magic `MRRD` and kind 4 (CRC-32 checksum). Coordinates are Equal Earth metres as i32, the same space as `cell_x` / `cell_y`.
+Written by `crates/map-builder/build_render.py` (checked by `validate_render.py`), read by `meridian_data::load_render_file`. **Client only; the engine never reads it.** Same header and array directory as the baked map, with magic `MRRD` and kind 4 (CRC-32 checksum). **Coordinates are Web Mercator metres (EPSG:3857) as i32, the display projection**; the simulation keeps its equal-area Equal Earth coordinates, so the file carries cell and province centres in Mercator and the client never converts. Version 1 (Equal Earth) is no longer read.
 
 | Group | Arrays |
 | --- | --- |
-| Levels | `levels_tolerance_m` (u32, coarsest first; default 8000, 2500, 800 m) |
+| Levels | `levels_tolerance_m` (u32, coarsest first; default 8000, 2500, 800 m, measured in Equal Earth metres before projection) |
 | Per level `k` | `l{k}_vx`, `l{k}_vy` (i32), `l{k}_vprov` (u32 province per vertex), `l{k}_tri` (u32, 3 vertex indexes per triangle; a triangle never spans two provinces) |
 | Border lines per level | `l{k}_line_x`, `l{k}_line_y` (i32 points), `l{k}_line_off` (u32, lines + 1 entries), `l{k}_line_kind` (u8: 0 province border, 1 state border, 2 coast) |
-| Cells | `cell_seg` (i32, four values per distinct cell edge: x0, y0, x1, y1) |
+| Cells | `cell_seg` (i32, four values per distinct cell edge: x0, y0, x1, y1), `cell_mx`, `cell_my` (i32 centres), `cell_ring_off` (u32, cells + 1 entries), `cell_ring_x`, `cell_ring_y` (i32, each cell's outer ring without the repeated closing point; used for picking and highlighting) |
+| Provinces | `province_mx`, `province_my` (i32, area-weighted centres), `province_ref_area_km2` (u32, unsimplified Mercator area, for the validator) |
 
-- Provinces are the union of their cells, simplified as one coverage per level (neighbours keep fitting). Small islands may vanish at the coarse levels; the finest level keeps every province within 1 % (or 50 km2) of its true area.
+- Provinces are the union of their cells, simplified as one coverage per level (neighbours keep fitting) in Equal Earth, then projected vertex by vertex and repaired where the projection made a polygon invalid. Small islands may vanish at the coarse levels; the finest level keeps every province within 2 % (or 100 km2) of its true projected area.
+- Mercator inflates areas away from the equator (about 4x at 60 degrees), so the file's areas are not real areas.
 - Lines come from noding all province boundaries; a piece touching one province is coast, two provinces of one state a province border, two states a state border.
 - Not yet in the file: cell fill meshes, rivers, contours, names and label positions, sea zones.
-- Size: about 110 MB for the whole world (cell outlines are 34 MB of it); loads in about 55 ms.
+- Size: about 149 MB for the whole world (cell outlines 34 MB and cell rings 32 MB of it).

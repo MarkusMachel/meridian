@@ -1,12 +1,12 @@
 //! Meridian client. `client` opens the window (keys: space pause, 1-5 speed, . step); `client --screenshot out.png` renders one frame
 //! without a window (for checking the map). Run from the repository root, or pass `--data DIR`.
 //!
-//! Options: --data DIR (default data/baked) | --size WxH | --view CX,CY,M_PER_PX
+//! Options: --data DIR (default data/baked) | --size WxH | --view CX,CY,M_PER_PX (Web Mercator metres)
 //!          --mode political|value|terrain | --ticks N | --select PROVINCE | --bench FRAMES
 
 mod app;
 
-use client::camera::Camera;
+use client::camera::{Bounds, Camera};
 use client::modes::{self, Mode};
 use client::offscreen;
 use client::render::{Renderer, NO_PROVINCE};
@@ -78,7 +78,7 @@ fn main() {
     let Some(out) = args.screenshot.clone() else {
         let world = proving_ground::scenario_on_map(1, map.clone());
         let session = Session::new(world, Box::new(proving_ground::schedule(false)), CountryId(0));
-        app::run(app::Inputs { map, render, session });
+        app::run(app::Inputs { map, render: Arc::new(render), session });
         return;
     };
     let terrain = modes::dominant_terrain(&map);
@@ -101,7 +101,8 @@ fn main() {
         Mode::Terrain => modes::terrain(&terrain),
     };
     renderer.set_colors(&gpu.queue, &colors);
-    let mut camera = Camera::fit(args.size.0 as f64, args.size.1 as f64);
+    let (x0, y0, x1, y1) = render.bounds();
+    let mut camera = Camera::fit(args.size.0 as f64, args.size.1 as f64, Bounds::around(x0, y0, x1, y1));
     if let Some((cx, cy, m)) = args.view {
         camera.cx = cx;
         camera.cy = cy;

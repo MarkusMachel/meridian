@@ -3,7 +3,7 @@
 Usage: python -I validate_render.py <intermediate-dir> <render-file>
 Fails (exit 1) if: the header or checksum is wrong; a province has no triangles at some level;
 a level's total fill area differs from the true land area by more than 0.5 %; a triangle index is
-out of range; at the finest level a province's fill area is off by more than 1 % and 50 km2 (coarser levels
+out of range; at the finest level a province's fill area is off by more than 2 % and 100 km2 (areas are the Mercator-inflated ones, so high-latitude coasts lose more) (coarser levels
 may lose small islands on purpose, so they only report how many provinces are off by more than
 10 %); line offsets are not increasing; or the three line kinds are not all present.
 """
@@ -21,7 +21,7 @@ def read(path):
     b = Path(path).read_bytes()
     assert b[:4] == b"MRRD", "bad magic"
     ver, kind, n, crc = struct.unpack_from("<IIQQ", b, 4)
-    assert ver == 1 and kind == 4, f"version {ver} kind {kind}"
+    assert ver == 2 and kind == 4, f"version {ver} kind {kind}"
     payload = b[28:28 + n]
     assert len(payload) == n and zlib.crc32(payload) == crc, "bad checksum"
     (count,) = struct.unpack_from("<I", payload, 0)
@@ -37,8 +37,8 @@ def read(path):
 def main(inter, path):
     A = read(path)
     inter = Path(inter)
-    exact = np.loadtxt(inter / "provinces_exact.csv", delimiter=",", skiprows=1)
-    true_km2 = exact[:, 2]
+    # reference areas are stored in the file: the unsimplified provinces in the display projection
+    true_km2 = A["province_ref_area_km2"].astype(np.float64)
     P = len(true_km2)
     problems = []
     for k, tol in enumerate(A["levels_tolerance_m"].tolist()):
@@ -57,20 +57,35 @@ def main(inter, path):
             problems.append(f"level {k}: {missing} provinces without fill")
         total = got.sum() / true_km2.sum()
         last = k == len(A["levels_tolerance_m"]) - 1
-        bad = int((np.abs(got - true_km2) > np.maximum(true_km2 * (0.01 if last else 0.10), 50.0 if last else 0.0)).sum())
+        bad = int((np.abs(got - true_km2) > np.maximum(true_km2 * (0.02 if last else 0.10), 100.0 if last else 0.0)).sum())
         if abs(total - 1) > 0.005:
             problems.append(f"level {k}: total fill area is {total:.4f} of the true land area")
         if last and bad:
-            problems.append(f"finest level: {bad} provinces differ more than 1 % from their true area")
+            problems.append(f"finest level: {bad} provinces differ more than 2 % from their true area")
         off = A[f"l{k}_line_off"].astype(np.int64)
         if not (np.diff(off) > 1).all() or off[-1] != len(A[f"l{k}_line_x"]):
             problems.append(f"level {k}: line offsets are broken")
         kinds = np.bincount(A[f"l{k}_line_kind"], minlength=3)
         if (kinds == 0).any():
             problems.append(f"level {k}: a line kind is missing {kinds.tolist()}")
-        print(f"level {k} ({tol} m): fill area {total:.4f} of true, {missing} empty, {bad} off by >{1 if last else 10} %, lines {kinds.tolist()}")
+        print(f"level {k} ({tol} m): fill area {total:.4f} of true, {missing} empty, {bad} off by >{2 if last else 10} %, lines {kinds.tolist()}")
     if len(A["cell_seg"]) % 4:
         problems.append("cell_seg length not a multiple of 4")
+    n_cells = len(A["cell_mx"])
+    ro = A["cell_ring_off"].astype(np.int64)
+    if len(A["cell_my"]) != n_cells or len(ro) != n_cells + 1 or ro[-1] != len(A["cell_ring_x"]) or (np.diff(ro) < 3).any():
+        problems.append("cell ring arrays are inconsistent (every cell needs at least 3 points)")
+    if len(A["province_mx"]) != P or len(A["province_my"]) != P:
+        problems.append("province centre arrays have the wrong length")
+    # each cell's centre must lie inside that cell's own box
+    rx, ry = A["cell_ring_x"].astype(np.int64), A["cell_ring_y"].astype(np.int64)
+    cid = np.repeat(np.arange(n_cells), np.diff(ro))
+    lo_x = np.minimum.reduceat(rx, ro[:-1]); hi_x = np.maximum.reduceat(rx, ro[:-1])
+    lo_y = np.minimum.reduceat(ry, ro[:-1]); hi_y = np.maximum.reduceat(ry, ro[:-1])
+    cmx, cmy = A["cell_mx"].astype(np.int64), A["cell_my"].astype(np.int64)
+    outside = int(((cmx < lo_x - 1) | (cmx > hi_x + 1) | (cmy < lo_y - 1) | (cmy > hi_y + 1)).sum())
+    if outside > 0.001 * n_cells:
+        problems.append(f"{outside} cell centres lie outside their own cell's bounding box")
     print(f"cell outlines: {len(A['cell_seg']) // 4} segments")
     for p in problems:
         print("PROBLEM:", p)

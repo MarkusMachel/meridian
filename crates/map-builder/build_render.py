@@ -12,7 +12,9 @@ Method (deterministic, no random numbers):
   * per level: a triangle mesh of every province (fill) and noded border lines, each
     classified as province border, state border or coast;
   * one extra set of cell outline segments at full detail.
-Coordinates are Equal Earth metres, rounded to whole metres (i32).
+Coordinates are Web Mercator metres (EPSG:3857), the projection the client displays, rounded to
+whole metres (i32). The simulation's own coordinates stay Equal Earth (equal area); this file is
+display-only. Geometry is simplified in Equal Earth first, then projected, so neighbours still fit.
 """
 import csv
 import struct
@@ -21,13 +23,22 @@ import zlib
 from pathlib import Path
 
 import numpy as np
+import pyproj
 import shapely
 from shapely import STRtree
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 KIND_RENDER = 4
 LEVELS_M = [8000.0, 2500.0, 800.0]
 KIND_PROVINCE, KIND_STATE, KIND_COAST = 0, 1, 2
+
+_TO_MERCATOR = pyproj.Transformer.from_crs("EPSG:8857", "EPSG:3857", always_xy=True)
+
+
+def to_mercator(coords):
+    """(n, 2) Equal Earth metres -> (n, 2) Web Mercator metres."""
+    x, y = _TO_MERCATOR.transform(coords[:, 0], coords[:, 1])
+    return np.column_stack([x, y])
 
 
 def read_wkb(path):
@@ -53,6 +64,16 @@ def province_polygons(cells, cell_prov, n_prov):
 def rounded(geoms):
     """Snap to whole metres so shared vertices stay identical after rounding."""
     return shapely.set_precision(geoms, 1.0)
+
+
+def project(geoms):
+    """Equal Earth -> Mercator, rounded to whole metres vertex by vertex (so a vertex shared by two
+    provinces stays shared), then repair any polygon the rounding or the projection made invalid."""
+    out = shapely.transform(geoms, lambda c: np.rint(to_mercator(c)))
+    bad = ~shapely.is_valid(out)
+    if bad.any():
+        out[bad] = shapely.make_valid(out[bad])
+    return out
 
 
 def fill_mesh(polys):
@@ -113,6 +134,29 @@ def cell_segments(cells):
     return seg.astype(np.int32).reshape(-1)
 
 
+def cell_rings(cells):
+    """Outer ring of each cell (its largest part), without the repeated closing point.
+    Returns (off, x, y) with the points of cell i at off[i]..off[i+1]."""
+    parts, owner = shapely.get_parts(cells, return_index=True)
+    area = shapely.area(parts)
+    best = np.full(len(cells), -1, dtype=np.int64)
+    order = np.lexsort((-area, owner))  # per cell, largest part first
+    first = np.ones(len(order), dtype=bool)
+    first[1:] = owner[order][1:] != owner[order][:-1]
+    best[owner[order][first]] = order[first]
+    assert (best >= 0).all(), "a cell has no geometry"
+    ext = shapely.get_exterior_ring(parts[best])
+    coords, idx = shapely.get_coordinates(ext, return_index=True)
+    drop_last = np.ones(len(coords), dtype=bool)
+    ends = np.flatnonzero(np.r_[idx[1:] != idx[:-1], True])
+    drop_last[ends] = False
+    coords, idx = coords[drop_last], idx[drop_last]
+    off = np.zeros(len(cells) + 1, dtype=np.uint32)
+    np.cumsum(np.bincount(idx, minlength=len(cells)), out=off[1:])
+    c = np.rint(coords).astype(np.int32)
+    return off, c[:, 0].copy(), c[:, 1].copy()
+
+
 def main(inter, out_file, levels):
     inter = Path(inter)
     c = inter / "cells"
@@ -126,23 +170,37 @@ def main(inter, out_file, levels):
     print(f"{len(cells)} cells, {P} provinces")
 
     full = province_polygons(cells, cell_prov, P)
+    cells_m = shapely.transform(cells, to_mercator)
+    # the projected, unsimplified area of each province (km2): what the validator holds the fills to
     A = {}
+    A["province_ref_area_km2"] = np.rint(shapely.area(project(full)) / 1e6).astype("<u4")
     A["levels_tolerance_m"] = np.array(levels, dtype="<u4")
     for k, tol in enumerate(levels):
-        simple = rounded(shapely.coverage_simplify(full, tol))
-        simple = shapely.make_valid(simple)
+        simple = shapely.coverage_simplify(full, tol)
+        simple = project(simple)
         # a province must never vanish; fall back to the unsimplified shape
         empty = shapely.is_empty(simple)
         if empty.any():
-            simple[empty] = rounded(full[empty])
+            simple[empty] = project(full[empty])
         vx, vy, vp, tri = fill_mesh(simple)
         lx, ly, loff, lkind = border_lines(simple, prov_state)
         A[f"l{k}_vx"], A[f"l{k}_vy"], A[f"l{k}_vprov"], A[f"l{k}_tri"] = vx, vy, vp, tri
         A[f"l{k}_line_x"], A[f"l{k}_line_y"], A[f"l{k}_line_off"], A[f"l{k}_line_kind"] = lx, ly, loff, lkind
         print(f"level {k} ({tol:.0f} m): {len(vx)} vertices, {len(tri)//3} triangles, {len(loff)-1} lines "
               f"({np.bincount(lkind, minlength=3).tolist()} province/state/coast)")
-    A["cell_seg"] = cell_segments(cells)
+    A["cell_seg"] = cell_segments(cells_m)
     print(f"cell outlines: {len(A['cell_seg'])//4} segments")
+    A["cell_ring_off"], A["cell_ring_x"], A["cell_ring_y"] = cell_rings(cells_m)
+    # centres in the display projection (area-weighted province centres, as in the baked map)
+    cx = np.load(c / "cell_x.npy").astype(np.float64); cy = np.load(c / "cell_y.npy").astype(np.float64)
+    carea = np.load(c / "cell_area_ha.npy").astype(np.float64)
+    cm = np.rint(to_mercator(np.column_stack([cx, cy]))).astype(np.int32)
+    A["cell_mx"], A["cell_my"] = cm[:, 0].copy(), cm[:, 1].copy()
+    wsum = np.maximum(np.bincount(cell_prov, weights=carea, minlength=P), 1)
+    pe = np.column_stack([np.bincount(cell_prov, weights=cx * carea, minlength=P) / wsum, np.bincount(cell_prov, weights=cy * carea, minlength=P) / wsum])
+    pm = np.rint(to_mercator(pe)).astype(np.int32)
+    A["province_mx"], A["province_my"] = pm[:, 0].copy(), pm[:, 1].copy()
+    print(f"cell rings: {len(A['cell_ring_x'])} points; x range {cm[:,0].min()}..{cm[:,0].max()}, y range {cm[:,1].min()}..{cm[:,1].max()}")
     write(out_file, A)
 
 

@@ -1,11 +1,11 @@
 //! The window: winit for the window and input, wgpu for the surface, egui for panels.
 //! The map itself is drawn by `Renderer`; this file only wires input, the session and the UI.
 
-use client::camera::Camera;
+use client::camera::{Bounds, Camera};
 use client::modes::{self, Mode};
 use client::render::{Renderer, NO_PROVINCE};
 use client::session::Session;
-use client::{Picker, Speed};
+use client::{CellPicker, Picker, Speed};
 use meridian_core::{Command, CountryId, Map, ProvinceId, UnitId};
 use meridian_data::RenderData;
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use winit::window::{Window, WindowId};
 
 pub struct Inputs {
     pub map: Arc<Map>,
-    pub render: RenderData,
+    pub render: Arc<RenderData>,
     pub session: Session,
 }
 
@@ -40,6 +40,9 @@ struct App {
     map: Arc<Map>,
     session: Session,
     picker: Picker,
+    cell_picker: CellPicker,
+    render: Arc<RenderData>,
+    bounds: Bounds,
     terrain: Vec<u8>,
     gfx: Option<Gfx>,
     camera: Camera,
@@ -47,6 +50,7 @@ struct App {
     colors_dirty: bool,
     shown_tick: Option<u64>,
     selected: u32,
+    selected_cell: Option<u32>,
     hover: u32,
     cursor: PhysicalPosition<f64>,
     press: Option<PhysicalPosition<f64>>,
@@ -73,20 +77,27 @@ const SAVE_PATH: &str = "saves/quicksave.mrsv";
 pub fn run(inputs: Inputs) {
     let event_loop = EventLoop::new().expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
+    let (x0, y0, x1, y1) = inputs.render.bounds();
+    let bounds = Bounds::around(x0, y0, x1, y1);
     let level = inputs.render.levels.last().expect("render file has levels");
-    let picker = Picker::new(level);
+    let picker = Picker::new(level, bounds);
+    let cell_picker = CellPicker::new(&inputs.render, bounds);
     let terrain = modes::dominant_terrain(&inputs.map);
     let mut app = App {
         map: inputs.map.clone(),
         session: Session::new(meridian_core::World::new(0, 1, 1), Box::new(proving_ground::schedule(false)), CountryId(0)),
         picker,
+        cell_picker,
+        render: inputs.render.clone(),
+        bounds,
         terrain,
         gfx: None,
-        camera: Camera::fit(1600.0, 900.0),
+        camera: Camera::fit(1600.0, 900.0, bounds),
         mode: Mode::Political,
         colors_dirty: true,
         shown_tick: None,
         selected: NO_PROVINCE,
+        selected_cell: None,
         hover: NO_PROVINCE,
         cursor: PhysicalPosition::new(0.0, 0.0),
         press: None,
@@ -132,7 +143,7 @@ impl App {
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(egui_ctx.clone(), egui::ViewportId::ROOT, &*window, Some(window.scale_factor() as f32), window.theme(), Some(device.limits().max_texture_dimension_2d as usize));
         let egui_renderer = egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
-        self.camera = Camera::fit(size.width.max(1) as f64, size.height.max(1) as f64);
+        self.camera = Camera::fit(size.width.max(1) as f64, size.height.max(1) as f64, self.bounds);
         self.gfx = Some(Gfx { window, surface, device, queue, config, map_renderer, egui_ctx, egui_state, egui_renderer });
     }
 
@@ -187,7 +198,7 @@ impl App {
 
     /// Screen position (physical pixels) of a province's centre.
     fn province_screen(&self, p: u32) -> (f64, f64) {
-        self.camera.world_to_screen(self.map.province_x[p as usize] as f64, self.map.province_y[p as usize] as f64)
+        self.camera.world_to_screen(self.render.province_mx[p as usize] as f64, self.render.province_my[p as usize] as f64)
     }
 
     /// Screen position of a unit's marker. Units sharing a province are fanned out sideways.
@@ -433,6 +444,35 @@ impl App {
             if self.selected_unit.is_some() {
                 ui.label("Right-click a province to order the unit there.");
             }
+            if let Some(c) = self.selected_cell {
+                ui.separator();
+                ui.heading("Cell");
+                let c = c as usize;
+                let terrain = ["plains", "hills", "mountains", "high mountains", "desert", "ice"];
+                let flags = self.map.cell_flags[c];
+                let mut f = Vec::new();
+                for (bit, name) in [(1, "road"), (2, "rail"), (4, "river"), (8, "coast")] {
+                    if flags & bit != 0 {
+                        f.push(name);
+                    }
+                }
+                egui::Grid::new("cell_fields").num_columns(2).show(ui, |ui| {
+                    let mut row = |k: &str, v: String| {
+                        ui.label(k);
+                        ui.label(v);
+                        ui.end_row();
+                    };
+                    row("id", c.to_string());
+                    row("province", self.map.cell_province[c].to_string());
+                    row("terrain", terrain.get(self.map.cell_terrain[c] as usize).copied().unwrap_or("?").to_string());
+                    row("elevation", format!("{} m", self.map.cell_elev_m[c]));
+                    row("relief", format!("{} m", self.map.cell_relief_m[c]));
+                    row("area", format!("{} km2", self.map.cell_area_ha[c] / 100));
+                    row("population", self.map.cell_pop[c].to_string());
+                    row("built-up", format!("{} / 255", self.map.cell_urban[c]));
+                    row("features", if f.is_empty() { "none".into() } else { f.join(", ") });
+                });
+            }
         });
         act
     }
@@ -451,6 +491,11 @@ impl App {
         let ppp = ctx.pixels_per_point() as f64;
         let to_pt = |p: (f64, f64)| egui::pos2((p.0 / ppp) as f32, (p.1 / ppp) as f32);
         let painter = ctx.layer_painter(egui::LayerId::background());
+        if let Some(c) = self.selected_cell {
+            let pts: Vec<egui::Pos2> = self.render.cell_ring(c as usize).map(|(x, y)| to_pt(self.camera.world_to_screen(x as f64, y as f64))).collect();
+            painter.add(egui::Shape::closed_line(pts.clone(), egui::Stroke::new(4.0, egui::Color32::WHITE)));
+            painter.add(egui::Shape::closed_line(pts, egui::Stroke::new(1.5, egui::Color32::BLACK)));
+        }
         let markers = self.unit_markers();
         // arrows for orders that have not finished
         for &(unit, to) in &self.orders {
@@ -544,7 +589,11 @@ impl ApplicationHandler for App {
                         let hit = self.unit_markers().into_iter().find(|m| (m.2 .0 - self.cursor.x).abs() < 8.0 * k && (m.2 .1 - self.cursor.y).abs() < 8.0 * k);
                         match hit {
                             Some((id, owner, _)) => self.selected_unit = Some((id, owner)),
-                            None => self.selected = self.pick(self.cursor),
+                            None => {
+                                self.selected = self.pick(self.cursor);
+                                let (x, y) = self.camera.screen_to_world(self.cursor.x, self.cursor.y);
+                                self.selected_cell = self.cell_picker.cell_at(&self.render, x, y);
+                            }
                         }
                     }
                     self.press = None;

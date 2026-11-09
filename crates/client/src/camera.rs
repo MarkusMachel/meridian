@@ -1,10 +1,34 @@
-//! Pan and zoom over the Equal Earth plane (metres). Screen y grows downward, world y upward.
+//! Pan and zoom over the display plane (Web Mercator metres). Screen y grows downward, world y upward.
 
-/// Half the width and height of the Equal Earth world, in metres, with a little margin.
-pub const WORLD_HALF_W: f64 = 17_400_000.0;
-pub const WORLD_HALF_H: f64 = 8_700_000.0;
 /// Closest zoom: metres per screen pixel.
 pub const MIN_M_PER_PX: f64 = 100.0;
+
+/// The part of the plane that has map on it. The view never leaves it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bounds {
+    pub min_x: f64,
+    pub min_y: f64,
+    pub max_x: f64,
+    pub max_y: f64,
+}
+
+impl Bounds {
+    /// Bounds of the drawn map with a small margin all round.
+    pub fn around(min_x: i32, min_y: i32, max_x: i32, max_y: i32) -> Bounds {
+        let (w, h) = ((max_x - min_x) as f64, (max_y - min_y) as f64);
+        let m = 0.02 * w.max(h);
+        Bounds { min_x: min_x as f64 - m, min_y: min_y as f64 - m, max_x: max_x as f64 + m, max_y: max_y as f64 + m }
+    }
+    pub fn width(&self) -> f64 {
+        self.max_x - self.min_x
+    }
+    pub fn height(&self) -> f64 {
+        self.max_y - self.min_y
+    }
+    pub fn center(&self) -> (f64, f64) {
+        ((self.min_x + self.max_x) / 2.0, (self.min_y + self.max_y) / 2.0)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
@@ -14,19 +38,21 @@ pub struct Camera {
     pub m_per_px: f64,
     pub width_px: f64,
     pub height_px: f64,
+    pub bounds: Bounds,
 }
 
 impl Camera {
     /// A camera that shows the whole world.
-    pub fn fit(width_px: f64, height_px: f64) -> Camera {
-        let mut c = Camera { cx: 0.0, cy: 0.0, m_per_px: 1.0, width_px: width_px.max(1.0), height_px: height_px.max(1.0) };
+    pub fn fit(width_px: f64, height_px: f64, bounds: Bounds) -> Camera {
+        let (cx, cy) = bounds.center();
+        let mut c = Camera { cx, cy, m_per_px: 1.0, width_px: width_px.max(1.0), height_px: height_px.max(1.0), bounds };
         c.m_per_px = c.max_m_per_px();
         c
     }
 
     /// Farthest zoom: the whole world fits in the viewport.
     pub fn max_m_per_px(&self) -> f64 {
-        (2.0 * WORLD_HALF_W / self.width_px).max(2.0 * WORLD_HALF_H / self.height_px)
+        (self.bounds.width() / self.width_px).max(self.bounds.height() / self.height_px)
     }
 
     pub fn resize(&mut self, width_px: f64, height_px: f64) {
@@ -59,14 +85,16 @@ impl Camera {
         self.clamp();
     }
 
-    /// Keep the view over the world: the centre stays inside the world frame, and a world
-    /// narrower than the viewport is centred.
+    /// Keep the view over the map: the viewport stays inside the bounds, and a map smaller than
+    /// the viewport (in one direction) is centred in it.
     pub fn clamp(&mut self) {
         self.m_per_px = self.m_per_px.clamp(MIN_M_PER_PX, self.max_m_per_px());
+        let b = self.bounds;
         let half_w = self.width_px * self.m_per_px / 2.0;
         let half_h = self.height_px * self.m_per_px / 2.0;
-        self.cx = if half_w >= WORLD_HALF_W { 0.0 } else { self.cx.clamp(-(WORLD_HALF_W - half_w), WORLD_HALF_W - half_w) };
-        self.cy = if half_h >= WORLD_HALF_H { 0.0 } else { self.cy.clamp(-(WORLD_HALF_H - half_h), WORLD_HALF_H - half_h) };
+        let (mid_x, mid_y) = b.center();
+        self.cx = if half_w * 2.0 >= b.width() { mid_x } else { self.cx.clamp(b.min_x + half_w, b.max_x - half_w) };
+        self.cy = if half_h * 2.0 >= b.height() { mid_y } else { self.cy.clamp(b.min_y + half_h, b.max_y - half_h) };
     }
 
     /// Which detail level to draw. `tolerances_m` runs coarsest first. Pick the coarsest level
@@ -80,9 +108,13 @@ impl Camera {
 mod tests {
     use super::*;
 
+    fn world() -> Bounds {
+        Bounds { min_x: -20_000_000.0, min_y: -8_000_000.0, max_x: 20_000_000.0, max_y: 18_000_000.0 }
+    }
+
     #[test]
     fn screen_and_world_round_trip() {
-        let c = Camera { cx: 1_000_000.0, cy: -500_000.0, m_per_px: 2_000.0, width_px: 1600.0, height_px: 900.0 };
+        let c = Camera { cx: 1_000_000.0, cy: -500_000.0, m_per_px: 2_000.0, width_px: 1600.0, height_px: 900.0, bounds: world() };
         let (x, y) = c.screen_to_world(321.0, 654.0);
         let (sx, sy) = c.world_to_screen(x, y);
         assert!((sx - 321.0).abs() < 1e-9 && (sy - 654.0).abs() < 1e-9);
@@ -92,12 +124,12 @@ mod tests {
     }
 
     #[test]
-    fn fit_shows_the_whole_world_and_zoom_keeps_the_cursor_point() {
-        let mut c = Camera::fit(1600.0, 900.0);
-        let (l, _) = c.screen_to_world(0.0, 450.0);
-        let (r, _) = c.screen_to_world(1600.0, 450.0);
-        assert!(l <= -WORLD_HALF_W + 1.0 && r >= WORLD_HALF_W - 1.0);
-        // zoom in at a point near the right edge: the world point under it stays put
+    fn fit_shows_the_whole_map_and_zoom_keeps_the_cursor_point() {
+        let mut c = Camera::fit(1600.0, 900.0, world());
+        let b = world();
+        let (l, t) = c.screen_to_world(0.0, 0.0);
+        let (r, bt) = c.screen_to_world(1600.0, 900.0);
+        assert!(l <= b.min_x + 1.0 && r >= b.max_x - 1.0 && t >= b.max_y - 1.0 && bt <= b.min_y + 1.0);
         c.zoom_at(1200.0, 300.0, 4.0);
         let before = c.screen_to_world(1200.0, 300.0);
         c.zoom_at(1200.0, 300.0, 2.0);
@@ -107,20 +139,23 @@ mod tests {
 
     #[test]
     fn zoom_and_pan_are_limited() {
-        let mut c = Camera::fit(1600.0, 900.0);
+        let b = world();
+        let mut c = Camera::fit(1600.0, 900.0, b);
         c.zoom_at(800.0, 450.0, 1e9);
         assert_eq!(c.m_per_px, MIN_M_PER_PX);
-        c.pan_pixels(-1e9, 1e9);
-        assert!(c.cx.abs() <= WORLD_HALF_W && c.cy.abs() <= WORLD_HALF_H);
+        c.pan_pixels(-1e12, 1e12);
+        let (l, t) = c.screen_to_world(0.0, 0.0);
+        let (r, bt) = c.screen_to_world(1600.0, 900.0);
+        assert!(l >= b.min_x - 1.0 && r <= b.max_x + 1.0 && t <= b.max_y + 1.0 && bt >= b.min_y - 1.0);
         c.zoom_at(800.0, 450.0, 1e-9);
         assert_eq!(c.m_per_px, c.max_m_per_px());
-        assert_eq!((c.cx, c.cy), (0.0, c.cy.clamp(-0.0, 0.0)));
+        assert_eq!((c.cx, c.cy), b.center());
     }
 
     #[test]
     fn detail_level_follows_zoom() {
         let tol = [8000, 2500, 800];
-        let mut c = Camera::fit(1600.0, 900.0);
+        let mut c = Camera::fit(1600.0, 900.0, world());
         assert_eq!(c.level_for(&tol), 0);
         c.m_per_px = 2_000.0;
         assert_eq!(c.level_for(&tol), 1);

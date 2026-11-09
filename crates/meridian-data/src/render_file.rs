@@ -3,13 +3,15 @@
 //! Only the client reads this; the engine never does. Container (little-endian):
 //! magic "MRRD" | format_version u32 | kind u32 (4) | payload_len u64 | checksum u64 (CRC-32 of
 //! the payload, zero-extended). The payload uses the same array directory as the baked map.
-//! Coordinates are Equal Earth metres (the same space as `cell_x` and `cell_y` in the map).
+//! Coordinates are Web Mercator metres (EPSG:3857), the display projection. The simulation's own
+//! coordinates (`cell_x`, `cell_y` in the map) stay Equal Earth; the file carries the cell and
+//! province centres in the display projection so the client never converts between them.
 
 use crate::error::{DataError, ErrorKind};
 use std::collections::HashMap;
 use std::path::Path;
 
-pub const RENDER_FORMAT_VERSION: u32 = 1;
+pub const RENDER_FORMAT_VERSION: u32 = 2;
 const KIND_RENDER: u32 = 4;
 const HEADER_LEN: usize = 28;
 
@@ -60,6 +62,33 @@ pub struct RenderData {
     pub levels: Vec<RenderLevel>,
     /// Every distinct cell edge once, four values each: x0, y0, x1, y1.
     pub cell_seg: Vec<i32>,
+    /// Cell centres in the display projection, one per cell.
+    pub cell_mx: Vec<i32>,
+    pub cell_my: Vec<i32>,
+    /// Each cell's outer ring (no repeated closing point): cell `i` is the points
+    /// `cell_ring_off[i]..cell_ring_off[i + 1]`.
+    pub cell_ring_off: Vec<u32>,
+    pub cell_ring_x: Vec<i32>,
+    pub cell_ring_y: Vec<i32>,
+    /// Province centres (area-weighted) in the display projection, one per province.
+    pub province_mx: Vec<i32>,
+    pub province_my: Vec<i32>,
+}
+
+impl RenderData {
+    /// The ring of one cell as (x, y) points.
+    pub fn cell_ring(&self, cell: usize) -> impl Iterator<Item = (i32, i32)> + '_ {
+        let (a, b) = (self.cell_ring_off[cell] as usize, self.cell_ring_off[cell + 1] as usize);
+        (a..b).map(move |i| (self.cell_ring_x[i], self.cell_ring_y[i]))
+    }
+    /// Bounding box of everything drawn at the finest level: (min_x, min_y, max_x, max_y).
+    pub fn bounds(&self) -> (i32, i32, i32, i32) {
+        let l = self.levels.last().expect("render file has levels");
+        let r = |v: &[i32]| (v.iter().copied().min().unwrap_or(0), v.iter().copied().max().unwrap_or(0));
+        let (x0, x1) = r(&l.vx);
+        let (y0, y1) = r(&l.vy);
+        (x0, y0, x1, y1)
+    }
 }
 
 struct Dir<'a> {
@@ -166,7 +195,27 @@ pub fn parse_render(file: &str, bytes: &[u8]) -> Result<RenderData, DataError> {
     if !cell_seg.len().is_multiple_of(4) {
         return Err(d.bad("cell_seg", "length is not a multiple of 4".into()));
     }
-    Ok(RenderData { checksum: crc, levels, cell_seg })
+    let data = RenderData {
+        checksum: crc,
+        levels,
+        cell_seg,
+        cell_mx: d.i32s("cell_mx")?,
+        cell_my: d.i32s("cell_my")?,
+        cell_ring_off: d.u32s("cell_ring_off")?,
+        cell_ring_x: d.i32s("cell_ring_x")?,
+        cell_ring_y: d.i32s("cell_ring_y")?,
+        province_mx: d.i32s("province_mx")?,
+        province_my: d.i32s("province_my")?,
+    };
+    let n = data.cell_mx.len();
+    let off = &data.cell_ring_off;
+    if data.cell_my.len() != n || off.len() != n + 1 || off.first() != Some(&0) || off.last().map(|&e| e as usize) != Some(data.cell_ring_x.len()) || data.cell_ring_y.len() != data.cell_ring_x.len() || off.windows(2).any(|w| w[1] < w[0] + 3) {
+        return Err(d.bad("cell rings", "ring arrays are inconsistent (every cell needs at least 3 points)".into()));
+    }
+    if data.province_mx.len() != data.province_my.len() {
+        return Err(d.bad("province centres", "x and y differ in length".into()));
+    }
+    Ok(data)
 }
 
 fn check_level(d: &Dir, k: usize, l: &RenderLevel) -> Result<(), DataError> {
@@ -218,7 +267,7 @@ mod tests {
     /// One level: one square province made of two triangles, one coast line.
     fn tiny(tri: [u32; 6]) -> Vec<u8> {
         let mut p = Vec::new();
-        p.extend_from_slice(&10u32.to_le_bytes());
+        p.extend_from_slice(&17u32.to_le_bytes());
         let u = |v: &[u32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
         array(&mut p, "levels_tolerance_m", 3, &u(&[1000]), 1);
         array(&mut p, "l0_vx", 5, &le32(&[0, 10, 10, 0]), 4);
@@ -230,8 +279,16 @@ mod tests {
         array(&mut p, "l0_line_off", 3, &u(&[0, 3]), 2);
         array(&mut p, "l0_line_kind", 1, &[2], 1);
         array(&mut p, "cell_seg", 5, &le32(&[0, 0, 10, 0]), 4);
+        // one cell: the square, centre (5, 5)
+        array(&mut p, "cell_mx", 5, &le32(&[5]), 1);
+        array(&mut p, "cell_my", 5, &le32(&[5]), 1);
+        array(&mut p, "cell_ring_off", 3, &u(&[0, 4]), 2);
+        array(&mut p, "cell_ring_x", 5, &le32(&[0, 10, 10, 0]), 4);
+        array(&mut p, "cell_ring_y", 5, &le32(&[0, 0, 10, 10]), 4);
+        array(&mut p, "province_mx", 5, &le32(&[5]), 1);
+        array(&mut p, "province_my", 5, &le32(&[5]), 1);
         let mut f = b"MRRD".to_vec();
-        f.extend_from_slice(&1u32.to_le_bytes());
+        f.extend_from_slice(&2u32.to_le_bytes());
         f.extend_from_slice(&4u32.to_le_bytes());
         f.extend_from_slice(&(p.len() as u64).to_le_bytes());
         f.extend_from_slice(&(crc32fast::hash(&p) as u64).to_le_bytes());
@@ -246,6 +303,8 @@ mod tests {
         assert_eq!(r.levels[0].tri.len(), 6);
         assert_eq!(r.levels[0].kind(0), LineKind::Coast);
         assert_eq!(r.cell_seg.len(), 4);
+        assert_eq!(r.cell_ring(0).collect::<Vec<_>>(), vec![(0, 0), (10, 0), (10, 10), (0, 10)]);
+        assert_eq!(r.bounds(), (0, 0, 10, 10));
     }
 
     #[test]
@@ -261,7 +320,7 @@ mod tests {
         other[0..4].copy_from_slice(b"MRMP");
         assert!(msg(&other).contains("bad magic"));
         let mut v2 = good.clone();
-        v2[4] = 2;
-        assert!(msg(&v2).contains("version 2"));
+        v2[4] = 9;
+        assert!(msg(&v2).contains("version 9"));
     }
 }

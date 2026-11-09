@@ -10,7 +10,7 @@ pub mod picker;
 pub mod render;
 pub mod session;
 
-pub use camera::Camera;
+pub use camera::{Bounds, Camera};
 pub use modes::{Mode, Rgba};
-pub use picker::Picker;
+pub use picker::{CellPicker, Picker};
 pub use session::{Session, Snapshot, Speed};
