@@ -1,7 +1,7 @@
 //! THROWAWAY test ruleset. Exists only to give the engine something to hash.
 //! meridian-core must never depend on this crate. Delete when real gameplay starts.
 
-use meridian_core::{CountryId, ProvinceId, Ruleset, Signals, Unit, World};
+use meridian_core::{CountryId, ProvinceId, Rate, Ruleset, Schedule, ScheduleBuilder, Signals, System, Unit, World};
 
 pub struct ProvingGround;
 
@@ -37,4 +37,26 @@ pub fn scenario(seed: u64, provinces: u32) -> World {
         }
     }
     w
+}
+
+fn daily_counter(world: &mut World, _: Signals) {
+    for v in world.values_mut() {
+        *v += 1;
+    }
+}
+
+fn monthly_event(world: &mut World, _: Signals) {
+    let n = world.province_count() as u64;
+    let p = world.rng_mut().below(n) as usize;
+    world.values_mut()[p] += 100;
+}
+
+/// The same rules as `ProvingGround`, as registered systems. `reversed` registers them
+/// in the opposite source order, to show that registration order does not matter.
+pub fn schedule(reversed: bool) -> Schedule {
+    let a = System { name: "daily_counter", rate: Rate::Daily, after: &[], run: daily_counter };
+    let b = System { name: "monthly_event", rate: Rate::Monthly, after: &["daily_counter"], run: monthly_event };
+    let builder = ScheduleBuilder::new();
+    let builder = if reversed { builder.system(b).system(a) } else { builder.system(a).system(b) };
+    builder.build().expect("proving-ground schedule is valid")
 }

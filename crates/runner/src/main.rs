@@ -33,6 +33,7 @@ fn main() {
         Some("run") => std::process::exit(cmd_run(&args[1..])),
         Some("map-validate") => std::process::exit(cmd_map_validate(&args[1..])),
         Some("map-bench") => std::process::exit(cmd_map_bench(&args[1..])),
+        Some("probe") => std::process::exit(cmd_probe(&args[1..])),
         _ => {}
     }
     let mut args = args.into_iter();
@@ -284,4 +285,120 @@ fn stats(t: &mut [f64]) -> (f64, f64, f64, f64) {
     t.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let n = t.len();
     (t.iter().sum::<f64>() / n as f64, t[n / 2], t[n * 99 / 100], t[n - 1])
+}
+
+/// `runner probe [threads]` : Phase 4A performance probe on a stub world (release mode).
+/// Stand-ins only: 600,000 cells with five one-byte-ish fields, 600,000 population
+/// group records of 24 bytes, 190 countries. Not the real state; it tells us whether
+/// the planned shapes are affordable before we build them.
+fn cmd_probe(args: &[String]) -> i32 {
+    use meridian_core::hash::StateHasher;
+    use meridian_core::parallel::for_each_chunk_mut;
+    use meridian_core::{ActiveSet, Rng};
+    use std::time::Instant;
+    const CELLS: usize = 599_261;
+    const COUNTRIES: usize = 190;
+    let threads: usize = args.first().map_or(8, |s| s.parse().expect("threads must be an integer"));
+    let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
+
+    let mut rng = Rng::from_seed(1);
+    let mut controller: Vec<u16> = (0..CELLS).map(|_| rng.below(COUNTRIES as u64) as u16).collect();
+    let mut hunger = vec![0u8; CELLS];
+    let food: Vec<u8> = (0..CELLS).map(|_| rng.below(256) as u8).collect();
+    let mut ground = vec![0u8; CELLS];
+    let mut damage = vec![0u8; CELLS];
+    // Population group record, 24 bytes: cell, head count, culture, religion, 4 support shares, pad.
+    #[derive(Clone, Copy)]
+    struct Group { cell: u32, heads: u32, culture: u16, religion: u8, support: [u8; 4], _pad: [u8; 9] }
+    let mut groups: Vec<Group> = (0..CELLS)
+        .map(|c| Group { cell: c as u32, heads: 1000 + rng.below(9000) as u32, culture: rng.below(300) as u16, religion: rng.below(20) as u8, support: [64; 4], _pad: [0; 9] })
+        .collect();
+    println!("stub world: {CELLS} cells, {} groups ({} bytes each), {COUNTRIES} countries, {threads} threads", groups.len(), std::mem::size_of::<Group>());
+
+    // 1. State hash over everything.
+    let t = Instant::now();
+    let mut h = StateHasher::default();
+    for i in 0..CELLS {
+        h.write_u16(controller[i]);
+        h.write_u8(hunger[i]);
+        h.write_u8(food[i]);
+        h.write_u8(ground[i]);
+        h.write_u8(damage[i]);
+    }
+    for g in &groups {
+        h.write_u32(g.cell);
+        h.write_u32(g.heads);
+        h.write_u16(g.culture);
+        h.write_u8(g.religion);
+        h.write_bytes(&g.support);
+    }
+    let hash_ms = ms(t);
+    println!("state hash over all stub state: {hash_ms:.1} ms (hash {:016x})", h.finish());
+
+    // 2. Daily full pass over cells and groups: single thread vs N threads, results must match.
+    let daily = |threads: usize, hunger: &mut [u8], ground: &mut [u8], groups: &mut [Group], food: &[u8]| {
+        for_each_chunk_mut(hunger, threads, |first, part| {
+            for (k, v) in part.iter_mut().enumerate() {
+                *v = v.saturating_add(food[first + k] & 1).saturating_sub(food[first + k] >> 7);
+            }
+        });
+        for_each_chunk_mut(ground, threads, |first, part| {
+            for (k, v) in part.iter_mut().enumerate() {
+                *v = (*v).wrapping_mul(3).wrapping_add(((first + k) & 7) as u8);
+            }
+        });
+        for_each_chunk_mut(groups, threads, |_, part| {
+            for g in part.iter_mut() {
+                g.heads = g.heads + (g.heads >> 12) - (g.heads >> 13);
+                g.support[(g.culture & 3) as usize] = g.support[(g.culture & 3) as usize].wrapping_add(1);
+            }
+        });
+    };
+    let (mut h1, mut g1, mut p1) = (hunger.clone(), ground.clone(), groups.clone());
+    let t = Instant::now();
+    for _ in 0..10 {
+        daily(1, &mut h1, &mut g1, &mut p1, &food);
+    }
+    let single = ms(t) / 10.0;
+    let t = Instant::now();
+    for _ in 0..10 {
+        daily(threads, &mut hunger, &mut ground, &mut groups, &food);
+    }
+    let multi = ms(t) / 10.0;
+    let same = h1 == hunger && g1 == ground && p1.iter().zip(&groups).all(|(a, b)| a.heads == b.heads && a.support == b.support);
+    println!("daily cell+group pass: 1 thread {single:.2} ms, {threads} threads {multi:.2} ms, identical results: {same}");
+
+    // 3. Active set: 5% of cells busy, touched per tick (hourly systems).
+    let mut active = ActiveSet::new();
+    let ids: Vec<u32> = (0..CELLS as u32 / 20).map(|_| rng.below(CELLS as u64) as u32).collect();
+    let t = Instant::now();
+    active.extend(&ids);
+    let build = ms(t);
+    let t = Instant::now();
+    for _ in 0..100 {
+        for id in active.iter() {
+            let i = id as usize;
+            damage[i] = damage[i].saturating_add(1);
+            controller[i] = controller[i].wrapping_add(0);
+        }
+    }
+    let per_tick = ms(t) / 100.0;
+    println!("active set of {} cells: build {build:.2} ms, hourly pass {per_tick:.3} ms", active.len());
+
+    // 4. 190 countries, each doing a monthly-style pass of 2,000 integer ops (stub for AI/economy).
+    let t = Instant::now();
+    let mut acc = 0u64;
+    for c in 0..COUNTRIES as u64 {
+        let mut x = c + 1;
+        for _ in 0..2_000 {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            acc ^= x >> 33;
+        }
+    }
+    println!("190 stub country passes: {:.3} ms (checksum {acc:x})", ms(t));
+
+    // 5. Memory estimate.
+    let bytes = CELLS * (2 + 4) + groups.len() * std::mem::size_of::<Group>();
+    println!("stub state size: {:.1} MB", bytes as f64 / 1e6);
+    (!same) as i32
 }

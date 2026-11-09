@@ -50,3 +50,17 @@ fn golden_hash() {
     assert_eq!(run(1, 8760), GOLDEN);
 }
 const GOLDEN: u64 = 16117180310011935637;
+
+#[test]
+fn registration_order_does_not_change_the_hash() {
+    let run = |rs: &dyn meridian_core::Ruleset| {
+        let mut w = proving_ground::scenario(7, 64);
+        for _ in 0..8760 {
+            w.tick(&[], rs);
+        }
+        w.state_hash()
+    };
+    let legacy = run(&proving_ground::ProvingGround);
+    assert_eq!(run(&proving_ground::schedule(false)), legacy);
+    assert_eq!(run(&proving_ground::schedule(true)), legacy);
+}

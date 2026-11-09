@@ -97,3 +97,15 @@
   - The antimeridian: cells on the two sides of 180 degrees are linked, but the 441 or so province pieces on each side are separate provinces (Chukotka, Fiji, Aleutians).
   - Chokepoints at Dover, Taiwan, Korea, Bering, Lombok, Sicily and Bab-el-Mandeb are named but have both ends in one sea zone; they become real edges only if zones get finer there.
   - Sea zone names (Natural Earth marine polygons) and province names.
+
+## Phase 4A: scheduler and primitives, steps 1 to 10 (2026-11-09)
+
+- **Scheduler** (`schedule.rs`): a system is a plain function with a name, a rate (hourly, daily, monthly, yearly) and a list of systems it runs after. `ScheduleBuilder::build` sorts by dependencies with ties broken by name, so registration order never matters; cycles, unknown dependencies and duplicate names are errors at startup. Per-system timing is kept in atomic counters outside the world and is never hashed. A `Schedule` implements `Ruleset`, so `World::tick` is unchanged.
+- **Events** (`world.rs`): `World::raise_event`; after the systems run, the queue is applied sorted by (target, source, kind) with raise order breaking ties. Events raised by handlers wait for the next tick. Pending events are hashed only when present, so the existing golden hashes did not change.
+- **Hooks** (`hooks.rs`): data rules of rate + condition + effects over a small generic vocabulary (no scripting language). Conditions are checked against start-of-pass state, then effects of the fired rules are applied in rule-ID order. Loading from RON is not written yet.
+- **Parallelism** (`parallel.rs`): chunked `thread::scope` helpers. Allowed only when each element's new value depends on its own index and old value; chunk results merge in chunk order. Tested identical for 1 to 16 threads over a simulated year.
+- **Active sets** (`active.rs`): sorted `Vec<u32>`, checked against a `BTreeSet` model. Not wired into the world until per-cell state exists.
+- **Modifiers and traits** (`modifiers.rs`): same-category modifiers add and are clamped per category; categories multiply in ascending order. Traits are sorted ID lists with scope `Holder` or `HolderAndBelow`.
+- **Flow primitives** (`flows.rs`): shortage splitting (proportional, remainders by index), double-buffered flows, multi-source supply propagation. Conservation tests on random inputs. Version 1 has no per-link capacity.
+- **Performance probe** (`runner probe`, numbers in `docs/budgets.md`): a full sweep of 600,000 cells and groups costs under a millisecond; parallelism gives no gain at that cost; hashing 18 MB takes 19.5 ms, so do not hash every tick.
+- **Changed from the guide:** none. Step 5's data loader and the RON schema for hooks are left for when the first real rules exist.

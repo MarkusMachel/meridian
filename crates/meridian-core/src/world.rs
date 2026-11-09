@@ -43,6 +43,20 @@ pub struct Site {
 /// state hash) and obey the determinism rules.
 pub trait Ruleset {
     fn run(&self, world: &mut World, signals: Signals);
+
+    /// Called for each queued event, after the systems have run, in the order
+    /// (target, source, kind, then raise order). Events raised from here wait for
+    /// the next tick. The default ignores events.
+    fn on_event(&self, _world: &mut World, _event: &Event) {}
+}
+
+/// A deferred effect such as bombardment damage. `kind` is defined by the ruleset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Event {
+    pub kind: u16,
+    pub target: u32,
+    pub source: u32,
+    pub amount: i64,
 }
 
 #[derive(Debug, Default)]
@@ -81,6 +95,8 @@ pub struct World {
     units: Vec<Option<Unit>>,
     /// Indexed by SiteId order of creation.
     sites: Vec<Site>,
+    /// Events waiting for the next event phase. Normally empty at the end of a tick.
+    events: Vec<Event>,
     map: Option<MapRef>,
 }
 
@@ -96,6 +112,7 @@ impl World {
             value: vec![0; province_count as usize],
             units: Vec::new(),
             sites: Vec::new(),
+            events: Vec::new(),
             map: None,
         }
     }
@@ -167,6 +184,13 @@ impl World {
     pub fn values_mut(&mut self) -> &mut [i64] {
         &mut self.value
     }
+    /// Queue an event for the next event phase of the tick.
+    pub fn raise_event(&mut self, event: Event) {
+        self.events.push(event);
+    }
+    pub fn pending_events(&self) -> &[Event] {
+        &self.events
+    }
     pub fn rng_mut(&mut self) -> &mut Rng {
         &mut self.rng
     }
@@ -186,6 +210,13 @@ impl World {
             }
         }
         ruleset.run(self, signals);
+        // Event phase: everything raised so far is applied in a fixed order.
+        // `sort_by_key` is stable, so equal keys keep their raise order.
+        let mut batch = std::mem::take(&mut self.events);
+        batch.sort_by_key(|e| (e.target, e.source, e.kind));
+        for e in &batch {
+            ruleset.on_event(self, e);
+        }
         self.clock.advance();
         report
     }
@@ -268,6 +299,17 @@ impl World {
                 }
             }
         }
+        // Pending events are hashed only when present, so event-free hashes are unchanged.
+        if !self.events.is_empty() {
+            h.write_u8(2);
+            h.write_u32(self.events.len() as u32);
+            for e in &self.events {
+                h.write_u16(e.kind);
+                h.write_u32(e.target);
+                h.write_u32(e.source);
+                h.write_i64(e.amount);
+            }
+        }
         // Only worlds with a map hash it, so map-less hashes are unchanged.
         if let Some(m) = &self.map {
             h.write_u8(1);
@@ -308,6 +350,7 @@ mod tests {
         let mut w = base.clone(); w.units[0].as_mut().unwrap().location = ProvinceId(1); variants.push(w);
         let mut w = base.clone(); w.units[0].as_mut().unwrap().owner = CountryId(1); variants.push(w);
         let mut w = base.clone(); w.units.push(None); variants.push(w);
+        let mut w = base.clone(); w.raise_event(Event { kind: 1, target: 2, source: 3, amount: 4 }); variants.push(w);
         let site = Site { kind: SiteKind::City, province: ProvinceId(1), owner: CountryId(0), condition: 100, built_year: 1900, destroyed_year: None };
         let mut w = base.clone(); w.sites.push(site.clone()); variants.push(w);
         let mut w = base.clone(); w.sites.push(site.clone()); let h1 = w.state_hash();

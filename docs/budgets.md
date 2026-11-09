@@ -27,6 +27,24 @@ Notes:
 - Long queries have a heavy tail (99th percentile about 52 ms for the longest land crossing). Gameplay should not issue these every tick; the strategic graph is for long routes.
 - Costs are set per query (`NodeCosts`, `CellCosts`), so these numbers are for the default cost tables.
 
+## Phase 4A performance probe (2026-11-09, stub state, M4 Pro)
+
+`runner probe [threads]` (release mode) builds a stand-in world: 599,261 cells with a 2-byte controller and four 1-byte fields, 599,261 population group records of 24 bytes, 190 countries. It is a shape check, not the real state: the real systems will do far more work per cell. Stub state is 18 MB.
+
+| What | Measured (8 threads) | Note |
+| --- | --- | --- |
+| Hash of all stub state | 19.5 ms | Byte-at-a-time FNV. Fine on demand (saves, desync checks); too slow to hash every tick |
+| Daily pass over every cell and group, 1 thread | 0.45 ms | Trivial arithmetic, so memory-bound |
+| Same pass, 8 threads | 0.41 ms | No gain at this cost per element: thread start-up eats it. Results identical |
+| Hourly pass over an active set of 29,216 cells (5%) | 0.015 ms | |
+| 190 stub country passes of 2,000 integer ops | 0.58 ms | |
+
+What this tells us:
+- The planned state size (about 18 MB for cells and groups) is cheap to sweep. A full pass is well under a millisecond, so active sets are an optimization to add when a real system needs them, not a necessity.
+- Parallelism does not help for trivial per-element work. Only use it for systems that measure slower than a few milliseconds single-threaded.
+- Hashing is the one real cost: 19.5 ms. Do not hash every tick. If per-tick hashing is wanted for desync checks, switch to a faster hash or hash only changed regions; decide in Phase 5 or 8.
+- No budget is set yet. Real budgets come when the real systems exist (Phase 8).
+
 ## Not yet set
 
 Per-tick and per-system time budgets and the simulation memory budget are set in Phase 8.
