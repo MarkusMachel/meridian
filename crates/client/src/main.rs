@@ -94,7 +94,7 @@ fn main() {
 
     let gpu = offscreen::headless_gpu().expect("no GPU adapter available");
     eprintln!("GPU: {}", gpu.adapter_name);
-    let mut renderer = Renderer::new(&gpu.device, offscreen::FORMAT, &render, provinces);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue, offscreen::FORMAT, &render, provinces);
     let colors = match args.mode {
         Mode::Political => modes::political(&snap.controllers),
         Mode::Value => modes::value_ramp(&snap.values),

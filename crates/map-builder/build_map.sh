@@ -26,5 +26,5 @@ $PY $B/build_terrain.py "$INTER" $NE data/source/etopo/ETOPO_2022_v1_60s_N90W180
 $PY $B/build_sites.py "$INTER" $NE
 $PY $B/build_population.py "$INTER" $NE data/source/worldbank
 $PY $B/bake_map.py "$INTER" "$BAKED"
-$PY $B/build_render.py "$INTER" "$RENDER"
+$PY $B/build_render.py "$INTER" "$RENDER" --ne $NE
 $PY $B/validate_render.py "$INTER" "$RENDER"

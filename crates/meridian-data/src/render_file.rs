@@ -11,7 +11,7 @@ use crate::error::{DataError, ErrorKind};
 use std::collections::HashMap;
 use std::path::Path;
 
-pub const RENDER_FORMAT_VERSION: u32 = 2;
+pub const RENDER_FORMAT_VERSION: u32 = 3;
 const KIND_RENDER: u32 = 4;
 const HEADER_LEN: usize = 28;
 
@@ -55,6 +55,29 @@ impl RenderLevel {
     }
 }
 
+/// Shaded relief: a greyscale raster over the Mercator plane. Row 0 is the top edge (`y1`).
+/// A byte of 128 means "no change"; the client multiplies colours by `byte / 128`.
+#[derive(Clone, Debug)]
+pub struct Relief {
+    pub width: u32,
+    pub height: u32,
+    /// Edges of the raster in Mercator metres.
+    pub x0: i32,
+    pub y0: i32,
+    pub x1: i32,
+    pub y1: i32,
+    pub pixels: Vec<u8>,
+}
+
+/// Place names with one point each (Mercator metres) and the area they cover.
+#[derive(Clone, Debug, Default)]
+pub struct Labels {
+    pub names: Vec<String>,
+    pub x: Vec<i32>,
+    pub y: Vec<i32>,
+    pub area_km2: Vec<u32>,
+}
+
 #[derive(Clone, Debug)]
 pub struct RenderData {
     pub checksum: u32,
@@ -73,6 +96,15 @@ pub struct RenderData {
     /// Province centres (area-weighted) in the display projection, one per province.
     pub province_mx: Vec<i32>,
     pub province_my: Vec<i32>,
+    pub relief: Relief,
+    /// River centrelines: line `i` is the points `river_off[i]..river_off[i + 1]`; a lower rank is a bigger river.
+    pub river_x: Vec<i32>,
+    pub river_y: Vec<i32>,
+    pub river_off: Vec<u32>,
+    pub river_rank: Vec<u8>,
+    /// One per country (the map's country order) and one per region of a country.
+    pub countries: Labels,
+    pub regions: Labels,
 }
 
 impl RenderData {
@@ -206,7 +238,17 @@ pub fn parse_render(file: &str, bytes: &[u8]) -> Result<RenderData, DataError> {
         cell_ring_y: d.i32s("cell_ring_y")?,
         province_mx: d.i32s("province_mx")?,
         province_my: d.i32s("province_my")?,
+        relief: read_relief(&d)?,
+        river_x: d.i32s("river_x")?,
+        river_y: d.i32s("river_y")?,
+        river_off: d.u32s("river_off")?,
+        river_rank: d.u8s("river_rank")?,
+        countries: read_labels(&d, "country")?,
+        regions: read_labels(&d, "region")?,
     };
+    if data.river_y.len() != data.river_x.len() || data.river_off.len() != data.river_rank.len() + 1 || data.river_off.last().map(|&e| e as usize) != Some(data.river_x.len()) || data.river_off.windows(2).any(|w| w[1] < w[0] + 2) {
+        return Err(d.bad("rivers", "river arrays are inconsistent".into()));
+    }
     let n = data.cell_mx.len();
     let off = &data.cell_ring_off;
     if data.cell_my.len() != n || off.len() != n + 1 || off.first() != Some(&0) || off.last().map(|&e| e as usize) != Some(data.cell_ring_x.len()) || data.cell_ring_y.len() != data.cell_ring_x.len() || off.windows(2).any(|w| w[1] < w[0] + 3) {
@@ -216,6 +258,36 @@ pub fn parse_render(file: &str, bytes: &[u8]) -> Result<RenderData, DataError> {
         return Err(d.bad("province centres", "x and y differ in length".into()));
     }
     Ok(data)
+}
+
+fn read_relief(d: &Dir) -> Result<Relief, DataError> {
+    let info = d.i32s("relief_info")?;
+    if info.len() != 6 || info[0] <= 0 || info[1] <= 0 || info[4] <= info[2] || info[5] <= info[3] {
+        return Err(d.bad("relief_info", "expected width, height and a non-empty box".into()));
+    }
+    let pixels = d.u8s("relief")?;
+    if pixels.len() != info[0] as usize * info[1] as usize {
+        return Err(d.bad("relief", "raster size does not match relief_info".into()));
+    }
+    Ok(Relief { width: info[0] as u32, height: info[1] as u32, x0: info[2], y0: info[3], x1: info[4], y1: info[5], pixels })
+}
+
+fn read_labels(d: &Dir, prefix: &str) -> Result<Labels, DataError> {
+    let off = d.u32s(&format!("{prefix}_name_off"))?;
+    let bytes = d.u8s(&format!("{prefix}_name_bytes"))?;
+    let x = d.i32s(&format!("{prefix}_x"))?;
+    let y = d.i32s(&format!("{prefix}_y"))?;
+    let area_km2 = d.u32s(&format!("{prefix}_area_km2"))?;
+    let n = x.len();
+    if y.len() != n || area_km2.len() != n || off.len() != n + 1 || off.first() != Some(&0) || off.last().map(|&e| e as usize) != Some(bytes.len()) || off.windows(2).any(|w| w[1] < w[0]) {
+        return Err(d.bad(prefix, "label arrays are inconsistent".into()));
+    }
+    let mut names = Vec::with_capacity(n);
+    for w in off.windows(2) {
+        let s = std::str::from_utf8(&bytes[w[0] as usize..w[1] as usize]).map_err(|_| d.bad(prefix, "a name is not valid UTF-8".into()))?;
+        names.push(s.to_string());
+    }
+    Ok(Labels { names, x, y, area_km2 })
 }
 
 fn check_level(d: &Dir, k: usize, l: &RenderLevel) -> Result<(), DataError> {
@@ -267,7 +339,7 @@ mod tests {
     /// One level: one square province made of two triangles, one coast line.
     fn tiny(tri: [u32; 6]) -> Vec<u8> {
         let mut p = Vec::new();
-        p.extend_from_slice(&17u32.to_le_bytes());
+        p.extend_from_slice(&33u32.to_le_bytes());
         let u = |v: &[u32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
         array(&mut p, "levels_tolerance_m", 3, &u(&[1000]), 1);
         array(&mut p, "l0_vx", 5, &le32(&[0, 10, 10, 0]), 4);
@@ -287,8 +359,21 @@ mod tests {
         array(&mut p, "cell_ring_y", 5, &le32(&[0, 0, 10, 10]), 4);
         array(&mut p, "province_mx", 5, &le32(&[5]), 1);
         array(&mut p, "province_my", 5, &le32(&[5]), 1);
+        array(&mut p, "relief_info", 5, &le32(&[2, 1, -10, -10, 10, 10]), 6);
+        array(&mut p, "relief", 1, &[128, 140], 2);
+        array(&mut p, "river_x", 5, &le32(&[0, 5]), 2);
+        array(&mut p, "river_y", 5, &le32(&[0, 5]), 2);
+        array(&mut p, "river_off", 3, &u(&[0, 2]), 2);
+        array(&mut p, "river_rank", 1, &[3], 1);
+        for pre in ["country", "region"] {
+            array(&mut p, &format!("{pre}_name_off"), 3, &u(&[0, 3]), 2);
+            array(&mut p, &format!("{pre}_name_bytes"), 1, b"Abc", 3);
+            array(&mut p, &format!("{pre}_x"), 5, &le32(&[5]), 1);
+            array(&mut p, &format!("{pre}_y"), 5, &le32(&[5]), 1);
+            array(&mut p, &format!("{pre}_area_km2"), 3, &u(&[100]), 1);
+        }
         let mut f = b"MRRD".to_vec();
-        f.extend_from_slice(&2u32.to_le_bytes());
+        f.extend_from_slice(&3u32.to_le_bytes());
         f.extend_from_slice(&4u32.to_le_bytes());
         f.extend_from_slice(&(p.len() as u64).to_le_bytes());
         f.extend_from_slice(&(crc32fast::hash(&p) as u64).to_le_bytes());
@@ -305,6 +390,9 @@ mod tests {
         assert_eq!(r.cell_seg.len(), 4);
         assert_eq!(r.cell_ring(0).collect::<Vec<_>>(), vec![(0, 0), (10, 0), (10, 10), (0, 10)]);
         assert_eq!(r.bounds(), (0, 0, 10, 10));
+        assert_eq!(r.relief.pixels, vec![128, 140]);
+        assert_eq!(r.river_off, vec![0, 2]);
+        assert_eq!(r.countries.names, vec!["Abc".to_string()]);
     }
 
     #[test]

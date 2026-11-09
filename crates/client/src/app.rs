@@ -69,6 +69,8 @@ struct App {
     status: String,
     show_settings: bool,
     show_cells: bool,
+    show_labels: bool,
+    show_relief: bool,
     ui_scale: f32,
 }
 
@@ -113,6 +115,8 @@ pub fn run(inputs: Inputs) {
         status: String::new(),
         show_settings: false,
         show_cells: true,
+        show_labels: true,
+        show_relief: true,
         ui_scale: 1.0,
         inputs: Some(inputs),
     };
@@ -139,7 +143,7 @@ impl App {
         surface.configure(&device, &config);
 
         let inputs = self.inputs.take().expect("inputs are used once");
-        let map_renderer = Renderer::new(&device, format, &inputs.render, self.map.province_count() as usize);
+        let map_renderer = Renderer::new(&device, &queue, format, &inputs.render, self.map.province_count() as usize);
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(egui_ctx.clone(), egui::ViewportId::ROOT, &*window, Some(window.scale_factor() as f32), window.theme(), Some(device.limits().max_texture_dimension_2d as usize));
         let egui_renderer = egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
@@ -285,6 +289,7 @@ impl App {
         }
         g.egui_ctx.set_pixels_per_point(g.window.scale_factor() as f32 * self.ui_scale);
         g.map_renderer.show_cells = self.show_cells;
+        g.map_renderer.show_relief = self.show_relief;
         let ppp = full.pixels_per_point;
         let jobs = g.egui_ctx.tessellate(full.shapes, ppp);
 
@@ -407,6 +412,8 @@ impl App {
         }
         egui::Window::new("Settings").open(&mut self.show_settings).show(ui.ctx(), |ui| {
             ui.checkbox(&mut self.show_cells, "Show cell edges when zoomed in");
+            ui.checkbox(&mut self.show_relief, "Shaded relief");
+            ui.checkbox(&mut self.show_labels, "Place names");
             ui.add(egui::Slider::new(&mut self.ui_scale, 0.75..=2.0).text("Interface scale"));
         });
         self.draw_overlay(ui.ctx());
@@ -495,6 +502,20 @@ impl App {
             let pts: Vec<egui::Pos2> = self.render.cell_ring(c as usize).map(|(x, y)| to_pt(self.camera.world_to_screen(x as f64, y as f64))).collect();
             painter.add(egui::Shape::closed_line(pts.clone(), egui::Stroke::new(4.0, egui::Color32::WHITE)));
             painter.add(egui::Shape::closed_line(pts, egui::Stroke::new(1.5, egui::Color32::BLACK)));
+        }
+        if self.show_labels {
+            for l in client::labels::place(&self.render, &self.camera) {
+                let pos = to_pt((l.x, l.y));
+                let font = egui::FontId::proportional((l.size_px / ppp) as f32);
+                let (ink, halo) = match l.kind {
+                    client::labels::LabelKind::Country => (egui::Color32::from_rgba_unmultiplied(45, 30, 20, 215), egui::Color32::from_rgba_unmultiplied(255, 250, 235, 110)),
+                    client::labels::LabelKind::Region => (egui::Color32::from_rgba_unmultiplied(55, 42, 30, 190), egui::Color32::from_rgba_unmultiplied(255, 250, 235, 90)),
+                };
+                for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                    painter.text(pos + egui::vec2(dx, dy), egui::Align2::CENTER_CENTER, &l.text, font.clone(), halo);
+                }
+                painter.text(pos, egui::Align2::CENTER_CENTER, &l.text, font, ink);
+            }
         }
         let markers = self.unit_markers();
         // arrows for orders that have not finished

@@ -223,3 +223,12 @@ All of this is plumbing: tables, conserving primitives, votes and validation. No
 ## Phase 7: first Victoria-2-style look pass (2026-11-09)
 
 - Muted sea colour, brown-ink province lines (soft), heavier dark-brown state borders, blue-grey coast line, and country colours in a narrower earthy band. Colours and widths only (`render.rs` `STYLES`, `SEA`, `modes.rs` `country_color`); no new geometry. Still to do for the full look: terrain/shaded-relief base under the owner tint, rivers, dashed borders, labels.
+
+## Phase 7: relief, rivers, dashed borders, place names (2026-11-09)
+
+- **Render file version 3** (see data-formats.md): shaded relief raster, river lines and place names are baked by `render_extras.py`. Relief is a hillshade of the ETOPO 2022 elevation (already used for terrain; public domain), sun from the north-west, vertical exaggeration 6, one pixel about 4.9 km. It is coarse: mountain ranges read well, hills do not. A sharper raster costs file size (16384 wide would add about 130 MB), so it is not done.
+- **Relief is multiplied into the province colour in the fill shader** (strength 0.85), so every map mode gets it; Settings can turn it off.
+- **Rivers** are Natural Earth 10 m centrelines (public domain), drawn with the line pipeline in three tiers by `scalerank` and zoom (major below 30 km/px, medium below 9 km/px, all below 3.5 km/px). They are drawn over fills and under borders; they are not clipped to land.
+- **Dashed province borders:** each line instance now carries the distance along its line, and the fragment shader discards the gaps of a 8 px period. State borders and coasts stay solid. Cell edges are padded with a zero distance.
+- **Place names:** countries (1990 names from `states_1990.geojson`) and regions (Natural Earth admin-1 names, merged regions take the larger part's name). No province names exist; regions stand in for them. Placement is straight text, no curves: a name is shown only if its area is wide enough on screen, bigger areas are placed first and overlapping labels are dropped (`client/src/labels.rs`, tested). Painted with egui over the map; Settings can turn them off. Names are Natural Earth `name` fields in Latin script.
+- **Not done:** curved labels, bathymetry in the sea, hand-tuned label positions, province names, name translations.

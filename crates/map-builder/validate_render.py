@@ -21,7 +21,7 @@ def read(path):
     b = Path(path).read_bytes()
     assert b[:4] == b"MRRD", "bad magic"
     ver, kind, n, crc = struct.unpack_from("<IIQQ", b, 4)
-    assert ver == 2 and kind == 4, f"version {ver} kind {kind}"
+    assert ver == 3 and kind == 4, f"version {ver} kind {kind}"
     payload = b[28:28 + n]
     assert len(payload) == n and zlib.crc32(payload) == crc, "bad checksum"
     (count,) = struct.unpack_from("<I", payload, 0)
@@ -87,6 +87,23 @@ def main(inter, path):
     if outside > 0.001 * n_cells:
         problems.append(f"{outside} cell centres lie outside their own cell's bounding box")
     print(f"cell outlines: {len(A['cell_seg']) // 4} segments")
+    # relief, rivers, labels
+    w, h, x0, y0, x1, y1 = A["relief_info"].tolist()
+    if len(A["relief"]) != w * h or x1 - x0 <= 0 or y1 - y0 <= 0:
+        problems.append("relief raster size does not match relief_info")
+    elif not 100 < float(A["relief"].astype(np.float64).std()) < 128 and A["relief"].std() < 1.0:
+        problems.append("relief raster is flat (no shading)")
+    ro_r = A["river_off"].astype(np.int64)
+    if ro_r[-1] != len(A["river_x"]) or len(A["river_x"]) != len(A["river_y"]) or len(A["river_rank"]) != len(ro_r) - 1 or not (np.diff(ro_r) >= 2).all():
+        problems.append("river arrays are inconsistent")
+    for pre in ("country", "region"):
+        off = A[f"{pre}_name_off"].astype(np.int64)
+        n = len(A[f"{pre}_x"])
+        if len(off) != n + 1 or off[-1] != len(A[f"{pre}_name_bytes"]) or len(A[f"{pre}_y"]) != n or len(A[f"{pre}_area_km2"]) != n or (np.diff(off) <= 0).any():
+            problems.append(f"{pre} label arrays are inconsistent")
+        else:
+            A[f"{pre}_name_bytes"].tobytes().decode("utf-8")
+    print(f"relief {w}x{h}, rivers {len(ro_r) - 1}, labels {len(A['country_x'])} + {len(A['region_x'])}")
     for p in problems:
         print("PROBLEM:", p)
     print(f"{len(problems)} problem(s)")

@@ -210,6 +210,13 @@ mod tests {
             cell_ring_y: vec![0, 0, 1000, 1000, 0, 0, 2000],
             province_mx: vec![],
             province_my: vec![],
+            relief: meridian_data::Relief { width: 1, height: 1, x0: 0, y0: 0, x1: 1, y1: 1, pixels: vec![128] },
+            river_x: vec![],
+            river_y: vec![],
+            river_off: vec![0],
+            river_rank: vec![],
+            countries: Default::default(),
+            regions: Default::default(),
         }
     }
 

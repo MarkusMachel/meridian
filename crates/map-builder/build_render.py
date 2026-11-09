@@ -1,6 +1,6 @@
 """Step 8 of the map builder: the render-only file for the client.
 
-Usage: python -I build_render.py <intermediate-dir> <out-file> [--levels 8000,2500,800]
+Usage: python -I build_render.py <intermediate-dir> <out-file> --ne <natural-earth-dir> [--levels 8000,2500,800]
 Reads  cells/cells.wkb, cells/cell_province.npy, cells/cell_state.npy, provinces.csv
 Writes the render file (container "MRRD", kind 4; same layout as the baked map, see
 docs/data-formats.md). The engine never reads this file; only the client does.
@@ -27,7 +27,10 @@ import pyproj
 import shapely
 from shapely import STRtree
 
-FORMAT_VERSION = 2
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import render_extras  # noqa: E402
+
+FORMAT_VERSION = 3
 KIND_RENDER = 4
 LEVELS_M = [8000.0, 2500.0, 800.0]
 KIND_PROVINCE, KIND_STATE, KIND_COAST = 0, 1, 2
@@ -157,7 +160,7 @@ def cell_rings(cells):
     return off, c[:, 0].copy(), c[:, 1].copy()
 
 
-def main(inter, out_file, levels):
+def main(inter, out_file, levels, ne_dir):
     inter = Path(inter)
     c = inter / "cells"
     cells = read_wkb(c / "cells.wkb")
@@ -201,6 +204,13 @@ def main(inter, out_file, levels):
     pm = np.rint(to_mercator(pe)).astype(np.int32)
     A["province_mx"], A["province_my"] = pm[:, 0].copy(), pm[:, 1].copy()
     print(f"cell rings: {len(A['cell_ring_x'])} points; x range {cm[:,0].min()}..{cm[:,0].max()}, y range {cm[:,1].min()}..{cm[:,1].max()}")
+    # shaded relief, rivers and place names
+    A["relief"], A["relief_info"] = render_extras.relief(inter, int(cm[:, 1].min()), int(cm[:, 1].max()))
+    print(f"relief: {A['relief_info'][0]} x {A['relief_info'][1]} pixels")
+    A["river_x"], A["river_y"], A["river_off"], A["river_rank"] = render_extras.rivers(ne_dir)
+    print(f"rivers: {len(A['river_off']) - 1} lines, {len(A['river_x'])} points")
+    render_extras.labels(inter, A)
+    print(f"labels: {len(A['country_x'])} countries, {len(A['region_x'])} regions")
     write(out_file, A)
 
 
@@ -227,4 +237,9 @@ if __name__ == "__main__":
         i = args.index("--levels")
         levels = [float(x) for x in args[i + 1].split(",")]
         del args[i:i + 2]
-    main(args[0], args[1], levels)
+    ne = "data/source/natural-earth"
+    if "--ne" in args:
+        i = args.index("--ne")
+        ne = args[i + 1]
+        del args[i:i + 2]
+    main(args[0], args[1], levels, ne)

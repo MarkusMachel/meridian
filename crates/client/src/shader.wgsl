@@ -8,9 +8,13 @@ struct Globals {
     selected: u32,
     hover: u32,
     _pad: u32,
+    relief_org: vec2<i32>,   // left and top edge of the relief raster (metres)
+    relief_span: vec2<f32>,  // width and height in metres; 0 = no relief
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(1) var<storage, read> colors: array<u32>;
+@group(0) @binding(2) var relief: texture_2d<f32>;
+@group(0) @binding(3) var relief_sampler: sampler;
 
 fn to_ndc(p: vec2<i32>) -> vec2<f32> {
     let rel = vec2<f32>(p - g.center) * g.inv_scale;
@@ -24,6 +28,7 @@ struct FillIn {
 struct FillOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) color: vec4<f32>,
+    @location(1) rel: vec2<f32>,   // metres from the camera centre
 };
 
 @vertex
@@ -37,27 +42,38 @@ fn vs_fill(v: FillIn) -> FillOut {
     var o: FillOut;
     o.clip = vec4<f32>(to_ndc(v.pos), 0.0, 1.0);
     o.color = c;
+    o.rel = vec2<f32>(v.pos - g.center);
     return o;
 }
 
 @fragment
 fn fs_fill(i: FillOut) -> @location(0) vec4<f32> {
-    return i.color;
+    var rgb = i.color.rgb;
+    if (g.relief_span.x > 0.0) {
+        let d = vec2<f32>(g.center - g.relief_org);
+        let uv = vec2<f32>((d.x + i.rel.x) / g.relief_span.x, (-d.y - i.rel.y) / g.relief_span.y);
+        let r = textureSampleLevel(relief, relief_sampler, uv, 0.0).r * (255.0 / 128.0);
+        rgb = clamp(rgb * mix(1.0, r, 0.85), vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    return vec4<f32>(rgb, i.color.a);
 }
 
 // Lines: one instance per segment, drawn as a quad of 6 vertices.
 struct Style {
     color: vec4<f32>,
     width_px: f32,
+    dash_px: f32,        // dash period in pixels; 0 = solid
 };
 @group(1) @binding(0) var<uniform> style: Style;
 
 struct LineIn {
     @location(0) a: vec2<i32>,
     @location(1) b: vec2<i32>,
+    @location(2) dist: f32,   // metres along the line at the start of this segment
 };
 struct LineOut {
     @builtin(position) clip: vec4<f32>,
+    @location(0) along: f32,  // pixels along the line
 };
 
 @vertex
@@ -79,10 +95,14 @@ fn vs_line(@builtin(vertex_index) vi: u32, l: LineIn) -> LineOut {
     let p = base + n * (s * h);
     var o: LineOut;
     o.clip = vec4<f32>(p / (g.viewport * 0.5), 0.0, 1.0);
+    o.along = l.dist * g.inv_scale + mix(-h, len + h, e);
     return o;
 }
 
 @fragment
-fn fs_line() -> @location(0) vec4<f32> {
+fn fs_line(i: LineOut) -> @location(0) vec4<f32> {
+    if (style.dash_px > 0.0 && fract(i.along / style.dash_px) > 0.6) {
+        discard;
+    }
     return style.color;
 }
