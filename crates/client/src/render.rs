@@ -290,7 +290,7 @@ const STYLES: [([f32; 4], f32, f32); 5] = [
 const RIVER_STYLE: usize = 4;
 /// Map details drawn as extra styles after the five above: roads by class, the two passes of a
 /// railway (dark bed, then light dashes on top for the classic black-and-white line), urban fill.
-const DETAIL_STYLES: [([f32; 4], f32, f32); 13] = [
+const DETAIL_STYLES: [([f32; 4], f32, f32); 14] = [
     ([0.58, 0.24, 0.14, 0.90], 1.9, 0.0),
     ([0.55, 0.34, 0.20, 0.80], 1.3, 0.0),
     ([0.42, 0.34, 0.25, 0.60], 0.9, 0.0),
@@ -302,14 +302,19 @@ const DETAIL_STYLES: [([f32; 4], f32, f32); 13] = [
     ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
     ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
     ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
-    // rivers by class: big, medium, small (set per frame: they widen as you zoom in)
+    // rivers by class: big, medium, small, streams (set per frame: they widen as you zoom in)
+    ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
     ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
     ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
     ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
 ];
 /// Rivers by class: width in pixels on the paper map and at the closest zoom. Close up a river is
 /// a band of water you can see among the trees, not a hairline.
-const RIVER_WIDTHS: [(f32, f32); 3] = [(1.3, 8.0), (1.0, 5.0), (0.9, 3.2)];
+const RIVER_WIDTHS: [(f32, f32); 4] = [(1.3, 8.0), (1.0, 5.0), (0.9, 3.2), (0.8, 2.2)];
+/// The smallest rivers (Natural Earth ranks 10 and up, from the regional supplements) show below
+/// this zoom.
+const RIVERS_STREAMS_BELOW: f64 = 1_800.0;
+const RIVER_STREAM_RANK: u8 = 10;
 const RIVER_CLASS_STYLE: usize = 15;
 /// Colour of a river close up (the paper map keeps the ink blue of `STYLES`).
 const RIVER_WATER: [f32; 4] = [0.22, 0.40, 0.52, 1.0];
@@ -797,6 +802,23 @@ impl Renderer {
         let g3 = device.create_buffer(&wgpu::BufferDescriptor { label: Some("3d globals"), size: std::mem::size_of::<G3>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let both = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
         let tex_entry = |binding: u32| wgpu::BindGroupLayoutEntry { binding, visibility: both, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None };
+        // the big wetlands of the world, as a small picture in latitude and longitude (see wetlands.rs)
+        let wet_tex = device.create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some("wetlands"),
+                size: wgpu::Extent3d { width: crate::wetlands::WIDTH, height: crate::wetlands::HEIGHT, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &crate::wetlands::raster(),
+        );
+        let wet_view = wet_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let bgl3 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("bgl3"),
             entries: &[
@@ -805,6 +827,7 @@ impl Renderer {
                 tex_entry(2),
                 tex_entry(3),
                 tex_entry(4),
+                tex_entry(6),
                 wgpu::BindGroupLayoutEntry { binding: 5, visibility: both, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
             ],
         });
@@ -818,6 +841,7 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&height_view) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&land_view) },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&relief_sampler) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&wet_view) },
             ],
         });
         let terrain_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("terrain"), source: wgpu::ShaderSource::Wgsl(include_str!("terrain.wgsl").into()) });
@@ -890,9 +914,9 @@ impl Renderer {
         let cells = GpuLines::new(device, "cell edges", grid, 1, cell_segs, false);
         let river_class = |i: usize| {
             let r = data.river_rank[i];
-            if r <= RIVER_MAJOR_RANK { 0 } else if r <= RIVER_MEDIUM_RANK { 1 } else { 2 }
+            if r <= RIVER_MAJOR_RANK { 0 } else if r <= RIVER_MEDIUM_RANK { 1 } else if r < RIVER_STREAM_RANK { 2 } else { 3 }
         };
-        let rivers = GpuLines::new(device, "rivers", grid, 3, classed_lines(&data.river_x, &data.river_y, &data.river_off, river_class), false);
+        let rivers = GpuLines::new(device, "rivers", grid, 4, classed_lines(&data.river_x, &data.river_y, &data.river_off, river_class), false);
         let roads = GpuLines::new(device, "roads", grid, 3, classed_lines(&data.roads.x, &data.roads.y, &data.roads.off, |i| data.roads.class[i]), true);
         let rails = GpuLines::new(device, "rails", grid, 3, classed_lines(&data.rails.x, &data.rails.y, &data.rails.off, |i| data.rails.class[i]), true);
         let urban_verts: Vec<[i32; 2]> = if data.urban_vx.is_empty() { vec![[0, 0]] } else { (0..data.urban_vx.len()).map(|i| [data.urban_vx[i], data.urban_vy[i]]).collect() };
@@ -981,7 +1005,7 @@ impl Renderer {
         let tolerances: Vec<u32> = self.levels.iter().map(|l| l.tolerance_m).collect();
         self.level_in_use = camera.level_for(&tolerances);
         self.draw_cells = self.show_cells && camera.m_per_px < CELL_LINES_BELOW_M_PER_PX;
-        self.river_tier = tier(camera.m_per_px, [RIVERS_MAJOR_BELOW, RIVERS_MEDIUM_BELOW, RIVERS_ALL_BELOW]);
+        self.river_tier = tier(camera.m_per_px, [RIVERS_MAJOR_BELOW, RIVERS_MEDIUM_BELOW, RIVERS_ALL_BELOW]) + usize::from(camera.m_per_px < RIVERS_STREAMS_BELOW);
         let details = if self.show_details { 1 } else { 0 };
         self.road_tier = tier(camera.m_per_px, ROADS_BELOW) * details;
         self.rail_tier = tier(camera.m_per_px, RAILS_BELOW) * details;

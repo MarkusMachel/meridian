@@ -11,6 +11,7 @@ pub mod offscreen;
 pub mod picker;
 pub mod render;
 pub mod session;
+pub mod wetlands;
 
 pub use camera::{Bounds, Camera};
 pub use modes::{Mode, Rgba};

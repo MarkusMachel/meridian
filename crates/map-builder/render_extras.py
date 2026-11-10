@@ -106,12 +106,22 @@ def land_colors(ne_dir, extent):
     return out.reshape(-1)
 
 
+# The main river file, then the regional supplements with the smaller rivers (ranks 10 to 13).
+# Natural Earth has supplements only for these three regions.
+RIVER_LAYERS = ("ne_10m_rivers_lake_centerlines", "ne_10m_rivers_europe", "ne_10m_rivers_north_america", "ne_10m_rivers_australia")
+
+
 def rivers(ne_dir):
     """NE river centrelines as polylines: (x, y, off, rank)."""
-    path = Path(ne_dir) / "ne_10m_rivers_lake_centerlines" / "ne_10m_rivers_lake_centerlines"
-    r = shapefile.Reader(str(path))
-    names = [f[0] for f in r.fields[1:]]
     xs, ys, off, rank = [], [], [0], []
+    for layer in RIVER_LAYERS:
+        _river_layer(Path(ne_dir) / layer / layer, xs, ys, off, rank)
+    return np.concatenate(xs), np.concatenate(ys), np.array(off, dtype=np.uint32), np.array(rank, dtype=np.uint8)
+
+
+def _river_layer(path, xs, ys, off, rank):
+    r = shapefile.Reader(str(path))
+    names = [f[0].lower() for f in r.fields[1:]]
     for sr in r.shapeRecords():
         rec = dict(zip(names, sr.record))
         pts = np.array(sr.shape.points, dtype=np.float64)
@@ -126,7 +136,6 @@ def rivers(ne_dir):
             mx, my = _LL_TO_EQ.transform(seg[:, 0], seg[:, 1])
             xs.append(np.rint(mx).astype(np.int32)); ys.append(np.rint(my).astype(np.int32))
             off.append(off[-1] + len(seg)); rank.append(min(int(rec["scalerank"]), 255))
-    return np.concatenate(xs), np.concatenate(ys), np.array(off, dtype=np.uint32), np.array(rank, dtype=np.uint8)
 
 
 def _label_point(geom):

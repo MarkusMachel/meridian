@@ -23,6 +23,7 @@ struct G3 {
 @group(0) @binding(3) var heights: texture_2d<f32>;
 @group(0) @binding(4) var land: texture_2d<f32>;
 @group(0) @binding(5) var samp: sampler;
+@group(0) @binding(6) var wet: texture_2d<f32>;          // the big wetlands, in latitude and longitude (wetlands.rs)
 
 const LIGHT: vec3<f32> = vec3<f32>(-0.42, 0.52, 0.74);   // from the north-west, high
 const SHALLOW: vec3<f32> = vec3<f32>(0.30, 0.50, 0.56);
@@ -127,6 +128,14 @@ fn arable_at(rel: vec2<f32>) -> f32 {
     let low = 1.0 - smoothstep(1500.0, 2600.0, h);
     let flat = 1.0 - smoothstep(0.05, 0.14, length(slope_at(rel)));
     return green * (1.0 - forest_at(rel)) * low * flat * step(0.0, h);
+}
+
+/// Is this ground marsh (0..1)? Read from the wetlands picture at latitude and longitude `ll`
+/// (degrees), with the edge frayed by noise so a marsh is not a clean ellipse.
+fn wet_at(world: vec2<f32>, ll: vec2<f32>) -> f32 {
+    let q = ll + (vec2<f32>(vnoise(world / 23000.0), vnoise(world / 23000.0 + vec2<f32>(9.0, 4.0))) - 0.5) * 0.5;
+    let v = textureSampleLevel(wet, samp, vec2<f32>((q.y + 180.0) / 360.0, (90.0 - q.x) / 180.0), 0.0).r;
+    return smoothstep(0.35, 0.65, v + (vnoise(world / 6000.0) - 0.5) * 0.3);
 }
 
 // Farmland, painted on the ground as a patchwork of fields, in the way of each part of the world:
@@ -298,13 +307,24 @@ fn fs_terrain(i: TOut) -> @location(0) vec4<f32> {
     let tint = mix(floor_tint, vec3<f32>(1.0), mask.g);
     var land = o.rgb * tint * mix(1.0, land_shade(i.rel), t);
     // farmland: a patchwork of fields, close up, outside towns and off the roads
-    let field_fade = (1.0 - smoothstep(900.0, 1600.0, g3.misc.y)) * t * (1.0 - mask.r) * (1.0 - mask.g);
-    if (field_fade > 0.01) {
+    let open_ground = t * (1.0 - mask.r) * (1.0 - mask.g);
+    if (open_ground > 0.01 && depth < 0.0) {
+        let ll = lat_lon(world);
+        let marsh = wet_at(world, ll);
+        let field_fade = (1.0 - smoothstep(900.0, 1600.0, g3.misc.y)) * open_ground * (1.0 - marsh);
         let farmed = arable_at(i.rel);
-        if (farmed > 0.01) {
-            let ll = lat_lon(world);
+        if (field_fade * farmed > 0.01) {
             let k = farmed * (1.0 - smoothstep(56.0, 62.0, abs(ll.x))) * field_fade;
             land *= mix(vec3<f32>(1.0), field_tint(world, culture(ll)), k * 0.9);
+        }
+        // marsh: dark wet ground, mottled, with pools and channels of open water among the reeds
+        if (marsh > 0.01) {
+            let grain = f32(g3.blds.w);
+            let k = marsh * open_ground;
+            land *= mix(vec3<f32>(1.0), vec3<f32>(0.74, 0.84, 0.70) * (0.88 + 0.24 * vnoise(world / (grain * 0.22))), k);
+            let pools = smoothstep(0.50, 0.57, vnoise(world / (grain * 0.9)) * 0.55 + vnoise(world / (grain * 0.31)) * 0.45);
+            let channels = 1.0 - smoothstep(0.015, 0.035, abs(vnoise(world / (grain * 1.7) + vec2<f32>(3.0, 8.0)) - 0.5));
+            land = mix(land, water(i.rel, pos, 25.0) * o.a, max(pools, channels) * k * 0.9);
         }
     }
     // rivers are water: the same moving surface as the sea, in a shallow colour
@@ -603,7 +623,9 @@ fn vs_tree(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
         return hidden();
     }
     let world_xy = vec2<f32>(g3.center.xy) + base;
-    let lat = abs(lat_lon(world_xy).x);
+    let ll = lat_lon(world_xy);
+    let lat = abs(ll.x);
+    let marsh = wet_at(world_xy, ll) > 0.5;
     let ground = textureSampleLevel(land, samp, h_uv(base), 0.0).rgb;
     let lush = forest_at(base);
     // dry open country with some green in it: a tree here and there (warm latitudes only)
@@ -613,7 +635,9 @@ fn vs_tree(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     let wooded = lush * smoothstep(0.22, 0.5, vnoise(world_xy / 9000.0) + lush * 0.6) * 1.35 * tree_line;
     // and farmland has a tree here and there, along the hedges and by the farms
     let scattered = max(scrub * 0.13, arable_at(base) * 0.022 * (1.0 - smoothstep(56.0, 62.0, lat)));
-    let cover = max(wooded, scattered);
+    var cover = max(wooded, scattered);
+    // marsh: reed beds with a stunted tree now and then; in the tropics, low swamp forest and mangrove
+    if (marsh) { cover = select(0.42, 0.78, lat < 19.0); }
     let m = textureSampleLevel(urban_mask, samp, overlay_uv(base), 0.0);
     if (hash2(c + vec2<i32>(11, 2)) >= cover || m.r > 0.3 || m.g > 0.25) {
         return hidden();
@@ -627,7 +651,24 @@ fn vs_tree(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     var tall = 1.0;
     var slim = 1.0;
     var green = vec3<f32>(0.27, 0.39, 0.19);                 // temperate broadleaf
-    if (pick < max(cold, 0.10 * (1.0 - tropic))) {
+    if (marsh) {
+        if (tropic > 0.5) {
+            size *= 0.72;
+            green = vec3<f32>(0.16, 0.32, 0.18);
+        } else if (pick < 0.75) {
+            // a clump of reeds: short, thin, straw-green
+            shape = CONIFER;
+            tall = 0.42;
+            slim = 0.55;
+            size *= 0.85;
+            green = vec3<f32>(0.56, 0.57, 0.34);
+        } else {
+            // a stunted tree: a small spruce in the north, a willow or alder elsewhere
+            shape = select(BROADLEAF, CONIFER, hash2(c + vec2<i32>(2, 77)) < cold);
+            size *= 0.6;
+            green = select(vec3<f32>(0.33, 0.40, 0.24), vec3<f32>(0.19, 0.30, 0.22), shape == CONIFER);
+        }
+    } else if (pick < max(cold, 0.10 * (1.0 - tropic))) {
         // spruce and fir: narrower, taller and bluer the farther north
         let north = smoothstep(54.0, 66.0, lat + ground_h / 60.0);
         shape = CONIFER;
@@ -736,7 +777,7 @@ fn farmstead(vi: u32, c: vec2<i32>, origin: vec2<f32>, s: f32) -> MOut {
     let foot = origin + (0.25 + 0.5 * vec2<f32>(hash2(c + vec2<i32>(6, 6)), hash2(c + vec2<i32>(4, 1)))) * s;
     let m = textureSampleLevel(urban_mask, samp, overlay_uv(foot), 0.0);
     let ll = lat_lon(vec2<f32>(g3.center.xy) + foot);
-    if (m.r > 0.2 || m.g > 0.3 || arable_at(foot) * (1.0 - smoothstep(56.0, 62.0, abs(ll.x))) < 0.5) {
+    if (m.r > 0.2 || m.g > 0.3 || arable_at(foot) * (1.0 - smoothstep(56.0, 62.0, abs(ll.x))) * (1.0 - wet_at(vec2<f32>(g3.center.xy) + foot, ll)) < 0.5) {
         return hidden();
     }
     let st = house_style(culture(ll));
