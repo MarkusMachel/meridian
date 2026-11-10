@@ -113,7 +113,7 @@ For the map redesign (`docs/design-notes.md` section 25): military maps at five 
 | Style reference | Scanned US military charts: ONC (1:1,000,000), TPC (1:500,000), JOG and Army Map Service sheets (1:250,000), at the University of Texas map collection | The look of the maps of the time | "Most of the maps scanned ... are in the public domain. No permissions are needed to copy them"; credit to the University of Texas Libraries is appreciated; "the U.S. Government may claim copyright outside of the U.S. for maps such as nautical and aeronautical charts"; agency seals may not be used on merchandise | Probably, per sheet | 1950s to 1990s | The page does not name these series or commercial use |
 | Avoid | Soviet General Staff maps (1:1,000,000 to 1:25,000, the whole world) | Detailed period maps | Copyright status unclear (from memory) | No | 1970s to 1980s | Not checked |
 
-- **The fine scales depend on one decision:** whether OpenStreetMap's share-alike condition on the map data is acceptable (the game's code is not affected by it).
+- **Decided 2026-11-10: OpenStreetMap is used for the fine scales.** Data derived from it is kept in files of its own and offered under the ODbL, with credit ("© OpenStreetMap contributors") on screen. Do not mix it into files with other terms. The game's code is not affected.
 - **Nothing open and worldwide shows 1990 at 1:100,000 or finer.** The fine scales will show the world of the 2020s unless corrected by hand where it matters.
 - **Size:** the whole world from OpenStreetMap is tens of gigabytes; 1:25,000 cannot ship for the whole world.
 - **Hexagon grid:** H3 (level sizes from h3geo.org/docs/core-library/restable). The pure-Rust library `h3o` could not be checked (its page did not load).

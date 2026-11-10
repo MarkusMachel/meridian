@@ -1156,7 +1156,7 @@ Sources checked on 2026-11-10 are in `docs/data-sources.md`. In short:
 
 - **1:1,000,000:** VMAP0 (the Digital Chart of the World, public domain, compiled 1991 to 1993 from the ONC charts, so close to 1990) and Natural Earth.
 - **1:250,000:** VMAP1 where it was released (only partly public; parts of Iraq are), GRIP4 roads (CC0, modern), built-up areas from GHSL (a 1990 layer exists), contours from open elevation data.
-- **1:100,000 to 1:25,000:** the only worldwide detail is OpenStreetMap (or Overture Maps, whose roads and buildings come from it): modern, not 1990, and under a share-alike licence on the data.
+- **1:100,000 to 1:25,000:** OpenStreetMap (or Overture Maps, whose roads and buildings come from it), the only worldwide data with that detail. **Decided 2026-11-10: use it.** It is modern, not 1990, and its licence is share-alike on the data: map data we ship that is derived from it is kept in files of its own, offered under the same open licence (ODbL), with credit on screen. The game's code and other data are not affected, and map images need only the credit.
 
 ### Engine and builder work this implies
 
@@ -1170,7 +1170,6 @@ Sources checked on 2026-11-10 are in `docs/data-sources.md`. In short:
 ### Still open
 
 - Confirm drawn maps rather than scanned ones.
-- Whether OpenStreetMap's share-alike condition on the map data is acceptable. The three fine scales depend on it.
 - Whether fine-level terrain is baked for the whole world or generated when a hexagon opens (see the suggestion above).
 - What levels 7 and 8 simulate that level 5 does not (the tactical rules), and when they open and close.
 - How the brigade and division model, combat width and frontage (section 12) read on hexagons of 10 km, 1.4 km and 530 m.

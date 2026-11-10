@@ -565,7 +565,8 @@ These are the gameplay phases, to be re-planned once the engine passes Phase 8. 
 - [ ] Data-source follow-ups: GHS-BUILT and GHS-SMOD terms (GHS-POP verified; SIPRI is commercial-only), HydroSHEDS documentation, an oil field and industry source, whether to use OpenStreetMap (share-alike). Add a license field per data layer and a commercial-build check in the bake step.
 - [x] Bulk tables as CSV, structured data as RON (decided 2026-11-08).
 - [x] Map redesign (2026-11-10): hexagon levels on a globe replace the irregular cells on a flat map: H3 level 5 always on (about 10 km), level 7 where units fight (about 1.4 km), level 8 for local tactical play (about 530 m); the simulation uses whole-metre positions on the sphere; the client draws a globe and military maps at 1:1,000,000, 1:250,000, 1:100,000, 1:50,000 and 1:25,000 with transitions. See `docs/design-notes.md` section 25.
-- [ ] Map redesign, still open: drawn or scanned maps (drawn is assumed); OpenStreetMap's share-alike data licence for the fine scales; fine terrain baked or generated; what levels 7 and 8 simulate; the H3 library (`h3o` unverified); the order of the rewrite.
+- [x] OpenStreetMap is used for the map scales from 1:100,000 to 1:25,000 (2026-11-10): derived data in its own files under the ODbL, with credit on screen.
+- [ ] Map redesign, still open: drawn or scanned maps (drawn is assumed); how much of the world ships at the fine scales; fine terrain baked or generated; what levels 7 and 8 simulate; the H3 library (`h3o` unverified); the order of the rewrite.
 
 ---
 

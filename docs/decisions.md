@@ -426,3 +426,7 @@ A design decision, not built. The owner is starting a second big rewrite of the 
 - The simulation uses whole-metre positions on the sphere, and the client draws a globe.
 - The design, the reasons, the data found for each scale and the long list of open points are in `docs/design-notes.md` section 25 and `docs/data-sources.md`. The build guide's section 3A is marked as superseded in outline.
 - Today's map (cells, flat 3D view) remains the working one until its replacement exists.
+
+## OpenStreetMap for the fine map scales (2026-11-10)
+
+Decided by the owner: OpenStreetMap is the source for the map scales from 1:100,000 to 1:25,000. Data derived from it stays in files of its own, offered under its licence (ODbL), with "© OpenStreetMap contributors" on screen; the game's code and other data are not affected. It shows the world of the 2020s, not 1990. Recorded in `docs/design-notes.md` section 25 and `docs/data-sources.md`. This settles the question left open on 2026-11-09.
