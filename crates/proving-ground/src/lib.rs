@@ -74,15 +74,15 @@ pub const TEST_FORMATION: [(u16, u8); 15] = [
     (unit_kind::SUPPLY, echelon::BATTALION),
 ];
 
-/// One unit of a named formation: what it is called, its type and size, where it stands (Equal
-/// Earth metres, as whole numbers so every machine picks the same cell), and which entry of the
-/// same list it reports to.
+/// One unit of a named formation: what it is called, its type and size, where it stands (latitude and
+/// longitude in millionths of a degree, as whole numbers so every machine picks the same
+/// hexagon), and which entry of the same list it reports to.
 pub struct FormationUnit {
     pub name: &'static str,
     pub kind: u16,
     pub echelon: u8,
-    pub x: i32,
-    pub y: i32,
+    pub lat: i32,
+    pub lon: i32,
     pub reports_to: Option<usize>,
 }
 
@@ -92,12 +92,12 @@ pub struct FormationUnit {
 /// Nienburg). Written from general knowledge of the Bundeswehr's Army Structure 4; names and
 /// garrisons are not checked against a source, and battalions are left out.
 pub const PANZERDIVISION_1: [FormationUnit; 6] = [
-    FormationUnit { name: "I. Korps", kind: unit_kind::HEADQUARTERS, echelon: echelon::CORPS, x: 593_820, y: 6_180_968, reports_to: None },
-    FormationUnit { name: "1. Panzerdivision", kind: unit_kind::HEADQUARTERS, echelon: echelon::DIVISION, x: 754_612, y: 6_221_148, reports_to: Some(0) },
-    FormationUnit { name: "Panzergrenadierbrigade 1", kind: unit_kind::MECHANISED, echelon: echelon::BRIGADE, x: 773_127, y: 6_199_616, reports_to: Some(1) },
-    FormationUnit { name: "Panzerbrigade 2", kind: unit_kind::ARMOUR, echelon: echelon::BRIGADE, x: 816_579, y: 6_211_369, reports_to: Some(1) },
-    FormationUnit { name: "Panzerbrigade 3", kind: unit_kind::ARMOUR, echelon: echelon::BRIGADE, x: 712_627, y: 6_247_484, reports_to: Some(1) },
-    FormationUnit { name: "Artillerieregiment 1", kind: unit_kind::SP_ARTILLERY, echelon: echelon::REGIMENT, x: 744_210, y: 6_226_032, reports_to: Some(1) },
+    FormationUnit { name: "I. Korps", kind: unit_kind::HEADQUARTERS, echelon: echelon::CORPS, lat: 51_960_700, lon: 7_626_100, reports_to: None },
+    FormationUnit { name: "1. Panzerdivision", kind: unit_kind::HEADQUARTERS, echelon: echelon::DIVISION, lat: 52_375_900, lon: 9_732_000, reports_to: Some(0) },
+    FormationUnit { name: "Panzergrenadierbrigade 1", kind: unit_kind::MECHANISED, echelon: echelon::BRIGADE, lat: 52_150_800, lon: 9_951_100, reports_to: Some(1) },
+    FormationUnit { name: "Panzerbrigade 2", kind: unit_kind::ARMOUR, echelon: echelon::BRIGADE, lat: 52_268_900, lon: 10_526_800, reports_to: Some(1) },
+    FormationUnit { name: "Panzerbrigade 3", kind: unit_kind::ARMOUR, echelon: echelon::BRIGADE, lat: 52_646_100, lon: 9_220_800, reports_to: Some(1) },
+    FormationUnit { name: "Artillerieregiment 1", kind: unit_kind::SP_ARTILLERY, echelon: echelon::REGIMENT, lat: 52_430_000, lon: 9_600_000, reports_to: Some(1) },
 ];
 
 /// A formation is only placed when the map has a cell within this distance of its first unit
@@ -108,7 +108,8 @@ const FORMATION_REACH_M: u32 = 60_000;
 /// holds the cell the first unit stands in, with the chain of command set (`UnitExt::parent`).
 /// Returns the new units' IDs, or nothing if the map has no cell near the formation.
 pub fn add_formation(w: &mut World, formation: &[FormationUnit]) -> Vec<UnitId> {
-    let place = |w: &World, u: &FormationUnit| w.map().and_then(|m| m.nearest_cell(u.x, u.y));
+    // only a globe map has places; a flat test map gets no formation
+    let place = |w: &World, u: &FormationUnit| w.map().and_then(|m| m.nearest_cell_to_place(meridian_core::sphere::place_from_micro_degrees(u.lat, u.lon)));
     let Some(first) = formation.first() else { return Vec::new() };
     let Some((home, away)) = place(w, first) else { return Vec::new() };
     if away > FORMATION_REACH_M {

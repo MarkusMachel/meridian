@@ -294,6 +294,29 @@ impl Grid3 {
     }
 }
 
+/// Number the connected pieces of a graph: each node gets the lowest node number of its piece.
+fn connected_groups(off: &[u32], dst: &[u32]) -> Vec<u32> {
+    let n = off.len() - 1;
+    let mut group = vec![u32::MAX; n];
+    let mut stack = Vec::new();
+    for start in 0..n {
+        if group[start] != u32::MAX {
+            continue;
+        }
+        group[start] = start as u32;
+        stack.push(start as u32);
+        while let Some(v) = stack.pop() {
+            for &w in &dst[off[v as usize] as usize..off[v as usize + 1] as usize] {
+                if group[w as usize] == u32::MAX {
+                    group[w as usize] = start as u32;
+                    stack.push(w);
+                }
+            }
+        }
+    }
+    group
+}
+
 /// The place stored at position `i` of a list of three numbers per entry.
 fn place_of(xyz: &[i32], i: u32) -> Place {
     let k = 3 * i as usize;
@@ -304,6 +327,9 @@ fn place_of(xyz: &[i32], i: u32) -> Place {
 pub struct Map {
     raw: RawMap,
     cell_grid: Grid,
+    /// Which connected piece of land each cell is in (worked out on load, not stored): two
+    /// cells in different pieces have no land route, which is known without searching.
+    cell_group: Vec<u32>,
     /// Sites grouped by cell: site_by_cell_off[c]..[c+1] indexes site_by_cell.
     site_by_cell_off: Vec<u32>,
     site_by_cell: Vec<u32>,
@@ -341,7 +367,8 @@ impl Map {
             by_cell[fill[c as usize] as usize] = s as u32;
             fill[c as usize] += 1;
         }
-        Ok(Map { raw, cell_grid, site_by_cell_off: off, site_by_cell: by_cell })
+        let cell_group = connected_groups(&raw.c_off, &raw.c_dst);
+        Ok(Map { raw, cell_grid, cell_group, site_by_cell_off: off, site_by_cell: by_cell })
     }
 
     pub fn province_count(&self) -> u32 {
@@ -514,6 +541,11 @@ impl Map {
         Some((CellId(c), ground_m(place_of(&self.raw.cell_xyz, c), at)))
     }
 
+    /// Are two cells joined by land (whatever the terrain)? Known without a search.
+    pub fn same_landmass(&self, a: CellId, b: CellId) -> bool {
+        self.cell_group[a.index()] == self.cell_group[b.index()]
+    }
+
     /// Does a river run across the shared border of these two neighbouring cells?
     pub fn river_between(&self, a: CellId, b: CellId) -> bool {
         self.cell_edges(a).any(|e| self.raw.c_dst[e] == b.0 && self.raw.c_flags[e] & cell_edge_flag::RIVER != 0)
@@ -542,6 +574,9 @@ impl Map {
     /// (see `World::find_cell_path`).
     pub fn find_cell_path_bridged(&self, from: CellId, to: CellId, costs: &CellCosts, scratch: &mut PathScratch, bridged: &dyn Fn(u32, u32) -> bool) -> Option<Path> {
         let r = &self.raw;
+        if self.cell_group[from.index()] != self.cell_group[to.index()] {
+            return None; // across the sea: a search would visit the whole landmass to learn this
+        }
         let (gx, gy) = (r.cell_x[to.index()], r.cell_y[to.index()]);
         let min_pct = costs.min_percent();
         let globe = self.is_globe();

@@ -34,6 +34,9 @@ if [ -f data/baked/meridian-map.bin ]; then
   MERIDIAN_REQUIRE_MAP=1 cargo test --release -p meridian-data --test world_map
   ./target/release/runner map-validate data/baked/meridian-map.bin
   ./target/release/runner map-bench data/baked/meridian-map.bin
+  # Map rewrite M2: rivers, bridges and marches on the hexagon map; a year with marching units replays to the same hashes.
+  MERIDIAN_REQUIRE_MAP=1 cargo test --release -p runner --test hex_world
+  ./target/release/runner map-run data/baked/meridian-map.bin 1 8760
   if [ -f data/baked/meridian-render.bin ]; then
     # Client smoke test: draw one frame without a window and check that a picture was written.
     cargo build --release -p client

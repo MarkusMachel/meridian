@@ -229,6 +229,43 @@ pub struct World {
     pub(crate) cells: Option<CellState>,
     #[serde(skip)]
     pub(crate) map: Option<MapRef>,
+    /// Working memory for route searches, kept between searches. Not state.
+    #[serde(skip)]
+    pub(crate) search: SearchMemory,
+}
+
+/// The route search needs three numbers of working memory per cell (44 MB on the hexagon
+/// world). Making that afresh for every march order took about 7 ms; it is kept here instead.
+/// It is not state: it never affects a result, a copy of the world starts without it, and two
+/// worlds are equal whatever theirs holds.
+#[derive(Default)]
+pub struct SearchMemory(Option<crate::map::PathScratch>);
+impl Clone for SearchMemory {
+    fn clone(&self) -> SearchMemory {
+        SearchMemory(None)
+    }
+}
+impl PartialEq for SearchMemory {
+    fn eq(&self, _: &SearchMemory) -> bool {
+        true
+    }
+}
+impl Eq for SearchMemory {}
+impl std::fmt::Debug for SearchMemory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SearchMemory")
+    }
+}
+
+impl World {
+    /// Borrow the search memory (made on first use); hand it back with `return_search_memory`.
+    pub(crate) fn take_search_memory(&mut self) -> crate::map::PathScratch {
+        let cells = self.map.as_ref().map_or(0, |m| m.0.cell_count() as usize);
+        self.search.0.take().unwrap_or_else(|| crate::map::PathScratch::new(cells))
+    }
+    pub(crate) fn return_search_memory(&mut self, s: crate::map::PathScratch) {
+        self.search.0 = Some(s);
+    }
 }
 
 impl World {
@@ -257,6 +294,7 @@ impl World {
             outbox: Outbox::default(),
             cells: None,
             map: None,
+            search: SearchMemory::default(),
         }
     }
 

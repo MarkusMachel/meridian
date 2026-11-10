@@ -73,6 +73,42 @@ fn arc_from_chord_squared(chord2: u64) -> u32 {
     (((small << (HALVINGS + 1)) * EARTH_RADIUS_M as u128) >> 60) as u32
 }
 
+/// The place at a latitude and longitude given in millionths of a degree (north and east are
+/// positive), for setting things up from readable coordinates: Hannover is
+/// `place_from_micro_degrees(52_370_000, 9_730_000)`. Whole numbers only, like the rest of this
+/// file, because the sine a machine's own maths library gives can differ in the last digit
+/// from one system to another, and a unit must land in the same cell everywhere.
+pub fn place_from_micro_degrees(lat: i32, lon: i32) -> Place {
+    let (sin_lat, cos_lat) = sin_cos(lat);
+    let (sin_lon, cos_lon) = sin_cos(lon);
+    let scale = |v: i128| ((v * EARTH_RADIUS_M as i128 + FIXED / 2).div_euclid(FIXED)) as i32; // nearest metre
+    [scale(cos_lat * cos_lon / FIXED), scale(cos_lat * sin_lon / FIXED), scale(sin_lat)]
+}
+
+/// One, in the fixed-point numbers `sin_cos` works in (18 decimal places).
+const FIXED: i128 = 1_000_000_000_000_000_000;
+
+/// Sine and cosine of an angle in millionths of a degree (within a full turn either way), as
+/// fixed-point numbers, by their power series: sin x = x - x³/3! + x⁵/5! ... Sixteen terms
+/// are far more than a metre on the Earth needs for any angle up to a half turn.
+fn sin_cos(micro_degrees: i32) -> (i128, i128) {
+    const PI: i128 = 3_141_592_653_589_793_238; // pi in the same fixed point
+    let half_turn = 180_000_000i64;
+    // bring the angle into -180 to 180 degrees
+    let a = (micro_degrees as i64 + half_turn).rem_euclid(2 * half_turn) - half_turn;
+    let x = a as i128 * PI / half_turn as i128;
+    let x2 = x * x / FIXED;
+    let (mut sin, mut cos) = (x, FIXED);
+    let (mut sin_term, mut cos_term) = (x, FIXED);
+    for k in 1..=16i128 {
+        cos_term = -cos_term * x2 / FIXED / ((2 * k - 1) * (2 * k));
+        sin_term = -sin_term * x2 / FIXED / ((2 * k) * (2 * k + 1));
+        cos += cos_term;
+        sin += sin_term;
+    }
+    (sin, cos)
+}
+
 /// Half-way round the Earth in metres (pi R, with pi to nine decimal places).
 fn half_circumference_m() -> u32 {
     (EARTH_RADIUS_M as u128 * 3_141_592_654 / 1_000_000_000) as u32
@@ -110,6 +146,25 @@ mod tests {
         let (la1, lo1, la2, lo2) = (a.0.to_radians(), a.1.to_radians(), b.0.to_radians(), b.1.to_radians());
         let h = ((la2 - la1) / 2.0).sin().powi(2) + la1.cos() * la2.cos() * ((lo2 - lo1) / 2.0).sin().powi(2);
         2.0 * EARTH_RADIUS_M as f64 * h.sqrt().asin()
+    }
+
+    #[test]
+    fn a_place_from_degrees_matches_the_float_answer_to_the_metre() {
+        for lat in (-90..=90).step_by(5) {
+            for lon in (-180..=180).step_by(7) {
+                let (la, lo) = (lat as f64 + 0.123456, lon as f64 - 0.654321);
+                let la = la.clamp(-90.0, 90.0);
+                let got = place_from_micro_degrees((la * 1e6).round() as i32, (lo * 1e6).round() as i32);
+                let want = place(la, lo);
+                for k in 0..3 {
+                    assert!((got[k] - want[k]).abs() <= 1, "{la},{lo}: {got:?} against {want:?}");
+                }
+            }
+        }
+        assert_eq!(place_from_micro_degrees(0, 0), [EARTH_RADIUS_M as i32, 0, 0]);
+        assert_eq!(place_from_micro_degrees(90_000_000, 0), [0, 0, EARTH_RADIUS_M as i32]);
+        assert_eq!(place_from_micro_degrees(0, -90_000_000), [0, -(EARTH_RADIUS_M as i32), 0]);
+        assert_eq!(place_from_micro_degrees(0, 180_000_000), place_from_micro_degrees(0, -180_000_000));
     }
 
     #[test]

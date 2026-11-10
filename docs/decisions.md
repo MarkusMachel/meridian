@@ -481,3 +481,25 @@ On the branch `map-rewrite`. Not the whole of M1: the hexagons are not yet joine
 - The flat client cannot show this map: `build_map.sh` no longer writes the render file (3.7 million outlines are too much for it). The globe client is M3. Until then the map is headless on this branch; `main` still has the old map and client.
 - Population and economy per hexagon are not there (planned per province).
 - `sim::tests::the_threaded_run_matches...` still fails now and then on a busy machine (timing in the test, not the map).
+
+## Map rewrite M2: rivers, bridges and units on hexagons (2026-11-10)
+
+Started on the owner's word before M1's last check (the same hash on macOS and Linux) could be run; that check is still owed and needs the Mac.
+
+- **Rivers run along hexagon sides** (`build_rivers.py`). A river line becomes the cheapest chain of sides, on the web of hexagon corners, from the corner nearest its start to the corner nearest its end, where a side costs more the farther it lies from the line. A chain cannot have a gap. The river flag on a cell edge now means "going from one of these cells to the other crosses the river" (before, it marked edges the river passed through, which let a unit cross inside a cell for free). Lake centre lines are included so a river is not broken at a lake.
+- **Bridges** are river sides that a road or a railway passes, as before: 17,663 on the world.
+- **Setting up by latitude and longitude.** `sphere::place_from_micro_degrees` turns millionths of a degree into a place with whole-number sine and cosine (power series), so a unit lands in the same hexagon on every machine; a machine's own sine can differ in the last digit. The test division is now given by its towns' coordinates.
+- **Search memory is kept in the world** between route searches (`SearchMemory`). It is not state: not saved, not hashed, never changes a result (the year's hash is the same with and without it).
+- **Land connection table.** On load the map numbers its connected pieces of land; a route between two pieces is refused at once.
+
+**Done test.** A unit at the Rhine bridge nearest Cologne crosses in 2 ticks; with the bridge demolished it goes round by the next crossing and takes 4 (`hex_world.rs`). Ten great rivers (Rhine twice, Danube, Vistula, Volga, Tigris, Euphrates, Nile, Mississippi, Yangtze): with fording forbidden and no bridges, the route between the banks is 6 to 50 times the open one, so none has a gap on that stretch. A year of the proving ground with marching units replays to the same hashes (budgets.md); there is no tick budget to hold it against yet. Two builds of the map give the same file.
+
+**Known limits.**
+- Where a road follows a river bank, the hexagon sides make it cross the river several times, and each crossing counts as a bridge. So there are more bridges along such stretches than in reality. A real fix needs bridge points (where road and river lines truly cross) kept apart from the road flag.
+- Where a tributary joins, or a river reaches the sea, the chain ends at the nearest corner; a one-side gap there is possible and is not tested.
+- Lakes are still land hexagons (as they were land cells).
+- Elevation was still the stand-in. Real terrain will change routes and the fingerprint.
+
+## Fine map scales: working assumption (2026-11-10)
+
+Asked whether 1:50,000 and 1:25,000 should be scenery only or dropped, the owner answered "do all" to a list that included the question, which does not settle it. **Assumed until told otherwise:** nothing finer than 1:250,000 is built now, and M6 (the OpenStreetMap packs) stays on hold. Nothing in M2 to M4 depends on the answer.

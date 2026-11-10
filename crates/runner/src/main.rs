@@ -33,6 +33,7 @@ fn main() {
         Some("run") => std::process::exit(cmd_run(&args[1..])),
         Some("map-validate") => std::process::exit(cmd_map_validate(&args[1..])),
         Some("map-bench") => std::process::exit(cmd_map_bench(&args[1..])),
+        Some("map-run") => std::process::exit(cmd_map_run(&args[1..])),
         Some("record") => std::process::exit(cmd_record(&args[1..])),
         Some("replay") => std::process::exit(cmd_replay(&args[1..])),
         Some("diff") => std::process::exit(cmd_diff(&args[1..])),
@@ -418,6 +419,90 @@ fn read_file(path: &str) -> Option<Vec<u8>> {
         Err(e) => {
             eprintln!("{path}: {e}");
             None
+        }
+    }
+}
+
+/// `runner map-run <map.bin> <seed> <ticks>` : the proving ground on the real map with units
+/// marching about (five new march orders a day, picked by a fixed rule), recorded and then
+/// replayed from a fresh world. Prints the final hash and the tick times; exits 1 if the
+/// replay does not give the same hashes.
+fn cmd_map_run(args: &[String]) -> i32 {
+    use meridian_core::CellId;
+    use meridian_data::replay::Recorder;
+    use std::time::Instant;
+    let [path, seed, ticks] = args else {
+        eprintln!("usage: runner map-run <map.bin> <seed> <ticks>");
+        return 2;
+    };
+    let (seed, ticks): (u64, u64) = (seed.parse().expect("seed must be an integer"), ticks.parse().expect("ticks must be an integer"));
+    let map = match meridian_data::load_map_file(std::path::Path::new(path)) {
+        Ok(m) => std::sync::Arc::new(m),
+        Err(e) => {
+            eprintln!("{e:?}");
+            return 1;
+        }
+    };
+    let rules = proving_ground::rules(false);
+    let mut world = proving_ground::scenario_on_map(seed, map.clone());
+    let units: Vec<(UnitId, CountryId)> = (0..map.state_count() as u16).flat_map(|c| world.view(CountryId(c)).own_units().into_iter().map(move |(id, _)| (id, CountryId(c))).collect::<Vec<_>>()).collect();
+    let mut rec = Recorder::new(&world, "proving-ground:map", 240);
+    let (mut ordered, mut rejected, mut slowest, mut order_ticks_ns, mut order_ticks) = (0u64, 0usize, 0u128, 0u128, 0u64);
+    let (mut hash_ns, mut quiet_ns, mut quiet) = (0u128, 0u128, 0u64);
+    let start = Instant::now();
+    for t in 0..ticks {
+        let mut cmds = Vec::new();
+        if t % 24 == 0 {
+            for j in 0..5u64 {
+                // a fixed rule, not the world's generator: the script must not disturb the run
+                let pick = (t / 24).wrapping_mul(7919).wrapping_add(j.wrapping_mul(104_729)).wrapping_add(seed);
+                let (unit, owner) = units[(pick % units.len() as u64) as usize];
+                let Some(here) = world.unit_ext(unit).and_then(|e| e.cell) else { continue };
+                let near = map.cells_within(here, 150_000);
+                let to: CellId = near[(pick / 7 % near.len() as u64) as usize];
+                cmds.push(Command::MoveToCell { issuer: owner, unit, to });
+            }
+            ordered += cmds.len() as u64;
+            rejected += cmds.iter().filter(|c| world.dry_run(c, &rules).is_err()).count();
+        }
+        // the recorder takes a state hash every 240 ticks; that is timed apart from the tick
+        let checkpoint = t % 240 == 0;
+        let before = Instant::now();
+        rec.step(&mut world, &rules, &cmds, &[], &[]);
+        let took = before.elapsed().as_nanos();
+        if checkpoint {
+            hash_ns += took;
+            continue;
+        }
+        quiet_ns += took;
+        quiet += 1;
+        slowest = slowest.max(took);
+        if !cmds.is_empty() {
+            order_ticks_ns += took;
+            order_ticks += 1;
+        }
+    }
+    let total = start.elapsed();
+    let marching = units.iter().filter(|u| world.unit_ext(u.0).is_some_and(|e| e.march.is_some())).count();
+    let replay = rec.finish(&world);
+    println!("{} units; {ordered} march orders ({rejected} refused), {marching} units still marching at the end", units.len());
+    println!(
+        "{ticks} ticks in {:.2} s. A tick: mean {:.1} us, slowest {:.2} ms; a tick with five new march orders: mean {:.2} ms; a tick with a state hash (every 240th): mean {:.0} ms",
+        total.as_secs_f64(),
+        quiet_ns as f64 / 1e3 / quiet.max(1) as f64,
+        slowest as f64 / 1e6,
+        order_ticks_ns as f64 / 1e6 / order_ticks.max(1) as f64,
+        hash_ns as f64 / 1e6 / ticks.div_ceil(240).max(1) as f64
+    );
+    let mut fresh = proving_ground::scenario_on_map(seed, map);
+    match meridian_data::replay::play(&mut fresh, &rules, &replay) {
+        Ok(h) => {
+            println!("replayed {} ticks from a fresh world: {} checkpoints and the final hash {h:016x} match", replay.ticks, replay.checkpoints.len());
+            0
+        }
+        Err(d) => {
+            eprintln!("replay differs: {d}");
+            1
         }
     }
 }

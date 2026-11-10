@@ -56,7 +56,7 @@ impl World {
     pub(crate) fn advance_marches(&mut self, ruleset: &dyn Ruleset) {
         let Some(map) = self.map.clone() else { return };
         let now = self.clock.tick();
-        let mut scratch: Option<crate::map::PathScratch> = None;
+        let mut scratch = self.take_search_memory();
         for i in 0..self.units.len() {
             if self.unit_ext[i].march.as_ref().is_none_or(|m| m.arrive_tick > now) {
                 continue;
@@ -71,8 +71,7 @@ impl World {
             let Some(profile) = ruleset.march_profile(self, UnitId(i as u32)).filter(|p| p.m_per_tick > 0) else { continue };
             let (here, mut next) = (CellId(entered), CellId(next));
             if map.0.river_between(here, next) && !self.bridge_usable(here, next, profile.min_bridge_condition) {
-                let s = scratch.get_or_insert_with(|| crate::map::PathScratch::new(map.0.cell_count() as usize));
-                let Some(route) = self.find_cell_path(here, CellId(goal), &profile.costs, profile.min_bridge_condition, s) else { continue };
+                let Some(route) = self.find_cell_path(here, CellId(goal), &profile.costs, profile.min_bridge_condition, &mut scratch) else { continue };
                 march.path = route.nodes.iter().skip(1).rev().copied().collect();
                 let Some(&n) = march.path.last() else { continue };
                 next = CellId(n);
@@ -80,6 +79,7 @@ impl World {
             march.arrive_tick = now + self.march_step_ticks(here, next, &profile);
             self.unit_ext[i].march = Some(march);
         }
+        self.return_search_memory(scratch);
     }
 
     /// Put the permanent bridges of 1990 into the bridge table: one at full condition on every
@@ -275,10 +275,10 @@ impl World {
                     self.unit_ext[unit.index()].march = None;
                     return Ok(());
                 }
-                let cells = self.map.as_ref().expect("check_cell proved a map exists").0.cell_count() as usize;
-                // (search memory is made per order for now; a busy AI will want to reuse it)
-                let mut scratch = crate::map::PathScratch::new(cells);
-                let route = self.find_cell_path(pos, to, &profile.costs, profile.min_bridge_condition, &mut scratch).ok_or(Rejection::Refused("no route for that move"))?;
+                let mut scratch = self.take_search_memory();
+                let route = self.find_cell_path(pos, to, &profile.costs, profile.min_bridge_condition, &mut scratch);
+                self.return_search_memory(scratch);
+                let route = route.ok_or(Rejection::Refused("no route for that move"))?;
                 // the route as the march keeps it: without the cell the unit stands in, next cell last
                 let path: Vec<u32> = route.nodes.iter().skip(1).rev().copied().collect();
                 let Some(&first) = path.last() else { return Err(Rejection::Refused("no route for that move")) };

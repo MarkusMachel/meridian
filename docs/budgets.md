@@ -127,3 +127,17 @@ So seven times the cells costs about six to nine times as much, as expected: a f
 The budgets in `runner map-bench` are these provisional ones (about 3 times the container's measurement). **Set them again from a run on the M4 Pro.** A route of 400 km now crosses about 60 hexagons instead of 25, so a local query costs about six times what it did; long routes belong on the strategic graph, as before. Range queries (`cells_within`) on the globe: 10,000 queries of 400 km radius plus 100 of 3,000 km took about 15 s before and under 1 s after comparing straight-line distances first (measured as the whole benchmark going from 113 s to 21 s).
 
 Builder, same container, single-threaded, from the provinces onward: hexagons and provinces 400 s, cell checks 165 s, sea 6 s, terrain 103 s, sites 8 s, population 8 s, bake 7 s: about 12 minutes, peak memory about 3.5 GB (the terrain step works 200,000 cells at a time; in one piece it ran out of 7 GB). Two builds gave the same file (SHA-256 `b4688f9f...199d`). Hexagons cover 134.966 million km2 against 134.465 of real land (+0.37 %); recorded areas add up to the real land (every state within 0.02 % except the Vatican, which is 1 hectare).
+
+**After M2 (rivers on hexagon sides, same day, same container).** 188,795 river sides, 17,663 bridges. `runner map-bench`: local cell query mean 326 us, 99th percentile 1.7 ms; long query mean 8.8 ms, worst 76 ms (down from 21 ms and 0.54 s: a pair with no land route is now refused from a table of connected land made on load, instead of searching the whole landmass). Path fingerprint on Linux with stand-in elevation: `e126a03ea3cca082`.
+
+`runner map-run <map> 1 8760` (a year of the proving ground on the map, 2,601 units, five march orders a day of up to 150 km, recorded and replayed):
+
+| What | Measured |
+| --- | --- |
+| A tick (no state hash) | mean 44 us, slowest 127 ms |
+| A tick with five new march orders | mean 1.0 ms |
+| State hash of the map world (taken every 240 ticks by the recorder) | 52 ms |
+| The year, with recording | 15.8 s |
+| Replay from a fresh world | 37 checkpoints and the final hash match |
+
+Before two fixes the same run took 33 s: every march order made 44 MB of search memory afresh (about 7 ms; the world now keeps it between searches) and an order to a place across the sea searched the whole landmass (up to 1.1 s). No per-tick budget is set yet (Phase 8); these are the numbers to set it from, once measured on the M4 Pro.

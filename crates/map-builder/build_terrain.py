@@ -4,8 +4,8 @@ Usage: python -I build_terrain.py <intermediate-dir> <natural-earth-dir> <etopo.
 Writes cells/: cell_elev_m.npy (i16)  cell_relief_m.npy (u16)  cell_terrain.npy (u8)
                cell_urban.npy (u8, 0-255 = share of the cell built up)
                cell_flags.npy (u8: 1 road, 2 rail, 4 river, 8 coast)
-               cell_edge_flags.npy (u8 per cell edge, for what passes the shared border of the
-               two cells: 1 a river, 2 a road, 4 a railway; river + road or railway = a bridge)
+               cell_edge_flags.npy (u8 per cell edge: 1 a river runs along the shared side of the
+               two cells, 2 a road passes it, 4 a railway passes it; river + road or railway = a bridge)
 Terrain classes: 0 plains, 1 hills, 2 mountains, 3 high mountains, 4 desert, 5 ice.
 
 Honest limits: elevation is ETOPO 2022 at 1.85 km (9 samples per cell); desert comes from
@@ -24,6 +24,7 @@ from shapely.geometry import shape
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_provinces as bp  # noqa: E402
+import build_rivers  # noqa: E402
 
 INV = pyproj.Transformer.from_crs("EPSG:8857", "EPSG:4326", always_xy=True)
 PLAIN, HILLS, MOUNTAINS, HIGH, DESERT, ICE = range(6)
@@ -127,11 +128,14 @@ def main(inter, ne_dir, tif):
     urban_l = layer("ne_10m_urban_areas")
     roads = layer("ne_10m_roads", keep=lambda rec: str(rec.get("type", "")) != "Ferry")
     rails = layer("ne_10m_railroads")
-    rivers = layer("ne_10m_rivers_lake_centerlines", keep=lambda rec: rec["featurecla"] in ("River", "Canal"))
+    # Rivers run along hexagon sides (build_rivers.py). Lake centre lines are kept so a river
+    # is not broken where it passes through a lake.
+    rivers_ll = load_layer(ne_dir / "ne_10m_rivers_lake_centerlines" / "ne_10m_rivers_lake_centerlines", keep=lambda rec: rec["featurecla"] in ("River", "Canal", "Lake Centerline"))
+    rivers = np.array(project_all(rivers_ll), dtype=object)
 
     area = np.zeros(n); mean = np.zeros(n); relief = np.zeros(n)
     ice = np.zeros(n); desert = np.zeros(n); urban = np.zeros(n)
-    hits = {"road": [], "rail": [], "river": []}     # (line, cell) pairs that intersect
+    hits = {"road": [], "rail": []}     # (line, cell) pairs that intersect
     ang = np.arange(8) * (np.pi / 4)
     for lo in range(0, n, CHUNK):
         k = np.arange(lo, min(lo + CHUNK, n))
@@ -154,7 +158,7 @@ def main(inter, ne_dir, tif):
         tree = shapely.STRtree(polys)
         for cover, lay in [(ice, ice_l), (desert, desert_l), (urban, urban_l)]:
             cover[k] = np.clip(overlap_area(polys, tree, lay) / np.maximum(a, 1.0), 0.0, 1.0)
-        for name, lines in [("road", roads), ("rail", rails), ("river", rivers)]:
+        for name, lines in [("road", roads), ("rail", rails)]:
             li, ci = tree.query(lines, predicate="intersects")
             hits[name].append(np.stack([li, ci + lo]))
     hits = {name: np.concatenate(parts, axis=1) for name, parts in hits.items()}
@@ -172,10 +176,13 @@ def main(inter, ne_dir, tif):
     # ---- roads, rails, rivers ----
     flags = np.zeros(n, dtype=np.uint8)
     edge_flags = np.zeros(len(edges), dtype=np.uint8)
-    for name, lines, bit, edge_bit in [("road", roads, ROAD, EDGE_ROAD), ("rail", rails, RAIL, EDGE_RAIL), ("river", rivers, RIVER, EDGE_RIVER)]:
+    for name, lines, bit, edge_bit in [("road", roads, ROAD, EDGE_ROAD), ("rail", rails, RAIL, EDGE_RAIL)]:
         li, ci = hits[name]
         flags[np.unique(ci)] |= bit
         edge_flags[edges_passed(edges, blobs, lines, li, ci)] |= edge_bit
+    river_edge = build_rivers.snap_rivers(rivers_ll, rivers, np.load(c / "cell_h3.npy"), edges, bp.PROJ)
+    edge_flags[river_edge] |= EDGE_RIVER
+    flags[np.unique(edges[river_edge, :2])] |= RIVER     # a river cell has the river on one of its sides
     flags[cz != 0xFFFFFFFF] |= COAST
     bridges = (edge_flags & EDGE_RIVER != 0) & (edge_flags & (EDGE_ROAD | EDGE_RAIL) != 0)
 
