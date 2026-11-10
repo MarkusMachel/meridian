@@ -220,6 +220,25 @@ impl CombatState {
         let key = (a.0.min(b.0), a.0.max(b.0));
         self.bridges.binary_search_by_key(&key, |x| (x.a, x.b)).ok().map(|i| &self.bridges[i])
     }
+    /// All bridges, ascending by (a, b).
+    pub fn bridges(&self) -> &[Bridge] {
+        &self.bridges
+    }
+    /// Lower a bridge's condition by `amount` (not below 0, which means destroyed). Returns the
+    /// new condition, or `None` if there is no bridge there.
+    pub fn damage_bridge(&mut self, a: CellId, b: CellId, amount: u16) -> Option<u16> {
+        let key = (a.0.min(b.0), a.0.max(b.0));
+        let i = self.bridges.binary_search_by_key(&key, |x| (x.a, x.b)).ok()?;
+        self.bridges[i].condition = self.bridges[i].condition.saturating_sub(amount);
+        Some(self.bridges[i].condition)
+    }
+    /// Raise a bridge's condition by `amount` (not above 1000). Returns the new condition.
+    pub fn repair_bridge(&mut self, a: CellId, b: CellId, amount: u16) -> Option<u16> {
+        let key = (a.0.min(b.0), a.0.max(b.0));
+        let i = self.bridges.binary_search_by_key(&key, |x| (x.a, x.b)).ok()?;
+        self.bridges[i].condition = self.bridges[i].condition.saturating_add(amount).min(1000);
+        Some(self.bridges[i].condition)
+    }
     pub fn remove_bridge(&mut self, a: CellId, b: CellId) -> bool {
         let key = (a.0.min(b.0), a.0.max(b.0));
         match self.bridges.binary_search_by_key(&key, |x| (x.a, x.b)) {

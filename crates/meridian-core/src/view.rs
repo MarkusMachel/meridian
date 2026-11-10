@@ -69,6 +69,12 @@ impl<'a> CountryView<'a> {
         }
     }
 
+    /// Every bridge with its condition. Bridges are landmarks: any country knows where they are
+    /// and whether they stand.
+    pub fn bridges(&self) -> &'a [crate::combat::Bridge] {
+        self.world.combat().bridges()
+    }
+
     /// Units of other countries this country knows about, from its contact list.
     pub fn known_units(&self) -> Vec<KnownUnit> {
         self.world

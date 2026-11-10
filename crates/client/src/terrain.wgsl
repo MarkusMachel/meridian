@@ -1270,20 +1270,34 @@ fn vs_bridge(@builtin(vertex_index) vi: u32, @location(0) pos: vec2<i32>, @locat
     let len = size_m.x;
     let wid = size_m.y;
     let rail = (kind & 1u) == 1u;
+    // a destroyed bridge (the simulation says its condition is 0): the span is gone, the river
+    // shows through the gap, and only a scorched stub of deck is left at each bank
+    let broken = (kind & 2u) != 0u;
     // each box: centre (along, across), half size (along, across), bottom, height, colour
     var at = vec2<f32>(0.0);
     var half = vec2<f32>(len * 0.5, wid * 0.5);
     var z0 = 0.0;
     var h = wid * 0.06;
     var color = select(vec3<f32>(0.38, 0.38, 0.40), vec3<f32>(0.27, 0.25, 0.23), rail);       // the deck
+    if (broken) {
+        half = vec2<f32>(len * 0.25, wid * 0.62);
+        h = wid * 0.03;
+        color = vec3<f32>(0.25, 0.40, 0.47);     // open water where the span was
+    }
     if (part == 1u || part == 2u) {
         // the sides: a low parapet on a road bridge, a girder as high as a wagon on a railway bridge
         let side = select(-1.0, 1.0, part == 2u);
         at = vec2<f32>(0.0, side * wid * 0.5);
         half = vec2<f32>(len * 0.5, wid * select(0.07, 0.08, rail));
         h = wid * select(0.20, 0.50, rail);
-        let steel = select(vec3<f32>(0.33, 0.38, 0.36), vec3<f32>(0.46, 0.28, 0.23), hash2(vec2<i32>(i32(kind >> 1u), 3)) > 0.5);
+        let steel = select(vec3<f32>(0.33, 0.38, 0.36), vec3<f32>(0.46, 0.28, 0.23), hash2(vec2<i32>(i32(kind >> 2u), 3)) > 0.5);
         color = select(vec3<f32>(0.76, 0.75, 0.71), steel, rail);
+        if (broken) {
+            at = vec2<f32>(side * len * 0.37, 0.0);
+            half = vec2<f32>(len * 0.13, wid * 0.5);
+            h = wid * 0.06;
+            color = vec3<f32>(0.21, 0.20, 0.19);
+        }
     } else if (part >= 3u) {
         // the abutments, one at each bank
         let end = select(-1.0, 1.0, part == 4u);

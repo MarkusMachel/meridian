@@ -97,6 +97,26 @@ fn scene(y_base: i32) -> RenderData {
             urban_tri.extend([base, base + 1 + k, base + 1 + (k + 1) % 16]);
         }
     }
+    // the main river: the old three corner points, with bends laid over the straight runs
+    let course = |pts: &[(f32, f32)], bend: f32| -> Vec<(i32, i32)> {
+        let mut out = Vec::new();
+        for (k, w) in pts.windows(2).enumerate() {
+            let (a, b) = (w[0], w[1]);
+            let len = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+            let (nx, ny) = (-(b.1 - a.1) / len, (b.0 - a.0) / len);
+            let steps = (len / 4_000.0) as usize;
+            for j in 0..steps {
+                let t = j as f32 / steps as f32;
+                let off = bend * (t * len / 6_000.0 + k as f32).sin() * (t * (1.0 - t) * 4.0).min(1.0);
+                out.push(((a.0 + (b.0 - a.0) * t + nx * off) as i32, (a.1 + (b.1 - a.1) * t + ny * off) as i32));
+            }
+        }
+        let last = pts[pts.len() - 1];
+        out.push((last.0 as i32, last.1 as i32));
+        out
+    };
+    let river = course(&[(200_000.0, 380_000.0), (300_000.0, 215_000.0), (470_000.0, 150_000.0)], 5_000.0);
+    let tributary = course(&[(420_000.0, 330_000.0), (350_000.0, 196_000.0)], 3_000.0);
     let line = |pts: &[(i32, i32)], class: u8| LineLayer { x: pts.iter().map(|p| p.0).collect(), y: pts.iter().map(|p| p.1 + y_base).collect(), off: vec![0, pts.len() as u32], class: vec![class] };
     RenderData {
         checksum: 0,
@@ -110,10 +130,11 @@ fn scene(y_base: i32) -> RenderData {
         province_mx: vec![235_000],
         province_my: vec![y_base + 200_000],
         relief: Relief { width: rw, height: rh, x0: 0, y0: y_base, x1: W, y1: y_base + H, pixels: vec![128; (rw * rh) as usize], land_rgb, height_m },
-        river_x: vec![200_000, 300_000, 470_000],
-        river_y: vec![y_base + 380_000, y_base + 215_000, y_base + 150_000],
-        river_off: vec![0, 3],
-        river_rank: vec![1],
+        // a big winding river from the north-west past the city to the sea, and a tributary
+        river_x: river.iter().map(|p| p.0).chain(tributary.iter().map(|p| p.0)).collect(),
+        river_y: river.iter().map(|p| p.1 + y_base).chain(tributary.iter().map(|p| p.1 + y_base)).collect(),
+        river_off: vec![0, river.len() as u32, (river.len() + tributary.len()) as u32],
+        river_rank: vec![1, 7],
         roads: line(&[(20_000, 200_000), (300_000, 200_000), (390_000, 300_000)], 0),
         rails: line(&[(300_000, 20_000), (300_000, 200_000), (360_000, 260_000)], 0),
         urban_vx,
@@ -189,4 +210,16 @@ fn main() {
         offscreen::write_png(&path, w, h, &rgba).unwrap_or_else(|e| panic!("{e}"));
         eprintln!("{name}: {:.0} ms -> {}", t.elapsed().as_secs_f64() * 1000.0, path.display());
     }
+    // the same city with every bridge destroyed, to check the broken look
+    let down = vec![0u16; renderer.bridge_sites().len()];
+    renderer.set_bridge_conditions(&down);
+    let mut camera = Camera::fit(w as f64, h as f64, Bounds::around(x0, y0, x1, y1));
+    (camera.cx, camera.cy, camera.m_per_px) = (x_base as f64 + 310_000.0, y_base as f64 + 212_000.0, 100.0);
+    camera.clamp();
+    let rgba = offscreen::render_rgba(&gpu, &mut renderer, &camera, NO_PROVINCE, NO_PROVINCE);
+    offscreen::write_png(&out.join("bridges_down.png"), w, h, &rgba).unwrap_or_else(|e| panic!("{e}"));
+    renderer.set_bridge_conditions(&[]);
+    let rgba = offscreen::render_rgba(&gpu, &mut renderer, &camera, NO_PROVINCE, NO_PROVINCE);
+    offscreen::write_png(&out.join("bridges_up.png"), w, h, &rgba).unwrap_or_else(|e| panic!("{e}"));
+    eprintln!("{} bridge sites", renderer.bridge_sites().len());
 }

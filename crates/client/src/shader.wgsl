@@ -202,17 +202,21 @@ fn fs_line(i: LineOut) -> @location(0) vec4<f32> {
     return style.color;
 }
 
-// Rivers: a ribbon with round joins and soft banks, narrow at the source and widening downstream
-// (the look of the rivers on the Hearts of Iron IV map). Each segment is drawn as a capsule whose
-// half width runs from one end's value to the other's; the two values (0..255, share of the
-// style's width) are packed into the segment's `dist` as a + 256 * b. A river is drawn in two
-// passes over all its segments: first the bank (style.dash_px = 1: a little wider, darker, soft),
-// then the water (dash_px = 0), so no segment's bank shows inside its neighbour.
+// Rivers, drawn to look like rivers seen from the air. Each segment is a capsule (so bends are
+// round) whose half width runs from one end's value to the other's: narrow at the source, wider
+// downstream; the two values (0..255, share of the style's width) are packed into the segment's
+// `dist` as a + 256 * b. On top of that the course wanders and the width swells and pinches with
+// slow noise fixed to the ground, so the banks are irregular, not ruled lines. The water is a
+// muted green-blue, deeper in the channel and paler in the shallows along the banks, and a wide
+// river has a sandbar here and there. A river is drawn in two passes over all its segments: first
+// the damp bank (style.dash_px = 1: a little wider, darker, soft), then the water (dash_px = 0),
+// so no segment's bank shows inside its neighbour.
 struct RiverOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) p: vec2<f32>,      // pixels from the segment's start: x along it, y across
     @location(1) len: f32,          // length of the segment in pixels
     @location(2) half: vec2<f32>,   // half width in pixels at the start and at the end
+    @location(3) rel: vec2<f32>,    // metres from the camera centre
 };
 
 @vertex
@@ -227,22 +231,35 @@ fn vs_river(@builtin(vertex_index) vi: u32, l: LineIn) -> RiverOut {
     let w0 = l.dist - w1 * 256.0;
     // never thinner than a hairline, so a river does not vanish on the paper map
     let half = max(vec2<f32>(w0, w1) / 255.0 * style.width_px * 0.5, vec2<f32>(0.45)) * g.px_scale;
-    let reach = max(half.x, half.y) + 2.5 * g.px_scale;
+    // room for the wandering course and the swelling width (see `river_reach`)
+    let reach = max(half.x, half.y) * 2.3 + 2.5 * g.px_scale;
     var end = array<f32, 6>(0.0, 0.0, 1.0, 0.0, 1.0, 1.0);
     var side = array<f32, 6>(-1.0, 1.0, -1.0, 1.0, 1.0, -1.0);
     let local = vec2<f32>(mix(-reach, len + reach, end[vi]), side[vi] * reach);
+    let px = pa + d * local.x + n * local.y;
     var o: RiverOut;
-    o.clip = vec4<f32>((pa + d * local.x + n * local.y) / (g.viewport * 0.5), 0.0, 1.0);
+    o.clip = vec4<f32>(px / (g.viewport * 0.5), 0.0, 1.0);
     o.p = local;
     o.len = len;
     o.half = half;
+    o.rel = px / g.inv_scale;
     return o;
 }
 
-/// x: distance from the segment's centre line in pixels; y: the river's half width there.
-fn river_reach(i: RiverOut) -> vec2<f32> {
+/// x: distance from the river's centre line in pixels; y: the river's half width there;
+/// z: 0..1 noise for sandbars. The centre line is pushed sideways and the width changed by noise
+/// that depends only on the place on the ground, so neighbouring segments agree where they meet.
+fn river_reach(i: RiverOut) -> vec3<f32> {
     let t = clamp(i.p.x / max(i.len, 1e-6), 0.0, 1.0);
-    return vec2<f32>(distance(i.p, vec2<f32>(t * i.len, 0.0)), mix(i.half.x, i.half.y, t));
+    let half = mix(i.half.x, i.half.y, t);
+    // only a river wide enough to see gets irregular banks (not the hairlines of the paper map)
+    let wild = smoothstep(1.2, 3.0, half / g.px_scale);
+    let w = vec2<f32>(g.center) + i.rel;
+    let grain = max(half / g.inv_scale, 1.0) * 7.0;     // metres: the scale of the bends
+    let wander = (vnoise(w / grain) - 0.5) * 1.1 * half * wild;
+    let swell = 1.0 + (vnoise(w / (grain * 1.9) + vec2<f32>(7.0, 3.0)) - 0.5) * 0.7 * wild;
+    let d = distance(i.p + vec2<f32>(0.0, wander), vec2<f32>(t * i.len, 0.0));
+    return vec3<f32>(d, half * swell, vnoise(w / (grain * 0.8) + vec2<f32>(31.0, 17.0)) * wild);
 }
 
 @fragment
@@ -250,14 +267,20 @@ fn fs_river(i: RiverOut) -> @location(0) vec4<f32> {
     let dh = river_reach(i);
     let px = g.px_scale;
     if (style.dash_px > 0.5) {
-        // the bank: a soft darker rim just outside the water
-        let a = 1.0 - smoothstep(dh.y + 0.2 * px, dh.y + 1.6 * px, dh.x);
+        // the bank: damp ground just outside the water
+        let a = 1.0 - smoothstep(dh.y + 0.2 * px, dh.y + 1.8 * px, dh.x);
         return vec4<f32>(style.color.rgb, style.color.a * a);
     }
-    // the water: lighter along the middle, deeper toward the banks
     let a = 1.0 - smoothstep(dh.y - 0.6 * px, dh.y + 0.6 * px, dh.x);
     let k = clamp(dh.x / max(dh.y, 1e-6), 0.0, 1.0);
-    let rgb = mix(style.color.rgb * 1.22 + vec3<f32>(0.04), style.color.rgb * 0.90, smoothstep(0.15, 0.95, k));
+    // deep in the channel, paler and sandier in the shallows by the banks
+    let shallow = mix(style.color.rgb, vec3<f32>(0.56, 0.58, 0.47), 0.45);
+    var rgb = mix(style.color.rgb * 0.92, shallow, smoothstep(0.6, 1.0, k));
+    // a sandbar now and then in a wide river
+    if (dh.y > 2.6 * px) {
+        let bar = smoothstep(0.74, 0.80, dh.z) * (1.0 - smoothstep(0.25, 0.5, k));
+        rgb = mix(rgb, vec3<f32>(0.72, 0.68, 0.52), bar);
+    }
     return vec4<f32>(rgb, style.color.a * a);
 }
 
@@ -265,8 +288,9 @@ fn fs_river(i: RiverOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_river_mask(i: RiverOut) -> @location(0) vec4<f32> {
     let dh = river_reach(i);
-    if (dh.x > dh.y + 0.5 * g.px_scale) { discard; }
-    return vec4<f32>(1.0, 1.0, 1.0, 1.0);
+    // the banks are kept clear a little beyond the water, so trees do not hide a river in a forest
+    if (dh.x > dh.y * 1.7 + 1.5 * g.px_scale) { discard; }
+    return vec4<f32>(0.0, 1.0, step(dh.x, dh.y + 0.5 * g.px_scale), 1.0);
 }
 
 // Roads and railways in the mask: keep clear, and not water (a road crosses a river on a bridge).

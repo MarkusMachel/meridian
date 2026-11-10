@@ -41,6 +41,9 @@ pub struct Snapshot {
     pub values: Vec<i64>,
     /// (unit id, owner, province) of each unit the viewer can see.
     pub units: Vec<(u32, u16, u32)>,
+    /// (cell, cell, condition 0..1000) of every bridge, ascending by the two cells. Bridges are
+    /// landmarks: everybody knows where they are and whether they stand.
+    pub bridges: Vec<(u32, u32, u16)>,
 }
 
 pub struct Session {
@@ -229,8 +232,8 @@ fn snapshot_of(w: &World, viewer: CountryId) -> Snapshot {
         let units = view.own_units().iter().map(|(id, u)| (id.0, u.owner.0, u.location.0)).collect();
         (controllers, vec![0; n as usize], units)
     };
-    let _ = &view;
-    Snapshot { tick: w.clock().tick(), date, controllers, values, units }
+    let bridges = view.bridges().iter().map(|b| (b.a, b.b, b.condition)).collect();
+    Snapshot { tick: w.clock().tick(), date, controllers, values, units, bridges }
 }
 
 /// Apply a command log with plain `World::tick` calls, the way a headless run would.

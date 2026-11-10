@@ -173,7 +173,7 @@ const MAX_BRIDGES: usize = 6_000;
 /// Bridges show below this zoom (metres per pixel).
 const BRIDGES_BELOW: f64 = 900.0;
 /// Rivers start at this share of their width at the source and reach full width this far down.
-const RIVER_SOURCE_SHARE: f64 = 0.30;
+const RIVER_SOURCE_SHARE: f64 = 0.40;
 const RIVER_TAPER_M: f64 = 300_000.0;
 
 /// Ground height in metres at a world point (nearest pixel of the relief raster; 0 outside it).
@@ -457,15 +457,15 @@ const DETAIL_STYLES: [([f32; 4], f32, f32); 18] = [
 ];
 /// Rivers by class: width in pixels on the paper map and at the closest zoom. Close up a river is
 /// a band of water you can see among the trees, not a hairline.
-const RIVER_WIDTHS: [(f32, f32); 4] = [(1.3, 8.0), (1.0, 5.0), (0.9, 3.2), (0.8, 2.2)];
+const RIVER_WIDTHS: [(f32, f32); 4] = [(1.3, 11.0), (1.0, 7.0), (0.9, 4.5), (0.8, 3.0)];
 /// The smallest rivers (Natural Earth ranks 10 and up, from the regional supplements) show below
 /// this zoom.
 const RIVERS_STREAMS_BELOW: f64 = 1_800.0;
 const RIVER_STREAM_RANK: u8 = 10;
 const RIVER_CLASS_STYLE: usize = 15;
 /// Colour of a river close up (the paper map keeps the ink blue of `STYLES`).
-const RIVER_WATER: [f32; 4] = [0.30, 0.50, 0.64, 1.0];
-const RIVER_BANK: [f32; 4] = [0.15, 0.23, 0.25, 0.55];
+const RIVER_WATER: [f32; 4] = [0.27, 0.43, 0.50, 1.0];
+const RIVER_BANK: [f32; 4] = [0.22, 0.27, 0.20, 0.40];
 const RIVER_BANK_STYLE: usize = 19;
 /// Close up (the 3D view) roads turn from the red atlas line into asphalt: colour of the surface
 /// by class (motorway, main road, lane), its width in pixels at the closest zoom, the edge colour
@@ -665,6 +665,8 @@ pub struct Renderer {
     river_pipeline: wgpu::RenderPipeline,
     bridge_pipeline: wgpu::RenderPipeline,
     bridge_sites: Vec<BridgeSite>,
+    /// Condition of each site's bridge as the simulation has it (0 destroyed .. 1000); empty = all whole.
+    bridge_conditions: Vec<u16>,
     bridges: wgpu::Buffer,
     bridge_count: u32,
     vehicle_pipeline: wgpu::RenderPipeline,
@@ -1152,6 +1154,7 @@ impl Renderer {
             river_pipeline,
             bridge_pipeline,
             bridge_sites,
+            bridge_conditions: Vec::new(),
             bridges,
             bridge_count: 0,
             vehicle_pipeline,
@@ -1182,6 +1185,18 @@ impl Renderer {
     }
 
     /// One colour per province (RGBA8).
+    /// The places where the drawing has a bridge (a road or railway crossing a river).
+    pub fn bridge_sites(&self) -> &[BridgeSite] {
+        &self.bridge_sites
+    }
+
+    /// The condition of each site's bridge in the simulation (0 = destroyed, drawn broken), in the
+    /// order of `bridge_sites`. Sites the simulation has no bridge for should be given 1000.
+    pub fn set_bridge_conditions(&mut self, conditions: &[u16]) {
+        self.bridge_conditions.clear();
+        self.bridge_conditions.extend_from_slice(conditions);
+    }
+
     /// Tell the renderer where the cities are (site positions in world metres), so each town that
     /// is big enough on screen gets a landmark in the style of its part of the world.
     pub fn set_cities(&mut self, device: &wgpu::Device, cities: &[[i32; 2]]) {
@@ -1444,7 +1459,7 @@ impl Renderer {
         if self.show_details && camera.m_per_px < BRIDGES_BELOW {
             let fade = ((BRIDGES_BELOW - camera.m_per_px) / (BRIDGES_BELOW * 0.25)).clamp(0.0, 1.0);
             let mut list: Vec<BridgeInst> = Vec::new();
-            for b in &self.bridge_sites {
+            for (i, b) in self.bridge_sites.iter().enumerate() {
                 let (x, y) = (b.pos[0] as f64, b.pos[1] as f64);
                 let rail = b.way >= RAIL_WAY;
                 let class = (b.way % RAIL_WAY) as usize;
@@ -1459,7 +1474,7 @@ impl Renderer {
                 let way_px = if rail { self.rail_width_px } else { self.road_width_px[class] } as f64;
                 // long enough to span the river where the way crosses it at a slant, plus a little bank
                 let len_m = (river_px / (b.sin as f64).max(0.4) + way_px * 0.8 + 3.0) * camera.m_per_px;
-                list.push(BridgeInst { pos: b.pos, dir: b.dir, size_m: [len_m as f32, (way_px * 1.12 * camera.m_per_px * fade) as f32], kind: u32::from(rail) | ((b.pos[0] as u32 ^ b.pos[1] as u32) << 1), _pad: 0 });
+                list.push(BridgeInst { pos: b.pos, dir: b.dir, size_m: [len_m as f32, (way_px * 1.12 * camera.m_per_px * fade) as f32], kind: u32::from(rail) | (u32::from(self.bridge_conditions.get(i).is_some_and(|&c| c == 0)) << 1) | ((b.pos[0] as u32 ^ b.pos[1] as u32) << 2), _pad: 0 });
             }
             queue.write_buffer(&self.bridges, 0, bytemuck::cast_slice(&list));
             self.bridge_count = list.len() as u32;
@@ -1727,7 +1742,7 @@ mod tests {
         assert_eq!((b[0].pos, b[0].way, b[0].dir), ([100_000, 0], 0, [0.0, 1.0]));
         assert!((b[0].sin - 1.0).abs() < 1e-6);
         // the river is still narrow 100 km from its source, and full width at 400 km
-        assert!(b[0].river_share > 0.3 && b[0].river_share < 0.6, "{}", b[0].river_share);
+        assert!(b[0].river_share > 0.4 && b[0].river_share < 0.7, "{}", b[0].river_share);
         assert_eq!((b[1].pos, b[1].way, b[1].river_share), ([400_000, 0], RAIL_WAY, 1.0));
     }
 

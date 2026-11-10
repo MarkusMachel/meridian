@@ -59,7 +59,7 @@ Units: coordinates are Equal Earth (EPSG:8857) metres as i32; areas are hectares
 | Strategic graph (provinces 0..P then zones P..P+Z, CSR, both directions, sorted) | `g_off`, `g_dst`, `g_kind` (0 land, 1 coast, 2 strait or canal, 3 sea), `g_weight` (shared border m for land, coastal cell count for coast), `g_strait` (chokepoint index + 1, or 0), `g_cost_m` |
 | Chokepoints | `choke_names`, `choke_built` (year, 0 if ancient) |
 | Cells | `cell_state`, `cell_province`, `cell_x`, `cell_y`, `cell_area_ha`, `cell_landmass`, `cell_elev_m`, `cell_relief_m`, `cell_terrain` (0 plains, 1 hills, 2 mountains, 3 high mountains, 4 desert, 5 ice), `cell_urban` (0 to 255 built-up share), `cell_flags` (1 road, 2 rail, 4 river, 8 coast), `cell_zone` (nearest sea zone or 0xFFFFFFFF), `cell_pop` |
-| Cell graph (CSR, both directions, sorted) | `c_off`, `c_dst`, `c_len_m` (shared border), `c_flags` (1 = river crosses), `c_dist_m` (centre to centre, rounded up) |
+| Cell graph (CSR, both directions, sorted) | `c_off`, `c_dst`, `c_len_m` (shared border), `c_flags` (what passes the shared border: 1 a river, 2 a road, 4 a railway; river with road or railway = a permanent bridge of 1990), `c_dist_m` (centre to centre, rounded up) |
 | Sites | `site_kind` (0 city, 1 port, 2 airfield, 3 crossing, 4 industry, 5 base), `site_cell`, `site_province`, `site_size` (city population estimate), `site_built`, `site_destroyed` (32767 = never), `site_verified` (0 = assumed present in 1990, from modern data), `site_names` |
 
 The loader checks the checksum, every array's length, value ranges, that cells form an exact partition into provinces, and that both graphs are sorted and symmetric (and edge kinds agree in both directions). `Map::validate_world()` then checks the world rules.

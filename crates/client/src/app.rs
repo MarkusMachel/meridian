@@ -76,6 +76,9 @@ struct App {
     show_labels: bool,
     show_relief: bool,
     show_details: bool,
+    /// The simulation's permanent bridge places (cell pairs), and which of them each drawn bridge shows.
+    bridge_edges: Vec<(u32, u32)>,
+    bridge_links: Option<Vec<Option<u32>>>,
     ui_scale: f32,
 }
 
@@ -124,6 +127,8 @@ pub fn run(inputs: Inputs) {
         show_labels: true,
         show_relief: true,
         show_details: true,
+        bridge_edges: inputs.map.bridge_edges().iter().map(|&(a, b, _)| (a, b)).collect(),
+        bridge_links: None,
         ui_scale: 1.0,
         inputs: Some(inputs),
     };
@@ -168,6 +173,16 @@ impl App {
     fn refresh_colors(&mut self) {
         let snap = self.session.refresh().clone();
         let changed = self.shown_tick != Some(snap.tick);
+        if changed {
+            // show each drawn bridge as the simulation has it: standing or destroyed
+            if let Some(g) = &mut self.gfx {
+                let links = self.bridge_links.get_or_insert_with(|| {
+                    let sites: Vec<[i32; 2]> = g.map_renderer.bridge_sites().iter().map(|b| b.pos).collect();
+                    client::bridges::link(&sites, &self.bridge_edges, &self.map.cell_x, &self.map.cell_y)
+                });
+                g.map_renderer.set_bridge_conditions(&client::bridges::conditions(links, &self.bridge_edges, &snap.bridges));
+            }
+        }
         if changed || self.colors_dirty {
             let colors = match self.mode {
                 Mode::Political => modes::political(&snap.controllers),

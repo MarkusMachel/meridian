@@ -47,6 +47,8 @@ pub fn scenario_on_map(seed: u64, map: std::sync::Arc<meridian_core::Map>) -> Wo
         first[st as usize].get_or_insert(p as u32);
     }
     let mut w = World::from_map(seed, map);
+    // the permanent bridges of 1990 (none on a map baked before roads and railways were marked on cell edges)
+    w.seed_bridges();
     for (c, p) in first.iter().enumerate() {
         if let Some(p) = p {
             w.add_unit_for_setup(Unit { owner: CountryId(c as u16), location: ProvinceId(*p) });

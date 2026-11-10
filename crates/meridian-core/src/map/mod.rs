@@ -40,7 +40,12 @@ pub mod cell_flag {
 }
 /// Bit flags on cell-graph edges.
 pub mod cell_edge_flag {
+    /// A river runs across the shared border of the two cells.
     pub const RIVER: u8 = 1;
+    /// A road crosses the shared border. With `RIVER`: a road bridge stood here in 1990.
+    pub const ROAD: u8 = 2;
+    /// A railway crosses the shared border. With `RIVER`: a railway bridge stood here in 1990.
+    pub const RAIL: u8 = 4;
 }
 pub const SITE_NO_YEAR: i16 = i16::MAX;
 
@@ -329,8 +334,34 @@ impl Map {
         }
     }
 
-    /// Cheapest path between two cells over the tactical cell graph.
+    /// Cheapest path between two cells over the tactical cell graph, with no bridges: every
+    /// river edge costs `river_extra_m`.
     pub fn find_cell_path(&self, from: CellId, to: CellId, costs: &CellCosts, scratch: &mut PathScratch) -> Option<Path> {
+        self.find_cell_path_bridged(from, to, costs, scratch, &|_, _| false)
+    }
+
+    /// River edges where a road or a railway crosses (`a < b`, with the edge's flags): the
+    /// places that had a permanent bridge in 1990. Ascending by (a, b).
+    pub fn bridge_edges(&self) -> Vec<(u32, u32, u8)> {
+        let r = &self.raw;
+        let mut out = Vec::new();
+        for a in 0..self.cell_count() {
+            for e in self.cell_edges(CellId(a)) {
+                let (b, f) = (r.c_dst[e], r.c_flags[e]);
+                if a < b && f & cell_edge_flag::RIVER != 0 && f & (cell_edge_flag::ROAD | cell_edge_flag::RAIL) != 0 {
+                    out.push((a, b, f));
+                }
+            }
+        }
+        out.sort_unstable();
+        out
+    }
+
+    /// Cheapest path between two cells. `bridged(a, b)` says whether the river edge between
+    /// two cells has a usable bridge right now; then it costs `bridge_extra_m` instead of
+    /// `river_extra_m`. Bridges change during play, so they live in the world, not in the map
+    /// (see `World::find_cell_path`).
+    pub fn find_cell_path_bridged(&self, from: CellId, to: CellId, costs: &CellCosts, scratch: &mut PathScratch, bridged: &dyn Fn(u32, u32) -> bool) -> Option<Path> {
         let r = &self.raw;
         let (gx, gy) = (r.cell_x[to.index()], r.cell_y[to.index()]);
         let min_pct = costs.min_percent();
@@ -352,7 +383,7 @@ impl Map {
                 }
                 let mut c = scaled(r.c_dist_m[e], pct);
                 if r.c_flags[e] & cell_edge_flag::RIVER != 0 {
-                    c = c.saturating_add(costs.river_extra_m);
+                    c = c.saturating_add(if bridged(a as u32, b as u32) { costs.bridge_extra_m } else { costs.river_extra_m });
                 }
                 c
             },
@@ -468,11 +499,14 @@ pub struct CellCosts {
     pub terrain_percent: [u32; 8],
     pub road_percent: u32,
     pub rail_percent: u32,
+    /// Added to the cost of an edge a river runs across, when there is no usable bridge.
     pub river_extra_m: u32,
+    /// Added instead when the river is crossed by a usable bridge (a bridge is a bottleneck).
+    pub bridge_extra_m: u32,
 }
 impl Default for CellCosts {
     fn default() -> Self {
-        CellCosts { terrain_percent: [100, 150, 250, 400, 180, 500, 100, 100], road_percent: 60, rail_percent: 40, river_extra_m: 4000 }
+        CellCosts { terrain_percent: [100, 150, 250, 400, 180, 500, 100, 100], road_percent: 60, rail_percent: 40, river_extra_m: 4000, bridge_extra_m: 0 }
     }
 }
 impl CellCosts {

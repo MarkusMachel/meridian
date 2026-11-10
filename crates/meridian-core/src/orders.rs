@@ -35,6 +35,35 @@ impl World {
         }
     }
 
+    /// Put the permanent bridges of 1990 into the bridge table: one at full condition on every
+    /// river edge of the map that a road or a railway crosses (`Map::bridge_edges`), owned by
+    /// the country holding the lower-numbered cell. Edges that already have a bridge are left
+    /// alone. Returns how many were added. Call once when setting a scenario up; a map baked
+    /// before the road and railway edge flags existed gives none.
+    pub fn seed_bridges(&mut self) -> usize {
+        let Some(map) = self.map.as_ref() else { return 0 };
+        let edges = map.0.bridge_edges();
+        let mut added = 0;
+        for (a, b, _) in edges {
+            if self.combat.bridge(CellId(a), CellId(b)).is_none() {
+                let owner = CountryId(self.cells.as_ref().map_or(0, |c| c.controller(a as usize)));
+                self.combat.set_bridge(Bridge { a, b, condition: 1000, laid: false, owner });
+                added += 1;
+            }
+        }
+        added
+    }
+
+    /// Cheapest path between two cells, counting the bridges as they stand now: a river edge
+    /// with a bridge of at least `min_condition` costs `costs.bridge_extra_m`, any other river
+    /// edge `costs.river_extra_m`. The costs and the condition a unit needs are the rules' to
+    /// choose (a tank needs a sounder bridge than a rifleman).
+    pub fn find_cell_path(&self, from: CellId, to: CellId, costs: &crate::map::CellCosts, min_condition: u16, scratch: &mut crate::map::PathScratch) -> Option<crate::map::Path> {
+        let map = self.map.as_ref()?;
+        let usable = |a: u32, b: u32| self.combat.bridge(CellId(a), CellId(b)).is_some_and(|br| br.condition >= min_condition.max(1));
+        map.0.find_cell_path_bridged(from, to, costs, scratch, &usable)
+    }
+
     /// Do two cells share a border?
     fn adjacent(&self, a: CellId, b: CellId) -> bool {
         let Some(m) = self.map.as_ref() else { return false };
@@ -244,11 +273,16 @@ impl World {
                 self.owned_unit(issuer, unit)?;
                 let pos = self.position_of(unit)?;
                 let br = *self.combat.bridge(a, b).ok_or(Rejection::Refused("there is no bridge there"))?;
-                if br.owner != issuer {
-                    return Err(Rejection::Refused("only the owner can prepare a demolition"));
-                }
                 if pos != a && pos != b {
                     return Err(Rejection::Refused("unit is not at the crossing"));
+                }
+                if br.laid {
+                    if br.owner != issuer {
+                        return Err(Rejection::Refused("only the owner can prepare a demolition"));
+                    }
+                } else if !self.cells.as_ref().is_some_and(|c| c.controller(pos.index()) == issuer.0) {
+                    // a permanent bridge belongs to whoever holds the bank the unit stands on
+                    return Err(Rejection::Refused("only the country holding this bank can demolish a permanent bridge"));
                 }
                 self.combat.set_bridge(Bridge { condition: 0, ..br });
             }
@@ -449,6 +483,62 @@ mod tests {
         assert_eq!(w.combat().bridge(CellId(40), CellId(41)).unwrap().condition, 0);
         assert!(w.tick(&[Command::DismantleBridge { issuer: C0, unit: UnitId(0), a: CellId(40), b: CellId(41) }], &Capable).rejected.is_empty());
         assert!(w.combat().bridge(CellId(40), CellId(41)).is_none());
+    }
+
+    #[test]
+    fn permanent_bridges_are_seeded_carry_traffic_and_can_be_blown_by_whoever_holds_the_bank() {
+        use crate::map::{CellCosts, PathScratch};
+        // the same map, with a road over the river between 40 and 41, and a second river edge
+        // (between 56 and 57, one row down) that nothing crosses
+        let mut r = test_map(16, 16);
+        for (a, b, f) in [(40usize, 41usize, cell_edge_flag::RIVER | cell_edge_flag::ROAD), (56, 57, cell_edge_flag::RIVER)] {
+            for (a, b) in [(a, b), (b, a)] {
+                for e in r.c_off[a] as usize..r.c_off[a + 1] as usize {
+                    if r.c_dst[e] as usize == b {
+                        r.c_flags[e] |= f;
+                    }
+                }
+            }
+        }
+        let mut w = World::from_map(1, Arc::new(Map::from_raw(r).expect("map")));
+        let before = w.state_hash();
+        assert_eq!(w.seed_bridges(), 1);
+        assert_eq!(w.seed_bridges(), 0, "seeding twice adds nothing");
+        assert_ne!(w.state_hash(), before, "bridges are part of the state");
+        let br = *w.combat().bridge(CellId(41), CellId(40)).unwrap();
+        assert_eq!((br.a, br.b, br.condition, br.laid), (40, 41, 1000, false));
+        assert!(w.combat().bridge(CellId(56), CellId(57)).is_none());
+
+        // crossing the river costs extra, unless a good enough bridge carries you over
+        let costs = CellCosts { river_extra_m: 9_000, bridge_extra_m: 500, ..CellCosts::default() };
+        let mut s = PathScratch::new(256);
+        let cost = |w: &World, s: &mut PathScratch, min: u16| w.find_cell_path(CellId(40), CellId(41), &costs, min, s).unwrap().cost;
+        let dry = w.map().unwrap().find_cell_path(CellId(40), CellId(41), &CellCosts { river_extra_m: 0, ..costs.clone() }, &mut s).unwrap().cost;
+        assert_eq!(cost(&w, &mut s, 500), dry + 500);
+        // a damaged bridge still carries light traffic but not what needs a sound one
+        assert_eq!(w.combat_mut().damage_bridge(CellId(40), CellId(41), 700), Some(300));
+        assert_eq!(cost(&w, &mut s, 200), dry + 500);
+        let without = cost(&w, &mut s, 500);
+        assert!(without > dry + 500 && without <= dry + 9_000, "{without}: ford here or go round");
+        assert_eq!(w.combat_mut().repair_bridge(CellId(40), CellId(41), 5_000), Some(1000));
+
+        // demolition: the unit must stand at the crossing, on a bank its country holds
+        let c0 = CountryId(w.cells().unwrap().controller(40));
+        let other = if c0 == C0 { C1 } else { C0 };
+        for (owner, cell) in [(c0, 40u32), (other, 41), (c0, 44)] {
+            let id = w.add_unit_for_setup(Unit { owner, location: ProvinceId(0) });
+            w.unit_ext_mut(id).unwrap().cell = Some(CellId(cell));
+        }
+        let blow = |issuer, unit| Command::DemolishBridge { issuer, unit: UnitId(unit), a: CellId(40), b: CellId(41) };
+        refused(&w, blow(c0, 2), "not at the crossing");
+        if w.cells().unwrap().controller(41) != other.0 {
+            refused(&w, blow(other, 1), "holding this bank");
+        }
+        assert!(w.tick(&[blow(c0, 0)], &Capable).rejected.is_empty());
+        assert_eq!(w.combat().bridge(CellId(40), CellId(41)).unwrap().condition, 0);
+        assert_eq!(cost(&w, &mut s, 1), without, "a destroyed bridge carries nothing");
+        // a permanent bridge cannot be dismantled and taken away
+        refused(&w, Command::DismantleBridge { issuer: c0, unit: UnitId(0), a: CellId(40), b: CellId(41) }, "only your own laid");
     }
 
     #[test]
