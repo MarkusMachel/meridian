@@ -89,3 +89,84 @@ pub fn write_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u8]) -
     let mut w = enc.write_header().map_err(|e| e.to_string())?;
     w.write_image_data(rgba).map_err(|e| e.to_string())
 }
+
+/// Draw with egui onto a transparent picture of `w` by `h` pixels and return its RGBA bytes
+/// (colour already multiplied by alpha). For probes that lay counters or labels over a rendered
+/// map: `draw` gets a painter covering the whole picture, in points (`ppp` pixels to a point).
+pub fn egui_rgba(gpu: &Gpu, w: u32, h: u32, ppp: f32, mut draw: impl FnMut(&egui::Painter)) -> Vec<u8> {
+    let ctx = egui::Context::default();
+    let mut renderer = egui_wgpu::Renderer::new(&gpu.device, FORMAT, egui_wgpu::RendererOptions::default());
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("egui offscreen"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&Default::default());
+    let mut out = Vec::new();
+    // egui needs a frame or two before fonts and sizes settle
+    for _ in 0..2 {
+        let mut raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32 / ppp, h as f32 / ppp))), ..Default::default() };
+        raw.viewports.get_mut(&raw.viewport_id).expect("the root viewport").native_pixels_per_point = Some(ppp);
+        let full = ctx.run_ui(raw, |ui| {
+            let painter = ui.ctx().layer_painter(egui::LayerId::background());
+            draw(&painter);
+        });
+        for (id, d) in &full.textures_delta.set {
+            for x in d {
+                renderer.update_texture(&gpu.device, &gpu.queue, *id, x);
+            }
+        }
+        let jobs = ctx.tessellate(full.shapes, full.pixels_per_point);
+        let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [w, h], pixels_per_point: full.pixels_per_point };
+        let mut enc = gpu.device.create_command_encoder(&Default::default());
+        let extra = renderer.update_buffers(&gpu.device, &gpu.queue, &mut enc, &jobs, &screen);
+        {
+            let mut pass = enc
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("egui offscreen"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                })
+                .forget_lifetime();
+            renderer.render(&mut pass, &jobs, &screen);
+        }
+        let padded = (w * 4).div_ceil(256) * 256;
+        let buf = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (padded * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        gpu.queue.submit(extra.into_iter().chain(std::iter::once(enc.finish())));
+        buf.slice(..).map_async(wgpu::MapMode::Read, |r| r.expect("map the picture"));
+        gpu.device.poll(wgpu::PollType::wait_indefinitely()).expect("wait for the GPU");
+        let data = buf.slice(..).get_mapped_range().expect("mapped");
+        out.clear();
+        for row in 0..h as usize {
+            out.extend_from_slice(&data[row * padded as usize..row * padded as usize + (w * 4) as usize]);
+        }
+        drop(data);
+        for id in &full.textures_delta.free {
+            renderer.free_texture(id);
+        }
+    }
+    out
+}
+
+/// Lay a picture from `egui_rgba` over another of the same size.
+pub fn lay_over(base: &mut [u8], over: &[u8]) {
+    for (b, o) in base.chunks_exact_mut(4).zip(over.chunks_exact(4)) {
+        let keep = 255 - o[3] as u32;
+        for k in 0..3 {
+            b[k] = (o[k] as u32 + b[k] as u32 * keep / 255).min(255) as u8;
+        }
+    }
+}
