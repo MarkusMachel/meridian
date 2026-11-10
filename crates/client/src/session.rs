@@ -44,6 +44,8 @@ pub struct Snapshot {
     /// For each entry of `units`, in the same order: the cell it stands in and the cell it is
     /// marching to (`u32::MAX` for "none" or "not known").
     pub unit_cells: Vec<(u32, u32)>,
+    /// For each entry of `units`: its type and size codes (rules-defined; 0 = not known).
+    pub unit_kinds: Vec<(u16, u8)>,
     /// (cell, cell, condition 0..1000) of every bridge, ascending by the two cells. Bridges are
     /// landmarks: everybody knows where they are and whether they stand.
     pub bridges: Vec<(u32, u32, u16)>,
@@ -242,7 +244,12 @@ fn snapshot_of(w: &World, viewer: CountryId) -> Snapshot {
     #[cfg(not(feature = "inspect"))]
     let place = |id: u32| view.own_unit_place(meridian_core::UnitId(id));
     let unit_cells = units.iter().map(|u| place(u.0).map_or((u32::MAX, u32::MAX), |(c, d)| (c.map_or(u32::MAX, |c| c.0), d.map_or(u32::MAX, |d| d.0)))).collect();
-    Snapshot { tick: w.clock().tick(), date, controllers, values, units, unit_cells, bridges }
+    #[cfg(feature = "inspect")]
+    let kind = |id: u32| w.unit_ext(meridian_core::UnitId(id)).map(|e| (e.kind, e.echelon));
+    #[cfg(not(feature = "inspect"))]
+    let kind = |id: u32| view.own_unit_type(meridian_core::UnitId(id));
+    let unit_kinds = units.iter().map(|u| kind(u.0).unwrap_or((0, 0))).collect();
+    Snapshot { tick: w.clock().tick(), date, controllers, values, units, unit_cells, unit_kinds, bridges }
 }
 
 /// Apply a command log with plain `World::tick` calls, the way a headless run would.

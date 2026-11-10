@@ -252,7 +252,10 @@ impl App {
                 let in_cell = (cell as usize) < self.render.cell_mx.len();
                 let k = seen.entry(if in_cell { (true, cell) } else { (false, prov) }).or_insert(0);
                 let (x, y) = if in_cell { self.cell_screen(cell) } else { self.province_screen(prov) };
-                let pos = (x + *k as f64 * 14.0, y);
+                // counters sharing a place stand in a row of four, then a new row below
+                let ppp = self.gfx.as_ref().map_or(1.0, |g| g.window.scale_factor() * self.ui_scale as f64);
+                let (dx, dy) = ((client::counters::WIDTH * COUNTER_SCALE + 3.0) as f64 * ppp, (client::counters::HEIGHT * COUNTER_SCALE + 10.0) as f64 * ppp);
+                let pos = (x + (*k % 4) as f64 * dx, y + (*k / 4) as f64 * dy);
                 *k += 1;
                 (id, owner, pos)
             })
@@ -639,16 +642,18 @@ impl App {
                 painter.add(egui::Shape::convex_polygon(vec![b, b - d * 12.0 + n * 5.0, b - d * 12.0 - n * 5.0], egui::Color32::from_rgb(20, 20, 20), egui::Stroke::NONE));
             }
         }
+        // unit counters in the NATO style: the type inside the frame, the size above it
         for (id, owner, pos) in markers {
             let c = modes::country_color(owner);
-            let r = egui::Rect::from_center_size(to_pt(pos), egui::vec2(12.0, 12.0));
             let selected = self.selected_unit == Some((id, owner));
-            painter.rect_filled(r, 1.0, egui::Color32::from_rgb(c[0], c[1], c[2]));
-            let stroke = if selected { egui::Stroke::new(3.0, egui::Color32::WHITE) } else { egui::Stroke::new(1.5, egui::Color32::BLACK) };
-            painter.rect_stroke(r, 1.0, stroke, egui::StrokeKind::Outside);
+            let (kind, size) = self.snapshot.units.iter().position(|u| u.0 == id).and_then(|i| self.snapshot.unit_kinds.get(i).copied()).unwrap_or((0, 0));
+            client::counters::draw(&painter, to_pt(pos), COUNTER_SCALE, kind, size, [c[0], c[1], c[2]], selected);
         }
     }
 }
+
+/// Size of the unit counters on screen (1 = 30 by 20 points).
+const COUNTER_SCALE: f32 = 0.9;
 
 #[derive(Default)]
 struct UiActions {
@@ -717,7 +722,7 @@ impl ApplicationHandler for App {
                 ElementState::Released => {
                     if self.press.is_some() && !self.dragging {
                         let k = self.gfx.as_ref().map_or(1.0, |g| g.window.scale_factor() * self.ui_scale as f64);
-                        let hit = self.unit_markers().into_iter().find(|m| (m.2 .0 - self.cursor.x).abs() < 8.0 * k && (m.2 .1 - self.cursor.y).abs() < 8.0 * k);
+                        let hit = self.unit_markers().into_iter().find(|m| (m.2 .0 - self.cursor.x).abs() < (client::counters::WIDTH * COUNTER_SCALE * 0.5) as f64 * k && (m.2 .1 - self.cursor.y).abs() < (client::counters::HEIGHT * COUNTER_SCALE * 0.5) as f64 * k);
                         match hit {
                             Some((id, owner, _)) => self.selected_unit = Some((id, owner)),
                             None => {

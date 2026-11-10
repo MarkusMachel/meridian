@@ -77,6 +77,12 @@ impl<'a> CountryView<'a> {
         Some((e.cell, e.march.as_ref().and_then(|m| m.destination())))
     }
 
+    /// The type and size codes of one of the country's own units (rules-defined; 0 = not set).
+    pub fn own_unit_type(&self, id: UnitId) -> Option<(u16, u8)> {
+        self.world.unit(id).filter(|u| u.owner == self.country)?;
+        self.world.unit_ext(id).map(|e| (e.kind, e.echelon))
+    }
+
     /// Every bridge with its condition. Bridges are landmarks: any country knows where they are
     /// and whether they stand.
     pub fn bridges(&self) -> &'a [crate::combat::Bridge] {

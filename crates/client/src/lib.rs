@@ -5,6 +5,7 @@
 
 pub mod bridges;
 pub mod camera;
+pub mod counters;
 pub mod heights;
 pub mod labels;
 pub mod modes;

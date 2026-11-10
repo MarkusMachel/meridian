@@ -87,6 +87,10 @@ pub struct UnitExt {
     pub transit: Option<Transit>,
     pub order: Option<UnitOrder>,
     pub march: Option<March>,
+    /// Rules-defined type code (infantry, armour, ...; 0 = not set) and size code (battalion,
+    /// brigade, ...; 0 = not set). The engine gives them no meaning; the rules and the client do.
+    pub kind: u16,
+    pub echelon: u8,
 }
 
 impl Default for UnitExt {
@@ -106,6 +110,8 @@ impl Default for UnitExt {
             transit: None,
             order: None,
             march: None,
+            kind: 0,
+            echelon: 0,
         }
     }
 }
@@ -313,6 +319,11 @@ impl UnitExt {
         }
         // hashed only when present, like the other late additions, so worlds where nobody
         // marches keep their old hashes
+        if self.kind != 0 || self.echelon != 0 {
+            h.write_u8(0xA8);
+            h.write_u16(self.kind);
+            h.write_u8(self.echelon);
+        }
         if let Some(m) = &self.march {
             h.write_u8(0xA7);
             h.write_u32(m.path.len() as u32);
