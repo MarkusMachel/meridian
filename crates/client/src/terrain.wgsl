@@ -19,7 +19,7 @@ struct G3 {
 };
 @group(0) @binding(0) var<uniform> g3: G3;
 @group(0) @binding(1) var overlay: texture_2d<f32>;
-@group(0) @binding(2) var urban_mask: texture_2d<f32>;
+@group(0) @binding(2) var urban_mask: texture_2d<f32>;   // r: town, g: keep clear (road, railway, river), b: river
 @group(0) @binding(3) var heights: texture_2d<f32>;
 @group(0) @binding(4) var land: texture_2d<f32>;
 @group(0) @binding(5) var samp: sampler;
@@ -196,7 +196,12 @@ fn fs_terrain(i: TOut) -> @location(0) vec4<f32> {
     let wood = forest_at(i.rel) * (0.75 + 0.5 * vnoise(world / 2600.0)) * smoothstep(0.25, 0.6, vnoise(world / 9000.0) + forest_at(i.rel) * 0.6);
     let floor_tint = mix(vec3<f32>(1.0), FOREST_FLOOR, clamp(wood, 0.0, 1.0) * 0.8 * t);
     // (the ground of a town, with its streets, is already in the overlay: `fs_urban` in shader.wgsl)
-    let land = o.rgb * floor_tint * mix(1.0, land_shade(i.rel), t);
+    let mask = textureSampleLevel(urban_mask, samp, overlay_uv(i.rel), 0.0);
+    // roads, railways and rivers run through the woods in the open, not under the dark floor
+    let tint = mix(floor_tint, vec3<f32>(1.0), mask.g);
+    var land = o.rgb * tint * mix(1.0, land_shade(i.rel), t);
+    // rivers are water: the same moving surface as the sea, in a shallow colour
+    land = mix(land, water(i.rel, pos, 45.0) * o.a, mask.b * t);
     let rgb = sea * (1.0 - o.a) + land;
     return vec4<f32>(hazed(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), pos), 1.0);
 }
@@ -500,7 +505,8 @@ fn vs_tree(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     let tree_line = 1.0 - 0.6 * smoothstep(62.0, 69.0, lat + ground_h / 80.0);
     let wooded = lush * smoothstep(0.22, 0.5, vnoise(world_xy / 9000.0) + lush * 0.6) * 1.35 * tree_line;
     let cover = max(wooded, scrub * 0.13);
-    if (hash2(c + vec2<i32>(11, 2)) >= cover || urban_at(base) > 0.3) {
+    let m = textureSampleLevel(urban_mask, samp, overlay_uv(base), 0.0);
+    if (hash2(c + vec2<i32>(11, 2)) >= cover || m.r > 0.3 || m.g > 0.25) {
         return hidden();
     }
     let open = wooded < scrub * 0.13 || lush < 0.5;      // scattered trees, not a wood
@@ -651,6 +657,15 @@ fn vs_building(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32)
     let across_front = hv + 0.045 + setback + d * 0.5;
     let foot_plan = vec2<f32>(along, select(1.0 - across_front, across_front, front));
     let foot = origin + select(foot_plan, foot_plan.yx, swap) * s;
+    // no building on a road, a railway or a river: look at the middle and the four sides of the plot
+    var blocked = textureSampleLevel(urban_mask, samp, overlay_uv(foot), 0.0).g;
+    for (var k = 0; k < 4; k++) {
+        let a = f32(k) * 1.5707963;
+        blocked = max(blocked, textureSampleLevel(urban_mask, samp, overlay_uv(foot + vec2<f32>(cos(a), sin(a)) * s * 0.32), 0.0).g);
+    }
+    if (blocked > 0.4) {
+        return hidden();
+    }
     w *= unit; d *= unit; wall *= unit; ridge *= unit;
 
     var p: vec3<f32>;        // local position: x along the ridge (the street), y across, z up
@@ -924,6 +939,105 @@ fn vs_landmark(@builtin(vertex_index) vi: u32, @location(0) pos: vec2<i32>, @loc
     o.clip = g3.view_proj * vec4<f32>(world, 1.0);
     // a little darker toward the ground, like the houses around
     o.color = lit(q.color, normal) * mix(0.82, 1.0, smoothstep(0.0, 0.5, q.at.z + p.z));
+    o.pos = world;
+    return o;
+}
+
+// ---------------------------------------------------------------- traffic
+//
+// Little cars and trucks on the roads and trains on the railways (placed each frame by
+// `road_traffic` and `rail_traffic` in render.rs). It is 1990: boxy saloons in plain paint, lorries
+// with a cab and a box or a tarpaulin, diesel and electric locomotives, brown goods wagons and
+// coaches in railway liveries. A vehicle is two boxes: a body, and a cabin, load or roof on it.
+// Sizes are shares of the vehicle's length: x along, y across, z up.
+
+struct VBox {
+    at: vec3<f32>,       // centre along, centre across, bottom
+    half: vec2<f32>,     // half length, half width
+    h: f32,
+    color: vec3<f32>,
+};
+
+fn vehicle_box(ty: u32, part: u32, seed: i32) -> VBox {
+    let pick = hash2(vec2<i32>(seed, 3));
+    let shade = 0.9 + 0.2 * hash2(vec2<i32>(seed, 8));
+    switch ty {
+        case 1u: {   // truck: cab at the front, box or tarpaulin behind
+            var cab = vec3<f32>(0.62, 0.20, 0.17);
+            if (pick > 0.3) { cab = vec3<f32>(0.22, 0.34, 0.55); }
+            if (pick > 0.55) { cab = vec3<f32>(0.82, 0.80, 0.74); }
+            if (pick > 0.8) { cab = vec3<f32>(0.25, 0.42, 0.28); }
+            var load = vec3<f32>(0.80, 0.79, 0.75);
+            if (hash2(vec2<i32>(seed, 5)) > 0.5) { load = vec3<f32>(0.40, 0.44, 0.33); }
+            if (hash2(vec2<i32>(seed, 5)) > 0.8) { load = vec3<f32>(0.62, 0.52, 0.38); }
+            if (part == 0u) { return VBox(vec3<f32>(0.38, 0.0, 0.05), vec2<f32>(0.12, 0.17), 0.26, cab * shade); }
+            return VBox(vec3<f32>(-0.13, 0.0, 0.07), vec2<f32>(0.37, 0.18), 0.30, load * shade);
+        }
+        case 2u: {   // locomotive: a long body in the railway's colour, a grey roof with a raised cab
+            var livery = vec3<f32>(0.20, 0.33, 0.24);
+            if (pick > 0.3) { livery = vec3<f32>(0.52, 0.18, 0.16); }
+            if (pick > 0.55) { livery = vec3<f32>(0.20, 0.28, 0.46); }
+            if (pick > 0.8) { livery = vec3<f32>(0.70, 0.44, 0.16); }
+            if (part == 0u) { return VBox(vec3<f32>(0.0, 0.0, 0.05), vec2<f32>(0.48, 0.20), 0.36, livery * shade); }
+            return VBox(vec3<f32>(0.18, 0.0, 0.41), vec2<f32>(0.26, 0.17), 0.09, vec3<f32>(0.44, 0.44, 0.45));
+        }
+        case 3u: {   // wagon: a coach (seed bit 2048) in a livery, or a goods wagon in brown, rust or grey
+            let coach = (seed & 2048) != 0;
+            var body = vec3<f32>(0.42, 0.28, 0.21);
+            if (pick > 0.4) { body = vec3<f32>(0.50, 0.32, 0.24); }
+            if (pick > 0.7) { body = vec3<f32>(0.46, 0.46, 0.45); }
+            var roof = body * 0.8;
+            if (coach) {
+                body = vec3<f32>(0.22, 0.36, 0.27);
+                if (pick > 0.35) { body = vec3<f32>(0.24, 0.32, 0.50); }
+                if (pick > 0.65) { body = vec3<f32>(0.76, 0.70, 0.54); }
+                if (pick > 0.85) { body = vec3<f32>(0.55, 0.20, 0.18); }
+                roof = vec3<f32>(0.48, 0.48, 0.50);
+            }
+            if (part == 0u) { return VBox(vec3<f32>(0.0, 0.0, 0.05), vec2<f32>(0.47, 0.19), 0.33, body * shade); }
+            return VBox(vec3<f32>(0.0, 0.0, 0.38), vec2<f32>(0.47, 0.15), 0.05, roof);
+        }
+        default: {   // car: a three-box saloon in the paint of the time
+            var paint = vec3<f32>(0.78, 0.77, 0.73);                         // white
+            if (pick > 0.22) { paint = vec3<f32>(0.58, 0.16, 0.14); }         // red
+            if (pick > 0.40) { paint = vec3<f32>(0.20, 0.28, 0.46); }         // blue
+            if (pick > 0.55) { paint = vec3<f32>(0.62, 0.56, 0.42); }         // beige
+            if (pick > 0.68) { paint = vec3<f32>(0.54, 0.56, 0.58); }         // silver
+            if (pick > 0.80) { paint = vec3<f32>(0.20, 0.34, 0.24); }         // dark green
+            if (pick > 0.90) { paint = vec3<f32>(0.16, 0.16, 0.18); }         // black
+            if (part == 0u) { return VBox(vec3<f32>(0.0, 0.0, 0.05), vec2<f32>(0.50, 0.21), 0.17, paint * shade); }
+            return VBox(vec3<f32>(-0.06, 0.0, 0.22), vec2<f32>(0.24, 0.18), 0.13, mix(paint, vec3<f32>(0.20, 0.24, 0.28), 0.65));
+        }
+    }
+}
+
+@vertex
+fn vs_vehicle(@builtin(vertex_index) vi: u32, @location(0) pos: vec2<i32>, @location(1) dir: vec2<f32>, @location(2) len_m: f32, @location(3) kind: u32) -> MOut {
+    let foot = vec2<f32>(pos - g3.center.xy);
+    let face = (vi % 36u) / 6u;
+    if (len_m <= 0.0 || face == 5u || height_raw(foot) <= 0.0) {
+        return hidden();   // (a box has no bottom face)
+    }
+    let b = vehicle_box(kind & 3u, vi / 36u, i32(kind >> 2u));
+    var u6 = array<f32, 6>(0.0, 1.0, 1.0, 0.0, 1.0, 0.0);
+    var v6 = array<f32, 6>(0.0, 0.0, 1.0, 0.0, 1.0, 1.0);
+    let k = vi % 6u;
+    let uu = u6[k] * 2.0 - 1.0;
+    var p: vec3<f32>;
+    var normal: vec3<f32>;
+    switch face {
+        case 0u: { p = vec3<f32>(uu * b.half.x, -b.half.y, v6[k] * b.h); normal = vec3<f32>(0.0, -1.0, 0.0); }
+        case 1u: { p = vec3<f32>(b.half.x, uu * b.half.y, v6[k] * b.h); normal = vec3<f32>(1.0, 0.0, 0.0); }
+        case 2u: { p = vec3<f32>(-uu * b.half.x, b.half.y, v6[k] * b.h); normal = vec3<f32>(0.0, 1.0, 0.0); }
+        case 3u: { p = vec3<f32>(-b.half.x, -uu * b.half.y, v6[k] * b.h); normal = vec3<f32>(-1.0, 0.0, 0.0); }
+        default: { p = vec3<f32>(uu * b.half.x, (v6[k] * 2.0 - 1.0) * b.half.y, b.h); normal = vec3<f32>(0.0, 0.0, 1.0); }
+    }
+    p = (p + b.at) * len_m;
+    let side = vec2<f32>(-dir.y, dir.x);
+    let world = vec3<f32>(foot + dir * p.x + side * p.y, ground_z(foot) + p.z);
+    var o: MOut;
+    o.clip = g3.view_proj * vec4<f32>(world, 1.0);
+    o.color = lit(b.color, vec3<f32>(dir * normal.x + side * normal.y, normal.z));
     o.pos = world;
     return o;
 }

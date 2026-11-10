@@ -144,6 +144,137 @@ pub fn city_landmarks(urban: &[[i32; 2]], tri: &[u32], cities: &[[i32; 2]]) -> V
     out
 }
 
+/// One little vehicle as the GPU sees it: where it is, which way it heads (a unit vector), how long
+/// it is in metres, and its kind (low two bits: `CAR`, `TRUCK`, `LOCO`, `WAGON`; the rest: a seed
+/// for its colour).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq)]
+pub struct VehicleInst {
+    pub pos: [i32; 2],
+    pub dir: [f32; 2],
+    pub len_m: f32,
+    pub kind: u32,
+}
+pub const CAR: u32 = 0;
+pub const TRUCK: u32 = 1;
+pub const LOCO: u32 = 2;
+pub const WAGON: u32 = 3;
+/// A box body and a second box on top (cabin, cargo or roof): 36 vertices each.
+const VEHICLE_VERTS: u32 = 72;
+const MAX_VEHICLES: usize = 30_000;
+/// Traffic shows below this zoom (metres per pixel).
+const VEHICLES_BELOW: f64 = 450.0;
+/// Road traffic by class (motorway, main road, lane): pixels between vehicle slots, vehicle length
+/// in pixels, share of slots that hold a vehicle, share of those that are trucks.
+const ROAD_TRAFFIC: [(f64, f64, f64, f64); 3] = [(46.0, 7.0, 0.70, 0.35), (70.0, 6.0, 0.55, 0.22), (110.0, 5.0, 0.40, 0.10)];
+/// Pixels per second: fast enough to see moving, slow enough to follow. Symbols, not real speeds.
+const ROAD_SPEED_PX: f64 = 16.0;
+const TRAIN_SPEED_PX: f64 = 22.0;
+/// A railway car: its slot length and its own length in pixels; a train every so many slots.
+const RAIL_CAR_PX: (f64, f64) = (12.0, 11.0);
+const TRAIN_EVERY: i64 = 56;
+
+/// A fixed scramble of a slot number and a salt into 0..1 (the same on every machine).
+fn slot_hash(n: i64, salt: u64) -> f64 {
+    let mut h = (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ salt.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+    h ^= h >> 29;
+    h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h ^= h >> 32;
+    (h & 0xFF_FFFF) as f64 / 16_777_216.0
+}
+
+/// The zoom rounded up to 100 m/px times a power of two. Traffic slots are spaced by this, so
+/// they do not slide against the road while zooming between two steps.
+fn zoom_step(m_per_px: f64) -> f64 {
+    let mut s = 100.0;
+    while s < m_per_px {
+        s *= 2.0;
+    }
+    s
+}
+
+/// Cars and trucks on the road segments of one class at `time` seconds. Traffic is two conveyor
+/// belts per road, one each way: slot `n` sits `n` spacings along the line plus the distance
+/// driven so far, so a vehicle keeps its slot (and its kind and colour) as it crosses from one
+/// segment to the next. Each belt keeps to the right of the road by `lane_m`.
+fn road_traffic<'a>(segs: impl Iterator<Item = &'a LineSeg>, class: usize, m_per_px: f64, time: f64, lane_m: f64, out: &mut Vec<VehicleInst>) {
+    let (gap_px, len_px, busy, trucks) = ROAD_TRAFFIC[class.min(2)];
+    let step = zoom_step(m_per_px);
+    let spacing = gap_px * step;
+    for seg in segs {
+        let (ax, ay, bx, by) = (seg.a[0] as f64, seg.a[1] as f64, seg.a[2] as f64, seg.a[3] as f64);
+        let len = ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
+        if len < 1.0 {
+            continue;
+        }
+        let (ux, uy) = ((bx - ax) / len, (by - ay) / len);
+        let d0 = seg.dist as f64;
+        for way in [1.0f64, -1.0] {
+            let phase = way * time * ROAD_SPEED_PX * step;
+            let salt = class as u64 * 2 + u64::from(way < 0.0);
+            let first = ((d0 - phase) / spacing).floor() as i64 - 1;
+            let last = ((d0 + len - phase) / spacing).ceil() as i64 + 1;
+            for n in first..=last {
+                if slot_hash(n, salt) >= busy {
+                    continue;
+                }
+                // not evenly spaced: each slot sits up to a third of a spacing off its mark
+                let d = n as f64 * spacing + phase + (slot_hash(n, salt + 100) - 0.5) * 0.66 * spacing;
+                if d < d0 || d >= d0 + len {
+                    continue;
+                }
+                if out.len() >= MAX_VEHICLES {
+                    return;
+                }
+                let truck = slot_hash(n, salt + 200) < trucks;
+                let seed = (slot_hash(n, salt + 300) * 4096.0) as u32;
+                // keep right: the lane is to the right of the way the vehicle heads
+                let (hx, hy) = (ux * way, uy * way);
+                let (x, y) = (ax + ux * (d - d0) + hy * lane_m, ay + uy * (d - d0) - hx * lane_m);
+                out.push(VehicleInst { pos: [x.round() as i32, y.round() as i32], dir: [hx as f32, hy as f32], len_m: (len_px * if truck { 1.5 } else { 1.0 } * m_per_px) as f32, kind: (seed << 2) | if truck { TRUCK } else { CAR } });
+            }
+        }
+    }
+}
+
+/// Trains on the railway segments of one class at `time` seconds. One belt of car-length slots per
+/// line; every `TRAIN_EVERY` slots there may be a train of 4 to 9 cars, the front one a locomotive.
+/// A train is passenger (all coaches alike) or freight (mixed wagons).
+fn rail_traffic<'a>(segs: impl Iterator<Item = &'a LineSeg>, class: usize, m_per_px: f64, time: f64, out: &mut Vec<VehicleInst>) {
+    let step = zoom_step(m_per_px);
+    let slot = RAIL_CAR_PX.0 * step;
+    let phase = time * TRAIN_SPEED_PX * step;
+    let salt = 1_000 + class as u64;
+    for seg in segs {
+        let (ax, ay, bx, by) = (seg.a[0] as f64, seg.a[1] as f64, seg.a[2] as f64, seg.a[3] as f64);
+        let len = ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
+        if len < 1.0 {
+            continue;
+        }
+        let (ux, uy) = ((bx - ax) / len, (by - ay) / len);
+        let d0 = seg.dist as f64;
+        let first = ((d0 - phase) / slot).ceil() as i64;
+        let last = ((d0 + len - phase) / slot).ceil() as i64;
+        for n in first..last {
+            let (train, place) = (n.div_euclid(TRAIN_EVERY), n.rem_euclid(TRAIN_EVERY));
+            let cars = 4 + (slot_hash(train, salt) * 6.0) as i64;
+            if place >= cars || slot_hash(train, salt + 1) >= 0.75 {
+                continue;
+            }
+            if out.len() >= MAX_VEHICLES {
+                return;
+            }
+            let d = n as f64 * slot + phase;
+            let passenger = slot_hash(train, salt + 2) < 0.4;
+            // the seed's top bit says passenger; a passenger train's coaches share one colour
+            let colour = if passenger || place == cars - 1 { slot_hash(train, salt + 3) } else { slot_hash(n, salt + 4) };
+            let seed = ((colour * 2048.0) as u32) | if passenger { 2048 } else { 0 };
+            let (x, y) = (ax + ux * (d - d0), ay + uy * (d - d0));
+            out.push(VehicleInst { pos: [x.round() as i32, y.round() as i32], dir: [ux as f32, uy as f32], len_m: (RAIL_CAR_PX.1 * m_per_px) as f32, kind: (seed << 2) | if place == cars - 1 { LOCO } else { WAGON } });
+        }
+    }
+}
+
 /// Province id meaning "none" for selection and hover.
 pub const NO_PROVINCE: u32 = u32::MAX;
 
@@ -159,7 +290,7 @@ const STYLES: [([f32; 4], f32, f32); 5] = [
 const RIVER_STYLE: usize = 4;
 /// Map details drawn as extra styles after the five above: roads by class, the two passes of a
 /// railway (dark bed, then light dashes on top for the classic black-and-white line), urban fill.
-const DETAIL_STYLES: [([f32; 4], f32, f32); 10] = [
+const DETAIL_STYLES: [([f32; 4], f32, f32); 13] = [
     ([0.58, 0.24, 0.14, 0.90], 1.9, 0.0),
     ([0.55, 0.34, 0.20, 0.80], 1.3, 0.0),
     ([0.42, 0.34, 0.25, 0.60], 0.9, 0.0),
@@ -171,7 +302,17 @@ const DETAIL_STYLES: [([f32; 4], f32, f32); 10] = [
     ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
     ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
     ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
+    // rivers by class: big, medium, small (set per frame: they widen as you zoom in)
+    ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
+    ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
+    ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
 ];
+/// Rivers by class: width in pixels on the paper map and at the closest zoom. Close up a river is
+/// a band of water you can see among the trees, not a hairline.
+const RIVER_WIDTHS: [(f32, f32); 3] = [(1.3, 8.0), (1.0, 5.0), (0.9, 3.2)];
+const RIVER_CLASS_STYLE: usize = 15;
+/// Colour of a river close up (the paper map keeps the ink blue of `STYLES`).
+const RIVER_WATER: [f32; 4] = [0.22, 0.40, 0.52, 1.0];
 /// Close up (the 3D view) roads turn from the red atlas line into asphalt: colour of the surface
 /// by class (motorway, main road, lane), its width in pixels at the closest zoom, the edge colour
 /// and the centre-line colour.
@@ -282,16 +423,24 @@ impl TileIndex {
 struct GpuLines {
     segments: wgpu::Buffer,
     index: TileIndex,
+    /// The same segments on the CPU (only for layers that carry traffic; empty otherwise).
+    cpu: Vec<LineSeg>,
 }
 
 impl GpuLines {
-    fn new(device: &wgpu::Device, label: &str, grid: TileGrid, classes: usize, items: Vec<(u8, LineSeg)>) -> GpuLines {
+    fn new(device: &wgpu::Device, label: &str, grid: TileGrid, classes: usize, items: Vec<(u8, LineSeg)>, keep: bool) -> GpuLines {
         let (index, mut segs) = TileIndex::build(grid, classes, items);
         // a zero-size vertex buffer is not allowed, so an empty layer gets one unused segment
         if segs.is_empty() {
             segs.push(LineSeg { a: [0; 4], dist: 0.0 });
         }
-        GpuLines { segments: device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: bytemuck::cast_slice(&segs), usage: wgpu::BufferUsages::VERTEX }), index }
+        let segments = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: bytemuck::cast_slice(&segs), usage: wgpu::BufferUsages::VERTEX });
+        GpuLines { segments, index, cpu: if keep { segs } else { Vec::new() } }
+    }
+
+    /// The segments of one class that cover a view (needs `keep`).
+    fn in_view(&self, class: usize, view: ViewBox) -> impl Iterator<Item = &LineSeg> {
+        self.index.ranges(class, view).into_iter().flat_map(|rg| self.cpu[rg.start as usize..rg.end as usize].iter())
     }
 
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>, class: usize, view: ViewBox) {
@@ -340,6 +489,8 @@ pub struct Renderer {
     /// Roads are drawn as asphalt with a dark edge (the 3D view); and with a centre line.
     road_3d: bool,
     road_centre: bool,
+    /// Width of each road class on screen this frame (pixels), for the traffic lanes.
+    road_width_px: [f32; 3],
     urban_vertices: wgpu::Buffer,
     urban_indices: wgpu::Buffer,
     urban_count: u32,
@@ -351,6 +502,14 @@ pub struct Renderer {
     hole_pipeline: wgpu::RenderPipeline,
     landmark_pipeline: wgpu::RenderPipeline,
     draw_plazas: bool,
+    /// Lines drawn into the mask: `clear` marks roads and railways (no houses or trees on them),
+    /// `water` marks rivers as well as clearing them.
+    clear_pipeline: wgpu::RenderPipeline,
+    water_pipeline: wgpu::RenderPipeline,
+    vehicle_pipeline: wgpu::RenderPipeline,
+    vehicles: wgpu::Buffer,
+    /// Reused each frame for the traffic in view.
+    vehicle_scratch: Vec<VehicleInst>,
     draw_urban: bool,
     relief_org: [i32; 2],
     relief_span: [f32; 2],
@@ -557,7 +716,24 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
-        let mask_target = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })];
+        // the mask: red = town, green = keep clear (roads, railways, rivers), blue = river water
+        let mask_format = wgpu::TextureFormat::Rgba8Unorm;
+        let mask_target = [Some(wgpu::ColorTargetState { format: mask_format, blend: None, write_mask: wgpu::ColorWrites::RED })];
+        let mask_lines = |label: &str, write_mask: wgpu::ColorWrites| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&layout_line),
+                vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_line"), compilation_options: Default::default(), buffers: &line_buffers },
+                fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_mask"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format: mask_format, blend: None, write_mask })] }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let clear_pipeline = mask_lines("mask: clear", wgpu::ColorWrites::GREEN);
+        let water_pipeline = mask_lines("mask: water", wgpu::ColorWrites::GREEN | wgpu::ColorWrites::BLUE);
         let mask_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("urban mask"),
             layout: Some(&layout_fill),
@@ -617,7 +793,7 @@ impl Renderer {
                 .create_view(&wgpu::TextureViewDescriptor::default())
         };
         let overlay_view = target_tex("overlay", format);
-        let mask_view = target_tex("urban mask", wgpu::TextureFormat::R8Unorm);
+        let mask_view = target_tex("urban mask", mask_format);
         let g3 = device.create_buffer(&wgpu::BufferDescriptor { label: Some("3d globals"), size: std::mem::size_of::<G3>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let both = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
         let tex_entry = |binding: u32| wgpu::BindGroupLayoutEntry { binding, visibility: both, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None };
@@ -675,6 +851,26 @@ impl Renderer {
             cache: None,
         });
 
+        let vehicle_attrs = [
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Sint32x2, offset: 0, shader_location: 0 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 8, shader_location: 1 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 16, shader_location: 2 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32, offset: 20, shader_location: 3 },
+        ];
+        let vehicle_buffers = [Some(wgpu::VertexBufferLayout { array_stride: 24, step_mode: wgpu::VertexStepMode::Instance, attributes: &vehicle_attrs })];
+        let vehicle_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("vehicles"),
+            layout: Some(&layout3),
+            vertex: wgpu::VertexState { module: &terrain_shader, entry_point: Some("vs_vehicle"), compilation_options: Default::default(), buffers: &vehicle_buffers },
+            fragment: Some(wgpu::FragmentState { module: &terrain_shader, entry_point: Some("fs_model"), compilation_options: Default::default(), targets: &opaque }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState { format: DEPTH_FORMAT, depth_write_enabled: Some(true), depth_compare: Some(wgpu::CompareFunction::Less), stencil: Default::default(), bias: Default::default() }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let vehicles = device.create_buffer(&wgpu::BufferDescriptor { label: Some("vehicles"), size: (MAX_VEHICLES * std::mem::size_of::<VehicleInst>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+
         let grid = TileGrid::new(data.bounds());
         let levels = data
             .levels
@@ -686,19 +882,19 @@ impl Renderer {
                     vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("verts"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX }),
                     indices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("indices"), contents: bytemuck::cast_slice(&l.tri), usage: wgpu::BufferUsages::INDEX }),
                     index_count: l.tri.len() as u32,
-                    lines: GpuLines::new(device, "borders", grid, 3, segments_of(l)),
+                    lines: GpuLines::new(device, "borders", grid, 3, segments_of(l), false),
                 }
             })
             .collect();
         let cell_segs: Vec<(u8, LineSeg)> = data.cell_seg.chunks_exact(4).map(|c| (0, LineSeg { a: [c[0], c[1], c[2], c[3]], dist: 0.0 })).collect();
-        let cells = GpuLines::new(device, "cell edges", grid, 1, cell_segs);
+        let cells = GpuLines::new(device, "cell edges", grid, 1, cell_segs, false);
         let river_class = |i: usize| {
             let r = data.river_rank[i];
             if r <= RIVER_MAJOR_RANK { 0 } else if r <= RIVER_MEDIUM_RANK { 1 } else { 2 }
         };
-        let rivers = GpuLines::new(device, "rivers", grid, 3, classed_lines(&data.river_x, &data.river_y, &data.river_off, river_class));
-        let roads = GpuLines::new(device, "roads", grid, 3, classed_lines(&data.roads.x, &data.roads.y, &data.roads.off, |i| data.roads.class[i]));
-        let rails = GpuLines::new(device, "rails", grid, 3, classed_lines(&data.rails.x, &data.rails.y, &data.rails.off, |i| data.rails.class[i]));
+        let rivers = GpuLines::new(device, "rivers", grid, 3, classed_lines(&data.river_x, &data.river_y, &data.river_off, river_class), false);
+        let roads = GpuLines::new(device, "roads", grid, 3, classed_lines(&data.roads.x, &data.roads.y, &data.roads.off, |i| data.roads.class[i]), true);
+        let rails = GpuLines::new(device, "rails", grid, 3, classed_lines(&data.rails.x, &data.rails.y, &data.rails.off, |i| data.rails.class[i]), true);
         let urban_verts: Vec<[i32; 2]> = if data.urban_vx.is_empty() { vec![[0, 0]] } else { (0..data.urban_vx.len()).map(|i| [data.urban_vx[i], data.urban_vy[i]]).collect() };
         let urban_idx: Vec<u32> = if data.urban_tri.is_empty() { vec![0, 0, 0] } else { data.urban_tri.clone() };
         let urban_vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("urban verts"), contents: bytemuck::cast_slice(&urban_verts), usage: wgpu::BufferUsages::VERTEX });
@@ -723,6 +919,7 @@ impl Renderer {
             rail_tier: 0,
             road_3d: false,
             road_centre: false,
+            road_width_px: [0.0; 3],
             urban_vertices,
             urban_indices,
             urban_count: data.urban_tri.len() as u32,
@@ -733,6 +930,11 @@ impl Renderer {
             hole_pipeline,
             landmark_pipeline,
             draw_plazas: false,
+            clear_pipeline,
+            water_pipeline,
+            vehicle_pipeline,
+            vehicles,
+            vehicle_scratch: Vec::new(),
             draw_urban: false,
             relief_org: [rf.x0, rf.y1],
             relief_span: [(rf.x1 - rf.x0) as f32, (rf.y1 - rf.y0) as f32],
@@ -807,6 +1009,14 @@ impl Renderer {
             let mut edge = ROAD_EDGE;
             edge[3] *= t;
             queue.write_buffer(&self.style_buffers[ROAD_EDGE_STYLE + class], 0, bytemuck::bytes_of(&Style { color: edge, width_px: width + 1.0 + 1.6 * widen / 4.0, dash_px: 0.0, _pad: [0.0; 2] }));
+        }
+        self.road_width_px = [0, 1, 2].map(|class: usize| mix(DETAIL_STYLES[class].1 * widen, (ASPHALT[class].1 * widen / 4.0).max(DETAIL_STYLES[class].1 * widen)));
+        // Rivers widen the same way, and turn from map ink to water colour.
+        let grow = ((1_500.0 / camera.m_per_px - 1.0) / 12.0).clamp(0.0, 1.0) as f32;
+        for (class, (far, close)) in RIVER_WIDTHS.iter().enumerate() {
+            let ink = STYLES[RIVER_STYLE].0;
+            let color = [mix(ink[0], RIVER_WATER[0]), mix(ink[1], RIVER_WATER[1]), mix(ink[2], RIVER_WATER[2]), mix(ink[3], RIVER_WATER[3])];
+            queue.write_buffer(&self.style_buffers[RIVER_CLASS_STYLE + class], 0, bytemuck::bytes_of(&Style { color, width_px: far + (close - far) * grow, dash_px: 0.0, _pad: [0.0; 2] }));
         }
         let mut centre = ROAD_CENTRE;
         centre[3] *= ((t - 0.5) * 2.0).clamp(0.0, 1.0) * ((widen - 2.0) / 1.0).clamp(0.0, 1.0);
@@ -909,9 +1119,25 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            pass.set_viewport(0.0, 0.0, ow as f32, oh as f32, 0.0, 1.0);
+            pass.set_bind_group(0, &self.bind0, &[]);
+            // rivers, roads and railways: keep houses and trees off them; rivers also get water
+            let view = (gx0, gy0, gx1, gy1);
+            pass.set_pipeline(&self.water_pipeline);
+            for class in 0..self.river_tier {
+                pass.set_bind_group(1, &self.styles[RIVER_CLASS_STYLE + class], &[]);
+                self.rivers.draw(&mut pass, class, view);
+            }
+            pass.set_pipeline(&self.clear_pipeline);
+            for class in 0..self.road_tier {
+                pass.set_bind_group(1, &self.styles[ROAD_EDGE_STYLE + class], &[]);
+                self.roads.draw(&mut pass, class, view);
+            }
+            pass.set_bind_group(1, &self.styles[RAIL_BED_STYLE], &[]);
+            for class in 0..self.rail_tier {
+                self.rails.draw(&mut pass, class, view);
+            }
             if self.draw_urban && self.urban_count > 0 {
-                pass.set_viewport(0.0, 0.0, ow as f32, oh as f32, 0.0, 1.0);
-                pass.set_bind_group(0, &self.bind0, &[]);
                 pass.set_pipeline(&self.mask_pipeline);
                 pass.set_vertex_buffer(0, self.urban_vertices.slice(..));
                 pass.set_index_buffer(self.urban_indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -964,6 +1190,26 @@ impl Renderer {
             sizes: [(tree.spacing * 1.25 * tree_fade) as f32, (bld.spacing * bld_fade) as f32, 0.0, 0.0],
         };
         queue.write_buffer(&self.g3, 0, bytemuck::bytes_of(&g3));
+        // traffic: cars and trucks on the roads in view, trains on the railways
+        self.vehicle_scratch.clear();
+        if self.show_details && camera.m_per_px < VEHICLES_BELOW {
+            let view = (gx0, gy0, gx1, gy1);
+            // they shrink away as you zoom out toward the limit
+            let m = camera.m_per_px * ((VEHICLES_BELOW - camera.m_per_px) / (VEHICLES_BELOW * 0.25)).clamp(0.0, 1.0);
+            let mut list = std::mem::take(&mut self.vehicle_scratch);
+            for class in 0..self.rail_tier {
+                rail_traffic(self.rails.in_view(class, view), class, camera.m_per_px, time as f64, &mut list);
+            }
+            for class in 0..self.road_tier {
+                let lane = self.road_width_px[class] as f64 * 0.23 * camera.m_per_px;
+                road_traffic(self.roads.in_view(class, view), class, camera.m_per_px, time as f64, lane, &mut list);
+            }
+            for v in &mut list {
+                v.len_m *= (m / camera.m_per_px) as f32;
+            }
+            queue.write_buffer(&self.vehicles, 0, bytemuck::cast_slice(&list));
+            self.vehicle_scratch = list;
+        }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("terrain"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: color_ops })],
@@ -991,6 +1237,11 @@ impl Renderer {
                 pass.set_vertex_buffer(0, buf.slice(..));
                 pass.draw(0..LANDMARK_VERTS, 0..*n);
             }
+        }
+        if !self.vehicle_scratch.is_empty() {
+            pass.set_pipeline(&self.vehicle_pipeline);
+            pass.set_vertex_buffer(0, self.vehicles.slice(..));
+            pass.draw(0..VEHICLE_VERTS, 0..self.vehicle_scratch.len() as u32);
         }
     }
 
@@ -1025,8 +1276,8 @@ impl Renderer {
             }
         }
         pass.set_pipeline(&self.line_pipeline);
-        pass.set_bind_group(1, &self.styles[RIVER_STYLE], &[]);
-        for class in 0..self.river_tier {
+        for class in (0..self.river_tier).rev() {
+            pass.set_bind_group(1, &self.styles[RIVER_CLASS_STYLE + class], &[]);
             self.rivers.draw(pass, class, view);
         }
         // roads: the less important classes first, so major highways sit on top. Close up, all the
@@ -1112,6 +1363,48 @@ mod tests {
         assert_eq!(segs[3].a[0], 5000);
         // a view off the grid still finds the edge tiles, never panics
         assert_eq!(count(0, (-1e9, -1e9, -1e8, -1e8)), 1);
+    }
+
+    #[test]
+    fn traffic_keeps_its_slots_across_segments_and_moves_with_time() {
+        // one straight road of two segments, 100 km each, heading east
+        let segs = [LineSeg { a: [0, 0, 100_000, 0], dist: 0.0 }, LineSeg { a: [100_000, 0, 200_000, 0], dist: 100_000.0 }];
+        let whole = [LineSeg { a: [0, 0, 200_000, 0], dist: 0.0 }];
+        let run = |s: &[LineSeg], t: f64| {
+            let mut v = Vec::new();
+            road_traffic(s.iter(), 0, 100.0, t, 200.0, &mut v);
+            v.sort_by_key(|x| (x.pos, x.kind));
+            v
+        };
+        // cutting the road in two changes nothing
+        assert_eq!(run(&segs, 3.0), run(&whole, 3.0));
+        let (a, b) = (run(&whole, 3.0), run(&whole, 4.0));
+        assert!(a.len() > 20, "{}", a.len());
+        // eastbound traffic keeps right (south of the line) and has moved east; westbound the reverse
+        for v in &a {
+            assert_eq!(v.pos[1], if v.dir[0] > 0.0 { -200 } else { 200 });
+            assert!(v.kind & 3 == CAR || v.kind & 3 == TRUCK);
+        }
+        let east = |v: &[VehicleInst]| v.iter().filter(|x| x.dir[0] > 0.0).map(|x| x.pos[0] as i64).sum::<i64>() as f64 / v.iter().filter(|x| x.dir[0] > 0.0).count() as f64;
+        // one second at 16 px/s and 100 m/px is 1,600 m; allow for vehicles entering and leaving
+        assert!((east(&b) - east(&a)).abs() < 12_000.0);
+        assert_ne!(a, b);
+        // trains: each has exactly one locomotive, at the front, and 3 to 8 wagons behind it
+        let mut t = Vec::new();
+        rail_traffic(whole.iter(), 0, 100.0, 5.0, &mut t);
+        t.sort_by_key(|x| x.pos[0]);
+        assert!(t.iter().any(|x| x.kind & 3 == LOCO) && t.iter().any(|x| x.kind & 3 == WAGON));
+        let mut run_len = 0;
+        for (i, x) in t.iter().enumerate() {
+            let joined = i > 0 && x.pos[0] - t[i - 1].pos[0] == 1_200;
+            run_len = if joined { run_len + 1 } else { 1 };
+            if x.kind & 3 == LOCO && run_len > 1 {
+                assert!((4..=9).contains(&run_len), "{run_len}");
+            }
+            if joined {
+                assert_eq!(t[i - 1].kind & 3, WAGON);
+            }
+        }
     }
 
     #[test]
