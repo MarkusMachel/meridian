@@ -58,12 +58,12 @@ const TERRAIN_GRID: u32 = 384;
 const FOOTPRINT_MARGIN: f64 = 0.08;
 /// Trees show below this zoom (metres per pixel), roughly this many screen pixels apart.
 const TREES_BELOW: f64 = 1_500.0;
-const TREE_SPACING_PX: f64 = 12.0;
+const TREE_SPACING_PX: f64 = 8.0;
 /// Buildings show below this zoom, in built-up areas.
 const BUILDINGS_BELOW: f64 = 1_200.0;
-const BUILDING_SPACING_PX: f64 = 7.0;
+const BUILDING_SPACING_PX: f64 = 11.0;
 /// Most model instances drawn per kind in a frame.
-const MAX_INSTANCES: i64 = 250_000;
+const MAX_INSTANCES: i64 = 400_000;
 /// Political colours fade a little in the 3D view so the ground shows through.
 const LAND_MIX_3D: f32 = 0.45;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -794,7 +794,7 @@ impl Renderer {
             center: [center[0], center[1], 0, 0],
             trees: tree.cells,
             blds: bld.cells,
-            sizes: [(tree.spacing * 0.9 * tree_fade) as f32, (bld.spacing * 0.55 * bld_fade) as f32, 0.0, 0.0],
+            sizes: [(tree.spacing * 1.25 * tree_fade) as f32, (bld.spacing * 0.62 * bld_fade) as f32, 0.0, 0.0],
         };
         queue.write_buffer(&self.g3, 0, bytemuck::bytes_of(&g3));
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -814,11 +814,11 @@ impl Renderer {
         pass.draw(0..TERRAIN_GRID * TERRAIN_GRID * 6, 0..1);
         if show_trees {
             pass.set_pipeline(&self.tree_pipeline);
-            pass.draw(0..18, 0..tree.count);
+            pass.draw(0..36, 0..tree.count);
         }
         if show_blds {
             pass.set_pipeline(&self.building_pipeline);
-            pass.draw(0..30, 0..bld.count);
+            pass.draw(0..42, 0..bld.count);
         }
     }
 

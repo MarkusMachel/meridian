@@ -297,3 +297,14 @@ The owner wanted the map to look closer to Hearts of Iron IV's map: terrain, mod
 - **Line culling.** All line layers (borders, cell edges, rivers, roads, railways) are sorted by class and then by world tile (64 x 32). Each frame draws only the tile rows in view. This took the close 3D frame from 20.2 to 7.8 ms at 2560x1440 (budgets.md).
 - **Display only.** Floats are used here, which the determinism rules allow for display. The engine and the map file are unchanged; the path fingerprint is still `afb28d83a9b0e6ef`.
 
+
+## Phase 7: trees and buildings closer to the Hearts of Iron IV map (2026-11-09)
+
+The owner found the cone trees and box buildings poor. Free model packs were looked at (Quaternius, Kenney, Poly Haven) and rejected: too cartoonish or too detailed for this scale. The models stay procedural, with no model files, and are reshaped toward the Hearts of Iron IV look.
+
+- **Forests are dense carpets.** Trees are about 8 screen pixels apart (was 12) and larger, so crowns touch. The ground under them is darkened and mottled (`forest_at` reads the same land-cover colours as before), so a forest reads as one dark mass from far away. Slow noise opens clearings and ragged edges.
+- **Tree kinds by climate.** A tree is two six-sided cones (36 vertices, was 18). Conifers (two stacked tiers) toward the poles and up mountains, lumpy broadleaf crowns elsewhere, darker and taller near the equator. Latitude is estimated from Equal Earth y in the shader, within about two degrees. Greens are muted, and crowns are darker toward the bottom.
+- **Towns.** A building is walls, a pitched roof and gable ends (42 vertices, was 30). Houses are low, in plaster and concrete tones with slate, brown and dull red roofs; houses of one neighbourhood (8 x 8 plots) face the same way. Deep inside a big town some plots become taller flat-roofed blocks. Some plots stay empty, more of them near the edge. The ground under a town is grey and mottled.
+- **`scene_probe` example** (`cargo run --release -p client --example scene_probe -- OUT_DIR [LAT_DEG]`): draws a made-up landscape through the real renderer and writes screenshots, with no baked map needed. It was used to check this change on a machine without the map.
+- **Not measured yet:** this was checked only on the made-up scene with a software renderer, not on the real map or on the M4 Pro. The instance cap went from 250,000 to 400,000 per kind and trees have twice the triangles, so the close 3D frame time in `docs/budgets.md` (7.8 ms) must be measured again with `client --bench` before this counts as within budget.
+- **Still not done:** ports, airfields and bridges are still 2D icons.
