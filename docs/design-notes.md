@@ -1132,15 +1132,17 @@ The map is shown as military maps at five scales, and zooming moves from one to 
 
 - **Why.** Every hexagon has six neighbours at the same distance, so movement, range, frontage and zones of control behave the same everywhere. A river lies on hexagon edges and a bridge is a hexagon edge, which replaces the weak rule of today ("a river passes between these two cells"). A hexagon's place and outline follow from its number, so nothing has to be stored to draw or pick it. The levels of a hexagon hierarchy match the map scales.
 - **The grid is on the globe.** A flat hexagon grid on a projected map was rejected: the projection stretches shapes toward the poles, so the hexagons would not be the same size on the ground. The candidate is H3, an open hexagon grid of the whole globe with fixed levels. Each level has 12 pentagons, and finer hexagons fit inside coarser ones only approximately.
-- **Three levels are simulated** (the owner chose three over two):
+- **One level is simulated: H3 level 6, everywhere, always on.** Decided 2026-11-10, replacing the three levels (5, 7 and 8) chosen earlier the same day, because the owner then set the brigade as the smallest unit on the map. A hexagon should be about as wide as a brigade's front; finer hexagons would make one brigade spread over several, and coarser ones would stack brigades inside a hexagon.
 
-| H3 level | Edge | Area (average; smallest to largest) | Land hexagons (estimate, 29 % of the globe) | Role | Map scales |
+| H3 level | Across | Edge | Area (average; smallest to largest) | Land hexagons (estimate, 29 % of the globe) | Use |
 | --- | --- | --- | --- | --- | --- |
-| 5 | about 10 km | 253 km² (154 to 305) | about 590,000 | Always on, the whole world | 1:1,000,000 to 1:250,000 |
-| 7 | about 1.4 km | 5.2 km² (3.1 to 6.2) | about 29 million | Opened where units fight | 1:100,000 to 1:50,000 |
-| 8 | about 530 m | 0.74 km² (0.45 to 0.89) | about 200 million | Opened for local tactical play | 1:25,000 |
+| 6 | about 6.4 km | about 3.7 km | 36 km² (21.9 to 43.6) | 3,686,556 north of 60° S (measured; about 4.1 million with Antarctica, estimate) | The one simulated level. A brigade holds about one hexagon in attack and two in defence |
+| 5 | about 17 km | about 9.9 km | 253 km² (154 to 305) | about 590,000 | Not simulated. About the size of the old cells; may serve to group hexagons for drawing or statistics |
+| 7, 8 | 2.4 km, 0.9 km | 1.4 km, 0.53 km | 5.2 km², 0.74 km² | about 29 million, about 200 million | Dropped: battalion and company scale |
 
-  Level 5 is almost the size and number of today's cells, so the always-on layer costs about the same. Levels 7 and 8 are far too many to simulate everywhere; they open and close like provinces open into cells today (active sets). Level 6 (about 3.7 km, 36 km²) is not used.
+  - **No opening and closing.** With one level always on, a hexagon never opens into finer ones. The open-and-close machinery of the old design (a province opening into its cells) is not needed on the new map.
+  - **Cost.** About seven times the old cell count. Per-hexagon state is estimated at 60 to 100 MB; baked terrain for the world at this level is tens of MB. Systems already skip quiet areas (active sets). None of this is measured yet.
+  - **Economy and population stay coarser** than the hexagon (per province or region), so those tables do not grow sevenfold.
 - **Provinces stay** as the political and administrative layer above the hexagons (real admin-1 regions). A hexagon belongs to the province and country that holds its centre. The real border lines are drawn on the map; in the simulation a border follows hexagon edges. Very small states need a rule so they keep at least one hexagon.
 - **What survives in the engine.** The engine treats cells as a graph of neighbours with stored distances, so pathfinding, flows, marches, bridges and the per-cell state keep working when the cells are hexagons. The map builder, the map file and the client's drawing are what get rewritten.
 
@@ -1160,35 +1162,34 @@ Sources checked on 2026-11-10 are in `docs/data-sources.md`. In short:
 
 ### How much of the world, and how big
 
-Decided 2026-11-10: **the base covers the whole world down to 1:250,000, with level-7 hexagon terrain; the three fine scales and level-8 terrain come later as regional packs**, the Persian Gulf first. The owner first chose the whole world at every scale, then this, after seeing the sizes. Everything is built and stored in regional pieces from the start, so a pack adds to the base without redoing it.
+Decided 2026-11-10: **the base covers the whole world down to 1:250,000, with level-6 hexagon terrain; the three fine scales come later as regional packs**, the Persian Gulf first. The owner first chose the whole world at every scale, then this, after seeing the sizes. Everything is built and stored in regional pieces from the start, so a pack adds to the base without redoing it.
 
 Rough sizes (estimates, except where a source is named):
 
 | What | Size |
 | --- | --- |
-| Base: the world at 1:1,000,000 and 1:250,000, level-5 and level-7 terrain | 5 to 20 GB, most likely about 10 GB: 2 to 6 GB of roads, railways, rivers, town shapes and names; elevation about 10 GB at 90 m or 1 to 1.5 GB at 250 m; land cover at about 100 m about 1 GB; hexagon terrain about 0.2 GB |
+| Base: the world at 1:1,000,000 and 1:250,000, level-6 terrain | 5 to 20 GB, most likely about 10 GB: 2 to 6 GB of roads, railways, rivers, town shapes and names; elevation about 10 GB at 90 m or 1 to 1.5 GB at 250 m; land cover at about 100 m about 1 GB; hexagon terrain about 0.2 GB |
 | The whole world at every scale, for comparison | 100 to 180 GB at full detail, 50 to 70 GB trimmed. Whole-planet street tiles alone are about 81 GB from a 92 GB OpenStreetMap file (planetiler's published figures), and building them wants about 46 GB of memory and 0.5 to 1 TB of disk |
 
-- **What the base shows.** At 1:250,000 one centimetre is 2.5 km (about 66 m to a pixel at 96 pixels to the inch): towns as shapes, main and secondary roads, railways, rivers, forests, airfields, contours every 50 to 100 m; no single streets or buildings. A level-7 hexagon is about 2.4 km across, about one centimetre at that scale. A brigade front of 10 to 15 km is 4 to 6 hexagons, a battalion 1 to 2, a company less than one (that is what level 8 is for).
-- **Until a region has its pack,** the simulation there runs on levels 5 and 7, and zooming stops at 1:250,000 (or shows the fine scales generated plainly from the base; not decided).
+- **What the base shows.** At 1:250,000 one centimetre is 2.5 km (about 66 m to a pixel at 96 pixels to the inch): towns as shapes, main and secondary roads, railways, rivers, forests, airfields, contours every 50 to 100 m; no single streets or buildings. A level-6 hexagon is about 6.4 km across, about 2.6 cm at that scale and 6 mm at 1:1,000,000.
+- **Until a region has its pack,** zooming there stops at 1:250,000 (or shows the fine scales generated plainly from the base; not decided). The simulation is the same everywhere.
 - **The base need not use OpenStreetMap:** its roads can come from GRIP4 (CC0) and VMAP0 and VMAP1, which avoids the 92 GB planet file. OpenStreetMap is then needed only for the packs, from regional extracts.
 - **Building on the owner's machine** (Apple M4 Pro, 500 GB disk): the base should be buildable there if the builder works through the world piece by piece (download a tile of elevation or land cover, reduce it, delete it) and never holds the full sources at once. The full-resolution sources are large (land cover at 10 m is on the order of 100 GB, from memory). Expect on the order of 100 GB free disk needed at the peak and some hours of downloading and processing; none of this is measured.
 
 ### Engine and builder work this implies
 
-- A new map builder: H3 level-5 hexagons for the land, their neighbours, distances, terrain, province and country by centre, rivers and roads snapped to hexagon edges, population per hexagon; sea zones again.
+- A new map builder: H3 level-6 hexagons for the land, their neighbours, distances, terrain, province and country by centre, rivers and roads snapped to hexagon edges, population per hexagon; sea zones again.
 - A new map file (hexagon numbers, three-dimensional integer centres, edge flags) and loader; the map checksum and every golden hash change.
-- Opening a level-5 hexagon into its level-7 hexagons, and those into level 8, and closing them again, exactly and deterministically (the design of today opens a province into its cells).
-- Fine terrain for levels 7 and 8 wherever a fight can happen. Baked for the whole world it is roughly 100 to 200 MB for level 7 and close to 1 GB for level 8 at a few bytes per hexagon (rough estimates). **Suggested, not decided:** bake level 7 for the world, and generate level 8 when it opens, from coarser data, in a repeatable way.
+- Terrain baked for every land hexagon of the world (tens of MB).
 - The client: globe camera, map tiles per scale, the transition between scales, counters and command lines on the globe.
 - What was built on 2026-11-09 and 2026-11-10 for the flat map (trees, towns, landmarks, farmland, traffic, rivers, bridges drawn in 3D) is display code for the old map. How much of it carries over depends on the new look.
 
 ### Still open
 
 - Confirm drawn maps rather than scanned ones.
-- Whether fine-level terrain is baked for the whole world or generated when a hexagon opens (see the suggestion above).
-- What levels 7 and 8 simulate that level 5 does not (the tactical rules), and when they open and close.
-- How the brigade and division model, combat width and frontage (section 12) read on hexagons of 10 km, 1.4 km and 530 m.
+- Whether the scales finer than 1:250,000 (and so the regional packs and OpenStreetMap) are still wanted now that nothing is simulated below the brigade: they would be scenery only.
+- How the brigade and division model, combat width and frontage (section 12) read on hexagons of about 6.4 km.
+- Which things are kept per hexagon and which per province (population, economy, weather).
 - The H3 library: `h3o` is a pure-Rust version; its licence and upkeep could not be checked on 2026-11-10 (its page did not load). The engine may need only numbers baked by the builder, plus the integer parent and child steps.
 - How map tiles and regional pieces are cut on the globe, and what the regions of the packs are.
 - 1990 accuracy at the fine scales: the worldwide data is modern, so roads and suburbs built after 1990 show unless they are corrected by hand where it matters.

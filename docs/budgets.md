@@ -81,3 +81,32 @@ Per-tick and per-system time budgets and the simulation memory budget are set in
 | Closest (150 m/px) | full 3D, trees, buildings | 2 | 7.7 (7.7 to 8.6) |
 
 Target: 60 fps (16.6 ms) at 2560x1440. Met in every view. Before line culling the close 3D view took 20.2 ms: cell edges alone were 7.5 ms and roads and railways 2.7 ms, measured by switching each off. Lines are now drawn only in the world tiles in view (64 x 32 tiles). Of the remaining close-up cost, the terrain pass is about 4 ms and trees and buildings about 1 ms. Windowed frame time with panels is shown in the top bar and not yet recorded.
+
+## Map rewrite: the level-6 hexagon world (measured 2026-11-10)
+
+Measured on the machine this was written on (a 2-core cloud container, not the M4 Pro), so the times are an upper bound, not the budget. Re-measure on the build machine.
+
+**The builder's first step** (`crates/map-builder/build_hexes.py`, Natural Earth 10 m land, north of 60° S):
+
+| What | Value |
+| --- | --- |
+| Land hexagons at H3 level 6 | 3,686,556 |
+| Their area against the land area of the source | 135.015 against 134.469 million km² (+0.41 %) |
+| Neighbour pairs | 10,955,512; 97.4 % of hexagons have all six land neighbours |
+| Distance to a neighbour | 4,489 to 7,095 m, mean 6,497 m |
+| City-to-city distances (8 cities at hexagon centres) against the great circle | worst error 0.157 % |
+| Time | 324 s, single-threaded Python |
+| Arrays written (uncompressed) | 264 MB: H3 numbers 29 MB, centres 44 MB, neighbour offsets 15 MB, neighbours 88 MB, distances 88 MB (distances fit 16 bits, which would halve them) |
+
+Filling a whole continent with hexagons in one piece did not finish in 16 minutes; cutting the land into 5-degree pieces first brought the fill down to 22 s.
+
+**The engine's stub world at that size** (`runner probe 8 3686556`; the same probe as Phase 4A, which used 599,261 cells):
+
+| What | 599,261 cells | 3,686,556 hexagons |
+| --- | --- | --- |
+| State hash over all stub state | 18.1 ms | 110.2 ms |
+| Daily pass over every cell and group, one thread | 1.47 ms | 13.71 ms |
+| Hourly pass over an active set of about 5 % of cells | 0.030 ms | 0.258 ms |
+| Stub state (five byte arrays and one 24-byte population group per cell) | 18.0 MB | 110.6 MB |
+
+So seven times the cells costs about six to nine times as much, as expected: a full daily sweep is still far inside a tick, and the state hash (already not taken every tick) takes about a tenth of a second. Population is planned per province, not per hexagon, which would take most of the 110 MB away.

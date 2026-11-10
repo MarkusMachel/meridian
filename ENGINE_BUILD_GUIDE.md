@@ -564,14 +564,15 @@ These are the gameplay phases, to be re-planned once the engine passes Phase 8. 
 - [x] Data source policy: facts we extract and author ourselves are not limited by the source's license (record provenance, write our own wording, no bulk copying); datasets we import and bake must be public domain, CC0 or attribution-only, and non-commercial ones stay out (decided 2026-11-09; see `docs/data-sources.md`).
 - [ ] Data-source follow-ups: GHS-BUILT and GHS-SMOD terms (GHS-POP verified; SIPRI is commercial-only), HydroSHEDS documentation, an oil field and industry source, whether to use OpenStreetMap (share-alike). Add a license field per data layer and a commercial-build check in the bake step.
 - [x] Bulk tables as CSV, structured data as RON (decided 2026-11-08).
-- [x] Map redesign (2026-11-10): hexagon levels on a globe replace the irregular cells on a flat map: H3 level 5 always on (about 10 km), level 7 where units fight (about 1.4 km), level 8 for local tactical play (about 530 m); the simulation uses whole-metre positions on the sphere; the client draws a globe and military maps at 1:1,000,000, 1:250,000, 1:100,000, 1:50,000 and 1:25,000 with transitions. See `docs/design-notes.md` section 25.
+- [x] Map redesign (2026-11-10): hexagon levels on a globe replace the irregular cells on a flat map: H3 level 5 always on (about 10 km), level 7 where units fight (about 1.4 km), level 8 for local tactical play (about 530 m); the simulation uses whole-metre positions on the sphere; the client draws a globe and military maps at 1:1,000,000, 1:250,000, 1:100,000, 1:50,000 and 1:25,000 with transitions. See `docs/design-notes.md` section 25. (The three levels were replaced by one, level 6: see the entry below.)
 - [x] OpenStreetMap is used for the map scales from 1:100,000 to 1:25,000 (2026-11-10): derived data in its own files under the ODbL, with credit on screen.
-- [x] Map coverage (2026-11-10): the base is the whole world down to 1:250,000 with level-7 terrain (about 10 GB, estimate); the scales from 1:100,000 to 1:25,000 and level-8 terrain come later as regional packs, the Persian Gulf first.
+- [x] Map coverage (2026-11-10): the base is the whole world down to 1:250,000 (about 10 GB, estimate); the scales from 1:100,000 to 1:25,000 come later as regional packs, the Persian Gulf first.
+- [x] Smallest unit and hexagon size (2026-11-10): nothing below the brigade is on the map, and one hexagon level is simulated: H3 level 6 (about 6.4 km across), everywhere, always on. This replaces the three levels (5, 7, 8) in the entry above.
 - [ ] Map redesign, still open: drawn or scanned maps (drawn is assumed); what a region without a pack shows below 1:250,000; what levels 7 and 8 simulate; the H3 library (`h3o` unverified); the order of the rewrite.
 
 ## 9. Map rewrite plan (2026-11-10)
 
-The map redesign in `docs/design-notes.md` section 25 (hexagon levels on a globe, military map scales, a world base to 1:250,000 and regional packs for the finer scales) replaces Phase 3 (the map) and Phase 7 (the client's map), and touches Phase 5 (the save version) and Phase 8 (the budgets). It is planned as its own phases, M0 to M7, in the same form as section 4: a goal, steps, and a done test that must pass before the next phase starts. The engine's systems from Phase 4 (economy, politics, events and the rest), saves and replays, marches, bridges, counters and formations carry over; the irregular-cell builder, the flat render file and the Equal Earth plane are retired when their replacements pass.
+The map redesign in `docs/design-notes.md` section 25 (hexagon levels on a globe, military map scales, a world base to 1:250,000 and regional packs for the finer scales) replaces Phase 3 (the map) and Phase 7 (the client's map), and touches Phase 5 (the save version) and Phase 8 (the budgets). **Revised the same day:** the owner set the brigade as the smallest unit, so one hexagon level is simulated (H3 level 6, about 6.4 km across, everywhere and always on). The phases for opening finer hexagons (first written as M5 and M7) were removed. It is planned as its own phases, M0 to M4 and M6, in the same form as section 4: a goal, steps, and a done test that must pass before the next phase starts. The engine's systems from Phase 4 (economy, politics, events and the rest), saves and replays, marches, bridges, counters and formations carry over; the irregular-cell builder, the flat render file and the Equal Earth plane are retired when their replacements pass.
 
 The order is chosen so that the riskiest idea is proven first with the least work (hexagons with whole-number positions on the sphere, in the engine, with no graphics), and so that something works at the end of every phase. Today's map stays the working one, on `main`, until M3 passes.
 
@@ -588,13 +589,13 @@ The order is chosen so that the riskiest idea is proven first with the least wor
 
 **Done test:** each choice is written in `docs/decisions.md` with what was checked and where; nothing in M1 depends on an unchecked library or source.
 
-### M1: The level-5 hexagon world in the engine
+### M1: The level-6 hexagon world in the engine
 
-**Goal:** the engine loads a world of level-5 hexagons on the sphere and everything that worked on cells works on them, headless.
+**Goal:** the engine loads a world of level-6 hexagons on the sphere and everything that worked on cells works on them, headless.
 
 **Steps**
 
-1. Builder: the level-5 hexagons that hold land (about 590,000), each with its centre as whole metres in three dimensions, its neighbours, and the ground distance to each.
+1. Builder: the level-6 hexagons that hold land (3,686,556 north of 60 degrees south, measured on 2026-11-10 from Natural Earth's land; Antarctica is left out), each with its centre as whole metres in three dimensions, its neighbours, and the ground distance to each.
 2. Give each hexagon its province and country (by its centre, from the 1990 regions already built), with a rule so every state keeps at least one hexagon; terrain, coast, population.
 3. Sea zones on the sphere.
 4. A new map file version and loader; the validator checks that the graph is symmetric, that hexagons partition into provinces, the pentagons, and the world rules.
@@ -606,7 +607,7 @@ The order is chosen so that the riskiest idea is proven first with the least wor
 - Building twice gives the same file checksum; the validator passes.
 - The number of land hexagons and the total land area are within 1 % of the expected values.
 - Distances between a set of known cities are within 1 % of the true great-circle distances, at the equator and at 60 degrees north.
-- Pathfinding, the per-cell state and the flow primitives pass their tests on the hexagon map; the pathfinding benchmark is within the budget in `docs/budgets.md`.
+- Pathfinding, the per-cell state and the flow primitives pass their tests on the hexagon map. The pathfinding benchmark and a full sweep of the per-hexagon state are measured at seven times the old cell count and the budgets in `docs/budgets.md` are met or re-set with the owner.
 - The same run gives the same state hash on macOS and Linux.
 
 ### M2: Rivers, roads and units on hexagons
@@ -632,7 +633,7 @@ The order is chosen so that the riskiest idea is proven first with the least wor
 **Steps**
 
 1. A camera that orbits the sphere, with positions sent to the graphics card relative to the camera.
-2. The globe with level-5 hexagons coloured by country, the real border lines, coasts and relief.
+2. The globe with the hexagons coloured by country (grouped for drawing when zoomed out), the real border lines, coasts and relief.
 3. Picking a hexagon; counters, stacks, command lines and march arrows on the globe; time controls and orders.
 4. Retire the flat map client and the old map builder.
 
@@ -660,33 +661,13 @@ The order is chosen so that the riskiest idea is proven first with the least wor
 - The 1:250,000 style is compared with a scanned Joint Operations Graphic sheet of the Gulf and judged close by the owner.
 - Frame time within budget at both scales and during the transition.
 
-### M5: Level-7 hexagons where units fight
-
-**Goal:** a level-5 hexagon can open into its level-7 hexagons and close again.
-
-**Before starting:** decide what level 7 simulates that level 5 does not, and when a hexagon opens and closes (design notes section 25, still open).
-
-**Steps**
-
-1. Bake level-7 terrain for the world, grouped under each level-5 hexagon.
-2. Open and close: units, control, damage and population move down and up exactly.
-3. Pathfinding and marches inside opened areas and across their edges.
-4. The client shows level-7 hexagons at 1:250,000.
-
-**Done test**
-
-- Opening and then closing an untouched hexagon leaves the state hash unchanged.
-- People, units and stocks are conserved through opening and closing.
-- A fight that opens an area replays to the same hashes.
-- Memory and tick time with a set number of opened areas are within budget.
-
 ### M6: The first regional pack (Persian Gulf)
 
 **Goal:** the three fine scales for one region, from OpenStreetMap, delivered as a pack.
 
 **Steps**
 
-1. Build the 1:100,000, 1:50,000 and 1:25,000 tiles for the Gulf from regional extracts, and level-8 terrain.
+1. Build the 1:100,000, 1:50,000 and 1:25,000 tiles for the Gulf from regional extracts. (Whether these scenery-only scales are still wanted is open; decide before starting.)
 2. The client draws the three fine scales and the transitions; a region without a pack stops at 1:250,000 (or shows a plain generated map; to be decided).
 3. Keep the OpenStreetMap-derived files apart, with their licence file, and show the credit on screen.
 4. Installing and removing a pack.
@@ -696,12 +677,6 @@ The order is chosen so that the riskiest idea is proven first with the least wor
 - The pack builds on the build machine; its size is recorded.
 - The game runs with and without the pack, and says plainly when a region has none.
 - The licence file and the on-screen credit are present; no OpenStreetMap-derived data is in a file with other terms.
-
-### M7: Level-8 hexagons for local tactical play
-
-**Goal:** a level-7 hexagon opens into level-8 hexagons (about 530 m) inside a region that has its pack.
-
-**Before starting:** the tactical rules have to be designed (what happens at company scale). Not planned further until then.
 
 ---
 

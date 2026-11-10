@@ -26,6 +26,7 @@ pub mod orders;
 pub mod polity;
 pub mod rng;
 pub mod schedule;
+pub mod sphere;
 pub mod sim;
 pub mod tech;
 pub mod view;

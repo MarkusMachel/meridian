@@ -438,3 +438,26 @@ Decided by the owner after seeing the sizes: the base is the whole world at 1:1,
 ## A plan for the map rewrite (2026-11-10)
 
 `ENGINE_BUILD_GUIDE.md` section 9 lays the map redesign out as phases M0 to M7, each with a done test: check the tools and sources; the level-5 hexagon world in the engine, headless; rivers, roads and units on hexagon edges; the globe client; the base map at 1:1,000,000 and 1:250,000; level-7 hexagons where units fight; the first regional pack (Persian Gulf) with the three fine scales; level-8 tactical play. The order proves the riskiest idea first (hexagons with whole-number positions on the sphere) with no graphics, and today's map stays the working one until the globe client passes. Not started.
+
+## Brigade is the smallest unit; one hexagon level, H3 level 6 (2026-11-10)
+
+Decided by the owner: nothing below the brigade is on the map. With that, one hexagon level is simulated, everywhere and always on: H3 level 6 (about 6.4 km across, 36 km², about 4.1 million land hexagons by estimate), where a brigade holds about one hexagon in attack and two in defence. This replaces the three levels (5, 7, 8) chosen earlier the same day; the open-and-close of finer hexagons, and plan phases M5 and M7, are dropped. Economy and population stay coarser than the hexagon. Whether the scenery-only scales below 1:250,000 are still wanted is open. Recorded in `docs/design-notes.md` section 25 and `ENGINE_BUILD_GUIDE.md` section 9. Work on the rewrite is on the branch `map-rewrite`; `main` keeps today's map.
+
+## Map rewrite M0: tools and sources checked (2026-11-10)
+
+- **Hexagon grid in the builder:** the official `h3` Python package, version 4.5.0 (C library 4.5.0), Apache License 2.0. Installed and used; added to the builder's requirements.
+- **Hexagon grid in Rust:** `h3o` 0.11.1, BSD-3-Clause, a from-scratch Rust implementation ("100% Rust (no C deps)" is its stated design goal). Seen on crates.io through `cargo info` and on its GitHub page; its last commit date and which H3 version it tracks could not be read. Not yet a dependency.
+- **The engine does not need a hexagon library.** With one level always on, the builder bakes everything the simulation uses: each hexagon's H3 number, its centre in whole metres, its neighbours and the distances. The client may use `h3o` for outlines and for finding the hexagon under the cursor (display only).
+- **Same results on every machine.** The engine's distances are integer arithmetic on the baked whole-metre centres (`meridian-core/src/sphere.rs`, tested against the haversine formula; within a few metres up to 5,000 km). The builder uses floating point to place centres and decide the coast, so, as with today's map, the baked file may differ between machines in rare last-digit cases: build once, pin the checksum.
+- **Licences.** Copernicus elevation: the collection page says GLO-30 and GLO-90 are "available worldwide with a free license" and gives the notice to show when distributing ("© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved", and "produced using Copernicus WorldDEM-30" for adapted data); the licence document itself, and so an explicit word on commercial use, was not read. Still unread: GHSL built-up, VMAP0 and VMAP1 from the NGA itself, a 100 m land-cover product. These matter for M4, not M1.
+- **Build machine:** the owner's free disk and memory are not known yet; needed before M4.
+
+## Map rewrite M1, first step: the land as level-6 hexagons (2026-11-10)
+
+On the branch `map-rewrite`. Not the whole of M1: the hexagons are not yet joined to provinces, terrain or the map file, and the engine does not load them yet.
+
+- **`crates/map-builder/build_hexes.py`** decides which H3 level-6 hexagons are land and writes each one's H3 number, its centre in whole metres on the sphere, its land neighbours and the ground distance to each. Rules: a hexagon is land when its centre is on land, or 3 of 7 sample points are, or it touches land and holds a town (230 such hexagons, so a port on a bay stays on land: Kuwait City and Tromsø were in the sea without this); every piece of land of 3 km² or more keeps one hexagon (1,585 small islands). Antarctica (south of 60° S) is left out for now.
+- **`validate_hexes.py`** has a self-test on a made-up island and checks a real run: the graph is the same from both sides, the area is within 1 % of the source, known cities are on land and the distances between them are right. A run on Natural Earth's land passed (numbers in `docs/budgets.md`).
+- **`meridian-core/src/sphere.rs`**: ground distance between two whole-metre places on the sphere, by integer arithmetic only (halve the angle five times with integer square roots, then a short series). Tested against the haversine formula: within a few metres up to 5,000 km, and correct across the 180th meridian. The builder computes its distances the same way, so file and engine agree.
+- **`runner probe`** takes a cell count; the stub world at 3,686,556 cells is measured in `docs/budgets.md`.
+- **Next in M1:** provinces and countries by hexagon centre (with the rule that every state keeps a hexagon), terrain and population per hexagon, sea zones, the new map file and loader, and the engine's map tests on hexagons.

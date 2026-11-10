@@ -301,29 +301,30 @@ fn cmd_probe(args: &[String]) -> i32 {
     use meridian_core::parallel::for_each_chunk_mut;
     use meridian_core::{ActiveSet, Rng};
     use std::time::Instant;
-    const CELLS: usize = 599_261;
     const COUNTRIES: usize = 190;
     let threads: usize = args.first().map_or(8, |s| s.parse().expect("threads must be an integer"));
+    // the number of cells: today's map by default; pass 3686556 for the level-6 hexagon world
+    let cells: usize = args.get(1).map_or(599_261, |s| s.parse().expect("cells must be an integer"));
     let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
 
     let mut rng = Rng::from_seed(1);
-    let mut controller: Vec<u16> = (0..CELLS).map(|_| rng.below(COUNTRIES as u64) as u16).collect();
-    let mut hunger = vec![0u8; CELLS];
-    let food: Vec<u8> = (0..CELLS).map(|_| rng.below(256) as u8).collect();
-    let mut ground = vec![0u8; CELLS];
-    let mut damage = vec![0u8; CELLS];
+    let mut controller: Vec<u16> = (0..cells).map(|_| rng.below(COUNTRIES as u64) as u16).collect();
+    let mut hunger = vec![0u8; cells];
+    let food: Vec<u8> = (0..cells).map(|_| rng.below(256) as u8).collect();
+    let mut ground = vec![0u8; cells];
+    let mut damage = vec![0u8; cells];
     // Population group record, 24 bytes: cell, head count, culture, religion, 4 support shares, pad.
     #[derive(Clone, Copy)]
     struct Group { cell: u32, heads: u32, culture: u16, religion: u8, support: [u8; 4], _pad: [u8; 9] }
-    let mut groups: Vec<Group> = (0..CELLS)
+    let mut groups: Vec<Group> = (0..cells)
         .map(|c| Group { cell: c as u32, heads: 1000 + rng.below(9000) as u32, culture: rng.below(300) as u16, religion: rng.below(20) as u8, support: [64; 4], _pad: [0; 9] })
         .collect();
-    println!("stub world: {CELLS} cells, {} groups ({} bytes each), {COUNTRIES} countries, {threads} threads", groups.len(), std::mem::size_of::<Group>());
+    println!("stub world: {cells} cells, {} groups ({} bytes each), {COUNTRIES} countries, {threads} threads", groups.len(), std::mem::size_of::<Group>());
 
     // 1. State hash over everything.
     let t = Instant::now();
     let mut h = StateHasher::default();
-    for i in 0..CELLS {
+    for i in 0..cells {
         h.write_u16(controller[i]);
         h.write_u8(hunger[i]);
         h.write_u8(food[i]);
@@ -375,7 +376,7 @@ fn cmd_probe(args: &[String]) -> i32 {
 
     // 3. Active set: 5% of cells busy, touched per tick (hourly systems).
     let mut active = ActiveSet::new();
-    let ids: Vec<u32> = (0..CELLS as u32 / 20).map(|_| rng.below(CELLS as u64) as u32).collect();
+    let ids: Vec<u32> = (0..cells as u32 / 20).map(|_| rng.below(cells as u64) as u32).collect();
     let t = Instant::now();
     active.extend(&ids);
     let build = ms(t);
@@ -403,7 +404,7 @@ fn cmd_probe(args: &[String]) -> i32 {
     println!("190 stub country passes: {:.3} ms (checksum {acc:x})", ms(t));
 
     // 5. Memory estimate.
-    let bytes = CELLS * (2 + 4) + groups.len() * std::mem::size_of::<Group>();
+    let bytes = cells * (2 + 4) + groups.len() * std::mem::size_of::<Group>();
     println!("stub state size: {:.1} MB", bytes as f64 / 1e6);
     (!same) as i32
 }
