@@ -434,3 +434,7 @@ Decided by the owner: OpenStreetMap is the source for the map scales from 1:100,
 ## Map coverage: world base to 1:250,000, fine scales as regional packs (2026-11-10)
 
 Decided by the owner after seeing the sizes: the base is the whole world at 1:1,000,000 and 1:250,000 with level-5 and level-7 hexagon terrain (5 to 20 GB, most likely about 10 GB; estimates). The scales from 1:100,000 to 1:25,000 and level-8 terrain come later as regional packs, the Persian Gulf first; everything is built in regional pieces from the start. The whole world at every scale was estimated at 50 to 180 GB with a build that needs about 46 GB of memory and up to 1 TB of disk, and was set aside. Sizes and reasoning are in `docs/design-notes.md` section 25.
+
+## A plan for the map rewrite (2026-11-10)
+
+`ENGINE_BUILD_GUIDE.md` section 9 lays the map redesign out as phases M0 to M7, each with a done test: check the tools and sources; the level-5 hexagon world in the engine, headless; rivers, roads and units on hexagon edges; the globe client; the base map at 1:1,000,000 and 1:250,000; level-7 hexagons where units fight; the first regional pack (Persian Gulf) with the three fine scales; level-8 tactical play. The order proves the riskiest idea first (hexagons with whole-number positions on the sphere) with no graphics, and today's map stays the working one until the globe client passes. Not started.

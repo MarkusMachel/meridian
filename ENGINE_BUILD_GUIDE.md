@@ -569,6 +569,140 @@ These are the gameplay phases, to be re-planned once the engine passes Phase 8. 
 - [x] Map coverage (2026-11-10): the base is the whole world down to 1:250,000 with level-7 terrain (about 10 GB, estimate); the scales from 1:100,000 to 1:25,000 and level-8 terrain come later as regional packs, the Persian Gulf first.
 - [ ] Map redesign, still open: drawn or scanned maps (drawn is assumed); what a region without a pack shows below 1:250,000; what levels 7 and 8 simulate; the H3 library (`h3o` unverified); the order of the rewrite.
 
+## 9. Map rewrite plan (2026-11-10)
+
+The map redesign in `docs/design-notes.md` section 25 (hexagon levels on a globe, military map scales, a world base to 1:250,000 and regional packs for the finer scales) replaces Phase 3 (the map) and Phase 7 (the client's map), and touches Phase 5 (the save version) and Phase 8 (the budgets). It is planned as its own phases, M0 to M7, in the same form as section 4: a goal, steps, and a done test that must pass before the next phase starts. The engine's systems from Phase 4 (economy, politics, events and the rest), saves and replays, marches, bridges, counters and formations carry over; the irregular-cell builder, the flat render file and the Equal Earth plane are retired when their replacements pass.
+
+The order is chosen so that the riskiest idea is proven first with the least work (hexagons with whole-number positions on the sphere, in the engine, with no graphics), and so that something works at the end of every phase. Today's map stays the working one, on `main`, until M3 passes.
+
+### M0: Check the tools and sources
+
+**Goal:** no surprises about libraries or licences once building starts.
+
+**Steps**
+
+1. Hexagon grid: check the H3 libraries (the official `h3` package for the Python builder; `h3o` for Rust): licence, upkeep, version. Decide whether the engine needs a hexagon library while running (to find the children and neighbours of a hexagon when it opens) or only numbers baked by the builder.
+2. Check that H3's whole-number operations (parent, children, neighbours) give the same results on macOS and Linux, and keep every floating-point step in the builder.
+3. Read the licences still unread: the Copernicus elevation licence text, GHSL built-up, VMAP0 and VMAP1 from the NGA itself, and the 100 m land-cover option.
+4. Measure the free disk and memory on the build machine and set the builder's budget.
+
+**Done test:** each choice is written in `docs/decisions.md` with what was checked and where; nothing in M1 depends on an unchecked library or source.
+
+### M1: The level-5 hexagon world in the engine
+
+**Goal:** the engine loads a world of level-5 hexagons on the sphere and everything that worked on cells works on them, headless.
+
+**Steps**
+
+1. Builder: the level-5 hexagons that hold land (about 590,000), each with its centre as whole metres in three dimensions, its neighbours, and the ground distance to each.
+2. Give each hexagon its province and country (by its centre, from the 1990 regions already built), with a rule so every state keeps at least one hexagon; terrain, coast, population.
+3. Sea zones on the sphere.
+4. A new map file version and loader; the validator checks that the graph is symmetric, that hexagons partition into provinces, the pentagons, and the world rules.
+5. Whole-number distance on the sphere in the engine (from the three-dimensional centres), replacing the planar distance.
+6. Run the engine's map tests and benchmarks on the new map.
+
+**Done test**
+
+- Building twice gives the same file checksum; the validator passes.
+- The number of land hexagons and the total land area are within 1 % of the expected values.
+- Distances between a set of known cities are within 1 % of the true great-circle distances, at the equator and at 60 degrees north.
+- Pathfinding, the per-cell state and the flow primitives pass their tests on the hexagon map; the pathfinding benchmark is within the budget in `docs/budgets.md`.
+- The same run gives the same state hash on macOS and Linux.
+
+### M2: Rivers, roads and units on hexagons
+
+**Goal:** the things on the map are on the hexagon grid.
+
+**Steps**
+
+1. Snap rivers to hexagon edges, and mark roads and railways on the edges they cross; bridges are river edges that a road or railway crosses.
+2. Scenario setup on hexagons: units and formations placed by latitude and longitude.
+3. Marches, bridges, demolition and the seeded bridges run on the hexagon map.
+
+**Done test**
+
+- A unit ordered across a major river takes the bridge edge; with the bridge destroyed it goes round or fords, and arrives later.
+- Major rivers are continuous along edges (no gaps a unit can walk through for free) on a checked sample.
+- A year of the proving ground on the hexagon world replays to the same hashes, and the tick time is within budget.
+
+### M3: The globe
+
+**Goal:** the client shows the hexagon world as a globe and can be played as today's client can.
+
+**Steps**
+
+1. A camera that orbits the sphere, with positions sent to the graphics card relative to the camera.
+2. The globe with level-5 hexagons coloured by country, the real border lines, coasts and relief.
+3. Picking a hexagon; counters, stacks, command lines and march arrows on the globe; time controls and orders.
+4. Retire the flat map client and the old map builder.
+
+**Done test**
+
+- A point picked on screen and projected back lands on the same pixel, from the whole globe down to the closest zoom, at the equator, at 70 degrees north and across the 180th meridian.
+- No visible jitter when zoomed in (the camera-relative positions work).
+- The frame time on the build machine at 2560 by 1440 is measured and within the 60 frames a second budget.
+- A unit can be selected, ordered and watched marching on the globe.
+
+### M4: The base map and its two scales
+
+**Goal:** the world as military maps at 1:1,000,000 and 1:250,000, with the transition between them.
+
+**Steps**
+
+1. A builder that works through the world piece by piece (download, reduce, delete) and writes regional tiles: 1:1,000,000 from VMAP0 and Natural Earth; 1:250,000 from GRIP4, VMAP1 where released, GHSL built-up areas, land cover, names, and contours from elevation.
+2. The client draws both map styles from the tiles and blends from one to the other while zooming.
+3. A license field on every data layer and a check in the build that fails on a layer whose terms forbid commercial use (planned since 2026-11-09).
+
+**Done test**
+
+- The base builds on the build machine within the disk budget from M0; its peak disk use, time and final size are recorded in `docs/budgets.md`.
+- No seams or missing tiles on a sweep of the world; the 180th meridian and the poles draw correctly.
+- The 1:250,000 style is compared with a scanned Joint Operations Graphic sheet of the Gulf and judged close by the owner.
+- Frame time within budget at both scales and during the transition.
+
+### M5: Level-7 hexagons where units fight
+
+**Goal:** a level-5 hexagon can open into its level-7 hexagons and close again.
+
+**Before starting:** decide what level 7 simulates that level 5 does not, and when a hexagon opens and closes (design notes section 25, still open).
+
+**Steps**
+
+1. Bake level-7 terrain for the world, grouped under each level-5 hexagon.
+2. Open and close: units, control, damage and population move down and up exactly.
+3. Pathfinding and marches inside opened areas and across their edges.
+4. The client shows level-7 hexagons at 1:250,000.
+
+**Done test**
+
+- Opening and then closing an untouched hexagon leaves the state hash unchanged.
+- People, units and stocks are conserved through opening and closing.
+- A fight that opens an area replays to the same hashes.
+- Memory and tick time with a set number of opened areas are within budget.
+
+### M6: The first regional pack (Persian Gulf)
+
+**Goal:** the three fine scales for one region, from OpenStreetMap, delivered as a pack.
+
+**Steps**
+
+1. Build the 1:100,000, 1:50,000 and 1:25,000 tiles for the Gulf from regional extracts, and level-8 terrain.
+2. The client draws the three fine scales and the transitions; a region without a pack stops at 1:250,000 (or shows a plain generated map; to be decided).
+3. Keep the OpenStreetMap-derived files apart, with their licence file, and show the credit on screen.
+4. Installing and removing a pack.
+
+**Done test**
+
+- The pack builds on the build machine; its size is recorded.
+- The game runs with and without the pack, and says plainly when a region has none.
+- The licence file and the on-screen credit are present; no OpenStreetMap-derived data is in a file with other terms.
+
+### M7: Level-8 hexagons for local tactical play
+
+**Goal:** a level-7 hexagon opens into level-8 hexagons (about 530 m) inside a region that has its pack.
+
+**Before starting:** the tactical rules have to be designed (what happens at company scale). Not planned further until then.
+
 ---
 
 ## Sources
