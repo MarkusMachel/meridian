@@ -91,6 +91,8 @@ pub struct UnitExt {
     /// brigade, ...; 0 = not set). The engine gives them no meaning; the rules and the client do.
     pub kind: u16,
     pub echelon: u8,
+    /// What the unit is called ("Panzerbrigade 2"); empty = unnamed. For people, not for rules.
+    pub name: String,
 }
 
 impl Default for UnitExt {
@@ -112,6 +114,7 @@ impl Default for UnitExt {
             march: None,
             kind: 0,
             echelon: 0,
+            name: String::new(),
         }
     }
 }
@@ -323,6 +326,13 @@ impl UnitExt {
             h.write_u8(0xA8);
             h.write_u16(self.kind);
             h.write_u8(self.echelon);
+        }
+        if !self.name.is_empty() {
+            h.write_u8(0xA9);
+            h.write_u32(self.name.len() as u32);
+            for b in self.name.bytes() {
+                h.write_u8(b);
+            }
         }
         if let Some(m) = &self.march {
             h.write_u8(0xA7);

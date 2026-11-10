@@ -369,6 +369,14 @@ impl Map {
         Some(self.edge_cost(a.0, e, costs, &|_, _| bridged))
     }
 
+    /// The cell whose centre is nearest to a point in world metres, and how far away it is in
+    /// metres (ties go to the lower cell number). Looks at every cell: for setting a scenario
+    /// up, not for use every tick.
+    pub fn nearest_cell(&self, x: i32, y: i32) -> Option<(CellId, u32)> {
+        let r = &self.raw;
+        (0..self.cell_count()).map(|c| (dist_m(r.cell_x[c as usize], r.cell_y[c as usize], x, y), c)).min().map(|(d, c)| (CellId(c), d))
+    }
+
     /// Does a river run across the shared border of these two neighbouring cells?
     pub fn river_between(&self, a: CellId, b: CellId) -> bool {
         self.cell_edges(a).any(|e| self.raw.c_dst[e] == b.0 && self.raw.c_flags[e] & cell_edge_flag::RIVER != 0)

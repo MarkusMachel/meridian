@@ -64,7 +64,7 @@ Units: coordinates are Equal Earth (EPSG:8857) metres as i32; areas are hectares
 
 The loader checks the checksum, every array's length, value ranges, that cells form an exact partition into provinces, and that both graphs are sorted and symmetric (and edge kinds agree in both directions). `Map::validate_world()` then checks the world rules.
 
-## Save file (version 2)
+## Save file (version 3)
 
 Written by `meridian_data::save_world`, read by `load_world`. Header is little-endian, same shape as the other containers.
 
@@ -79,7 +79,7 @@ Written by `meridian_data::save_world`, read by `load_world`. Header is little-e
 
 Payload: postcard encoding (serde) of `SaveBody { map_checksum: Option<u32>, state_hash: u64, changes: Option<CellChanges>, world: World }`.
 
-- `world` is every field of `World` except the attached map and the per-cell arrays. Field order is the declaration order in `meridian-core` (postcard has no field names), so reordering or adding fields to a serialized type is a format change: bump `SAVE_VERSION` and add a step to `migrate`. Version 2 (2026-11-10) added `march` to each unit's extra attributes; version 1 saves cannot be opened (there is no migration step, as no version 1 saves were ever released).
+- `world` is every field of `World` except the attached map and the per-cell arrays. Field order is the declaration order in `meridian-core` (postcard has no field names), so reordering or adding fields to a serialized type is a format change: bump `SAVE_VERSION` and add a step to `migrate`. Version 2 (2026-11-10) added `march` to each unit's extra attributes; version 1 saves cannot be opened (there is no migration step, as no version 1 saves were ever released). Version 3 (the same day) added the unit type, size and name; version 2 saves cannot be opened either.
 - `changes` holds only the cells whose state differs from a fresh world on the same map (ascending by cell) plus the list of opened provinces.
 - The map is never inside a save. `map_checksum` must match the map given to `load_world`.
 - After decoding, `load_world` recomputes the state hash and refuses the file if it differs from `state_hash`.

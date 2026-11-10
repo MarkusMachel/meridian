@@ -83,6 +83,12 @@ impl<'a> CountryView<'a> {
         self.world.unit_ext(id).map(|e| (e.kind, e.echelon))
     }
 
+    /// The name of one of the country's own units and the unit it reports to, if any.
+    pub fn own_unit_command(&self, id: UnitId) -> Option<(&'a str, Option<UnitId>)> {
+        self.world.unit(id).filter(|u| u.owner == self.country)?;
+        self.world.unit_ext(id).map(|e| (e.name.as_str(), e.parent))
+    }
+
     /// Every bridge with its condition. Bridges are landmarks: any country knows where they are
     /// and whether they stand.
     pub fn bridges(&self) -> &'a [crate::combat::Bridge] {

@@ -239,25 +239,56 @@ impl App {
         client::heights::to_screen(&self.camera, &self.render.relief, self.render.cell_mx[c as usize] as f64, self.render.cell_my[c as usize] as f64)
     }
 
-    /// Screen position of a unit's marker: the cell it stands in (or its province's centre when
-    /// the cell is not known). Units sharing a place are fanned out sideways.
-    fn unit_markers(&self) -> Vec<(u32, u16, (f64, f64))> {
-        let mut seen: std::collections::BTreeMap<(bool, u32), u32> = Default::default();
-        self.snapshot
-            .units
-            .iter()
-            .enumerate()
-            .map(|(i, &(id, owner, prov))| {
-                let cell = self.snapshot.unit_cells.get(i).map_or(u32::MAX, |c| c.0);
-                let in_cell = (cell as usize) < self.render.cell_mx.len();
-                let k = seen.entry(if in_cell { (true, cell) } else { (false, prov) }).or_insert(0);
-                let (x, y) = if in_cell { self.cell_screen(cell) } else { self.province_screen(prov) };
-                // counters sharing a place stand in a row of four, then a new row below
-                let ppp = self.gfx.as_ref().map_or(1.0, |g| g.window.scale_factor() * self.ui_scale as f64);
-                let (dx, dy) = ((client::counters::WIDTH * COUNTER_SCALE + 3.0) as f64 * ppp, (client::counters::HEIGHT * COUNTER_SCALE + 10.0) as f64 * ppp);
-                let pos = (x + (*k % 4) as f64 * dx, y + (*k / 4) as f64 * dy);
-                *k += 1;
-                (id, owner, pos)
+    /// Screen position (physical pixels) of a unit: the cell it stands in, or its province's
+    /// centre when the cell is not known. `i` is its place in the snapshot's unit list.
+    fn unit_screen(&self, i: usize) -> (f64, f64) {
+        let cell = self.snapshot.unit_cells.get(i).map_or(u32::MAX, |c| c.0);
+        if (cell as usize) < self.render.cell_mx.len() {
+            self.cell_screen(cell)
+        } else {
+            self.province_screen(self.snapshot.units[i].2)
+        }
+    }
+
+    /// What to call a unit in lists: its name if it has one, else its type and size, with its country.
+    fn unit_title(&self, i: usize) -> String {
+        let (id, owner, _) = self.snapshot.units[i];
+        let country = self.map.state_names.get(owner as usize).cloned().unwrap_or_default();
+        let name = self.snapshot.unit_command.get(i).map_or("", |c| c.0.as_str());
+        if !name.is_empty() {
+            return format!("{name} ({country})");
+        }
+        let (kind, size) = self.snapshot.unit_kinds.get(i).copied().unwrap_or((0, 0));
+        let kinds = ["unit", "infantry", "armour", "mechanised", "motorised", "artillery", "SP artillery", "recon", "armoured recon", "engineer", "air defence", "anti-tank", "airborne", "mountain", "supply", "headquarters"];
+        let sizes = ["", "battalion", "regiment", "brigade", "division", "corps"];
+        format!("{} {} {id} ({country})", kinds.get(kind as usize).unwrap_or(&"unit"), sizes.get(size as usize).unwrap_or(&"")).replace("  ", " ")
+    }
+
+    /// The unit counters to draw: units of one country that would overlap on screen share a
+    /// stack (so zooming out gathers them and zooming in spreads them), the most senior on top.
+    /// Each stack is the places of its units in the snapshot's unit list (top first) and where
+    /// it stands in physical pixels. Units off the screen are left out.
+    fn unit_stacks(&self) -> Vec<(Vec<usize>, (f64, f64))> {
+        let ppp = self.gfx.as_ref().map_or(1.0, |g| g.window.scale_factor() * self.ui_scale as f64);
+        let (w, h) = (client::counters::WIDTH as f64 * COUNTER_SCALE as f64 * ppp, client::counters::HEIGHT as f64 * COUNTER_SCALE as f64 * ppp);
+        let mut shown: Vec<usize> = Vec::new();
+        let mut marks: Vec<(f32, f32, u16, u8)> = Vec::new();
+        for (i, u) in self.snapshot.units.iter().enumerate() {
+            let (x, y) = self.unit_screen(i);
+            if x < -w || y < -h || x > self.camera.width_px + w || y > self.camera.height_px + h {
+                continue;
+            }
+            let (kind, size) = self.snapshot.unit_kinds.get(i).copied().unwrap_or((0, 0));
+            // seniority: size first, and a headquarters above other units of its size
+            let rank = size * 2 + u8::from(kind == proving_ground::unit_kind::HEADQUARTERS);
+            shown.push(i);
+            marks.push((x as f32, y as f32, u.1, rank));
+        }
+        client::counters::stacks(&marks, (w as f32 * 0.9, h as f32 * 0.9))
+            .into_iter()
+            .map(|s| {
+                let top = s[0];
+                (s.into_iter().map(|k| shown[k]).collect(), (marks[top].0 as f64, marks[top].1 as f64))
             })
             .collect()
     }
@@ -484,14 +515,36 @@ impl App {
                 row("cells", self.map.cells_of(meridian_core::ProvinceId(shown)).len().to_string());
                 row("units here", snap.units.iter().filter(|u| u.2 == shown).count().to_string());
             });
-            for &(id, owner, _) in snap.units.iter().filter(|u| u.2 == shown) {
-                let name = self.map.state_names.get(owner as usize).cloned().unwrap_or_default();
-                if ui.selectable_label(self.selected_unit == Some((id, owner)), format!("unit {id} ({name})")).clicked() {
+            for (i, &(id, owner, _)) in snap.units.iter().enumerate().filter(|(_, u)| u.2 == shown) {
+                if ui.selectable_label(self.selected_unit == Some((id, owner)), self.unit_title(i)).clicked() {
                     act.pick_unit = Some((id, owner));
                 }
             }
-            if self.selected_unit.is_some() {
-                ui.label("Right-click a province to order the unit there.");
+            if let Some(sel) = self.selected_unit.and_then(|(id, _)| snap.units.iter().position(|u| u.0 == id)) {
+                ui.separator();
+                ui.heading("Unit");
+                ui.strong(self.unit_title(sel));
+                // the chain of command: who it reports to, then who reports to it
+                let index_of = |id: u32| snap.units.iter().position(|u| u.0 == id);
+                let mut up = snap.unit_command.get(sel).and_then(|c| index_of(c.1));
+                let mut depth = 0;
+                while let Some(i) = up.filter(|_| depth < 8) {
+                    if ui.link(format!("reports to: {}", self.unit_title(i))).clicked() {
+                        act.pick_unit = Some((snap.units[i].0, snap.units[i].1));
+                    }
+                    up = snap.unit_command.get(i).and_then(|c| index_of(c.1));
+                    depth += 1;
+                }
+                let under: Vec<usize> = snap.unit_command.iter().enumerate().filter(|(_, c)| c.1 == snap.units[sel].0).map(|(i, _)| i).collect();
+                if !under.is_empty() {
+                    ui.label("under its command:");
+                    for i in under {
+                        if ui.link(format!("  {}", self.unit_title(i))).clicked() {
+                            act.pick_unit = Some((snap.units[i].0, snap.units[i].1));
+                        }
+                    }
+                }
+                ui.label("Right-click a cell to march the unit there.");
             }
             if let Some(c) = self.selected_cell {
                 ui.separator();
@@ -628,26 +681,54 @@ impl App {
                 painter.text(pos, egui::Align2::CENTER_CENTER, &l.text, font, ink);
             }
         }
-        let markers = self.unit_markers();
-        // arrows for orders that have not finished
-        // (marches as the simulation has them: from each marching unit to the cell it is heading for)
-        let marching: Vec<(u32, u32)> = self.snapshot.units.iter().zip(&self.snapshot.unit_cells).filter(|(_, c)| (c.1 as usize) < self.render.cell_mx.len()).map(|(u, c)| (u.0, c.1)).collect();
-        for &(unit, to) in &marching {
-            if let Some(&(_, _, from)) = markers.iter().find(|m| m.0 == unit) {
-                let (a, b) = (to_pt(from), to_pt(self.cell_screen(to)));
-                let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(20, 20, 20));
-                painter.line_segment([a, b], stroke);
-                let d = (b - a).normalized();
-                let n = egui::vec2(-d.y, d.x);
-                painter.add(egui::Shape::convex_polygon(vec![b, b - d * 12.0 + n * 5.0, b - d * 12.0 - n * 5.0], egui::Color32::from_rgb(20, 20, 20), egui::Stroke::NONE));
+        let stacks = self.unit_stacks();
+        // where a unit's counter is on screen: its stack if it is shown, else its own place
+        let place_of = |i: usize| stacks.iter().find(|s| s.0.contains(&i)).map_or_else(|| self.unit_screen(i), |s| s.1);
+        let index_of = |id: u32| self.snapshot.units.iter().position(|u| u.0 == id);
+        let ink = egui::Color32::from_rgb(20, 20, 20);
+        // marches as the simulation has them: an arrow from each marching unit to the cell it is heading for
+        for (i, c) in self.snapshot.unit_cells.iter().enumerate() {
+            if (c.1 as usize) >= self.render.cell_mx.len() {
+                continue;
+            }
+            let (a, b) = (to_pt(place_of(i)), to_pt(self.cell_screen(c.1)));
+            if (b - a).length() < 4.0 {
+                continue;
+            }
+            painter.line_segment([a, b], egui::Stroke::new(2.0, ink));
+            let d = (b - a).normalized();
+            let n = egui::vec2(-d.y, d.x);
+            painter.add(egui::Shape::convex_polygon(vec![b, b - d * 12.0 + n * 5.0, b - d * 12.0 - n * 5.0], ink, egui::Stroke::NONE));
+        }
+        // the chain of command of the selected unit: a line up to the unit it reports to (and on
+        // up the chain), and a line down to each unit that reports to it
+        if let Some(sel) = self.selected_unit.and_then(|(id, _)| index_of(id)) {
+            let link = |a: usize, b: usize, color: egui::Color32| {
+                let (pa, pb) = (to_pt(place_of(a)), to_pt(place_of(b)));
+                painter.line_segment([pa, pb], egui::Stroke::new(4.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 110)));
+                painter.line_segment([pa, pb], egui::Stroke::new(2.0, color));
+            };
+            let parent_of = |i: usize| self.snapshot.unit_command.get(i).and_then(|c| index_of(c.1));
+            let (mut at, mut steps) = (sel, 0);
+            while let Some(up) = parent_of(at).filter(|_| steps < 8) {
+                link(at, up, egui::Color32::from_rgb(235, 200, 70));
+                (at, steps) = (up, steps + 1);
+            }
+            let sel_id = self.snapshot.units[sel].0;
+            for (i, c) in self.snapshot.unit_command.iter().enumerate() {
+                if c.1 == sel_id {
+                    link(sel, i, egui::Color32::from_rgb(110, 210, 110));
+                }
             }
         }
-        // unit counters in the NATO style: the type inside the frame, the size above it
-        for (id, owner, pos) in markers {
-            let c = modes::country_color(owner);
-            let selected = self.selected_unit == Some((id, owner));
-            let (kind, size) = self.snapshot.units.iter().position(|u| u.0 == id).and_then(|i| self.snapshot.unit_kinds.get(i).copied()).unwrap_or((0, 0));
-            client::counters::draw(&painter, to_pt(pos), COUNTER_SCALE, kind, size, [c[0], c[1], c[2]], selected);
+        // unit counters in the NATO style: the type inside the frame, the size above it; a stack
+        // shows its top unit, or the selected unit if that is one of its members
+        for (members, pos) in &stacks {
+            let chosen = self.selected_unit.and_then(|sel| members.iter().copied().find(|&i| (self.snapshot.units[i].0, self.snapshot.units[i].1) == sel));
+            let i = chosen.unwrap_or(members[0]);
+            let c = modes::country_color(self.snapshot.units[i].1);
+            let (kind, size) = self.snapshot.unit_kinds.get(i).copied().unwrap_or((0, 0));
+            client::counters::draw_stack(&painter, to_pt(*pos), COUNTER_SCALE, kind, size, [c[0], c[1], c[2]], chosen.is_some(), members.len());
         }
     }
 }
@@ -722,9 +803,14 @@ impl ApplicationHandler for App {
                 ElementState::Released => {
                     if self.press.is_some() && !self.dragging {
                         let k = self.gfx.as_ref().map_or(1.0, |g| g.window.scale_factor() * self.ui_scale as f64);
-                        let hit = self.unit_markers().into_iter().find(|m| (m.2 .0 - self.cursor.x).abs() < (client::counters::WIDTH * COUNTER_SCALE * 0.5) as f64 * k && (m.2 .1 - self.cursor.y).abs() < (client::counters::HEIGHT * COUNTER_SCALE * 0.5) as f64 * k);
+                        let hit = self.unit_stacks().into_iter().find(|m| (m.1 .0 - self.cursor.x).abs() < (client::counters::WIDTH * COUNTER_SCALE * 0.5) as f64 * k && (m.1 .1 - self.cursor.y).abs() < (client::counters::HEIGHT * COUNTER_SCALE * 0.5) as f64 * k);
                         match hit {
-                            Some((id, owner, _)) => self.selected_unit = Some((id, owner)),
+                            Some((members, _)) => {
+                                // a click on a stack picks its top unit; clicking again goes down the stack
+                                let ids: Vec<(u32, u16)> = members.iter().map(|&i| (self.snapshot.units[i].0, self.snapshot.units[i].1)).collect();
+                                let at = self.selected_unit.and_then(|sel| ids.iter().position(|&u| u == sel));
+                                self.selected_unit = Some(ids[at.map_or(0, |k| (k + 1) % ids.len())]);
+                            }
                             None => {
                                 self.selected = self.pick(self.cursor);
                                 let (x, y) = client::heights::to_world(&self.camera, &self.render.relief, self.cursor.x, self.cursor.y);

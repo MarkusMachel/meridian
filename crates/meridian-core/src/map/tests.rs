@@ -325,3 +325,15 @@ fn world_check_catches_orphan_and_landlocked_landmass() {
     assert!(problems.iter().any(|e| e.0.contains("node 5") && e.0.contains("no neighbours")), "{problems:?}");
     assert!(problems.iter().any(|e| e.0.contains("unreachable")), "{problems:?}");
 }
+
+#[test]
+fn nearest_cell_finds_the_cell_under_a_point() {
+    let m = Map::from_raw(test_map(8, 8)).expect("map");
+    for c in [0u32, 9, 27, 63] {
+        let (x, y) = (m.cell_x[c as usize], m.cell_y[c as usize]);
+        assert_eq!(m.nearest_cell(x, y), Some((CellId(c), 0)));
+        // a few metres off the centre it is still that cell, and the distance is reported
+        let (near, away) = m.nearest_cell(x + 3, y - 4).unwrap();
+        assert_eq!((near, away), (CellId(c), 5));
+    }
+}

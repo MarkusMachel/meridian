@@ -213,34 +213,48 @@ fn main() {
     // two test formations facing each other across the river by the city, as counters on the map
     {
         use proving_ground::{echelon as e, unit_kind as k};
-        let mut camera = Camera::fit(w as f64, h as f64, Bounds::around(x0, y0, x1, y1));
-        (camera.cx, camera.cy, camera.m_per_px) = (x_base as f64 + 318_000.0, y_base as f64 + 214_000.0, 140.0);
-        camera.clamp();
-        let mut rgba = offscreen::render_rgba(&gpu, &mut renderer, &camera, NO_PROVINCE, NO_PROVINCE);
-        // (east km, north km from the scene's corner, type, size, side)
+        // (east km, north km from the scene's corner, type, size, side); the first of each side is its headquarters
         let units = [
-            (300.0, 236.0, k::HEADQUARTERS, e::CORPS, 0), (318.0, 238.0, k::ARMOUR, e::DIVISION, 0), (336.0, 232.0, k::MECHANISED, e::DIVISION, 0),
-            (352.0, 224.0, k::INFANTRY, e::BRIGADE, 0), (284.0, 246.0, k::ARTILLERY, e::REGIMENT, 0), (326.0, 250.0, k::AIR_DEFENCE, e::REGIMENT, 0),
-            (306.0, 222.0, k::ENGINEER, e::BATTALION, 0), (344.0, 244.0, k::SUPPLY, e::BATTALION, 0), (268.0, 232.0, k::ARMOURED_RECON, e::REGIMENT, 0),
+            (300.0, 236.0, k::HEADQUARTERS, e::CORPS, 0), (302.5, 237.0, k::ARMOUR, e::DIVISION, 0), (301.0, 238.6, k::MECHANISED, e::DIVISION, 0),
+            (303.5, 234.6, k::INFANTRY, e::BRIGADE, 0), (284.0, 246.0, k::ARTILLERY, e::REGIMENT, 0), (286.0, 247.5, k::AIR_DEFENCE, e::REGIMENT, 0),
+            (318.0, 226.0, k::ENGINEER, e::BATTALION, 0), (344.0, 244.0, k::SUPPLY, e::BATTALION, 0), (268.0, 232.0, k::ARMOURED_RECON, e::REGIMENT, 0),
             (316.0, 186.0, k::HEADQUARTERS, e::CORPS, 1), (300.0, 198.0, k::INFANTRY, e::DIVISION, 1), (334.0, 192.0, k::MOTORISED, e::BRIGADE, 1),
             (352.0, 196.0, k::ANTI_TANK, e::BATTALION, 1), (286.0, 184.0, k::SP_ARTILLERY, e::REGIMENT, 1), (322.0, 172.0, k::AIRBORNE, e::BRIGADE, 1),
             (350.0, 178.0, k::MOUNTAIN, e::BRIGADE, 1), (300.0, 170.0, k::RECON, e::BATTALION, 1), (368.0, 208.0, k::ARMOUR, e::BRIGADE, 1),
         ];
         let colors = [[70u8, 105, 165], [165, 70, 60]];
-        let marks: Vec<(f32, f32, u16, u8, usize)> = units
-            .iter()
-            .map(|&(ex, ny, kind, size, side)| {
-                let (sx, sy) = client::heights::to_screen(&camera, &data.relief, x_base as f64 + ex * 1000.0, y_base as f64 + ny * 1000.0);
-                (sx as f32, sy as f32, kind, size, side)
-            })
-            .collect();
-        let over = offscreen::egui_rgba(&gpu, w, h, 1.0, |p| {
-            for (i, &(sx, sy, kind, size, side)) in marks.iter().enumerate() {
-                client::counters::draw(p, egui::pos2(sx, sy), 1.0, kind, size, colors[side], i == 1);
+        // close, middle and far: the counters gather into stacks as the view zooms out; the blue
+        // headquarters is selected, so the lines to the units under it show
+        for (name, m) in [("units_closest", 20.0), ("units", 140.0), ("units_far", 370.0)] {
+            let mut camera = Camera::fit(w as f64, h as f64, Bounds::around(x0, y0, x1, y1));
+            (camera.cx, camera.cy, camera.m_per_px) = (x_base as f64 + 318_000.0, y_base as f64 + 214_000.0, m);
+            if m < 100.0 {
+                (camera.cx, camera.cy) = (x_base as f64 + 300_000.0, y_base as f64 + 236_000.0);
             }
-        });
-        offscreen::lay_over(&mut rgba, &over);
-        offscreen::write_png(&out.join("units.png"), w, h, &rgba).unwrap_or_else(|e| panic!("{e}"));
+            camera.clamp();
+            let mut rgba = offscreen::render_rgba(&gpu, &mut renderer, &camera, NO_PROVINCE, NO_PROVINCE);
+            let marks: Vec<(f32, f32, u16, u8)> = units
+                .iter()
+                .map(|&(ex, ny, kind, size, side)| {
+                    let (sx, sy) = client::heights::to_screen(&camera, &data.relief, x_base as f64 + ex * 1000.0, y_base as f64 + ny * 1000.0);
+                    (sx as f32, sy as f32, side as u16, size * 2 + u8::from(kind == k::HEADQUARTERS))
+                })
+                .collect();
+            let stacks = client::counters::stacks(&marks, (client::counters::WIDTH * 0.9, client::counters::HEIGHT * 0.9));
+            let place = |i: usize| stacks.iter().find(|s| s.contains(&i)).map(|s| egui::pos2(marks[s[0]].0, marks[s[0]].1)).expect("every unit is in a stack");
+            let over = offscreen::egui_rgba(&gpu, w, h, 1.0, |p| {
+                for i in 1..9 {
+                    p.line_segment([place(0), place(i)], egui::Stroke::new(4.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 110)));
+                    p.line_segment([place(0), place(i)], egui::Stroke::new(2.0, egui::Color32::from_rgb(110, 210, 110)));
+                }
+                for s in &stacks {
+                    let i = s[0];
+                    client::counters::draw_stack(p, egui::pos2(marks[i].0, marks[i].1), 1.0, units[i].2, units[i].3, colors[units[i].4], i == 0, s.len());
+                }
+            });
+            offscreen::lay_over(&mut rgba, &over);
+            offscreen::write_png(&out.join(format!("{name}.png")), w, h, &rgba).unwrap_or_else(|e| panic!("{e}"));
+        }
     }
     // the same city with every bridge destroyed, to check the broken look
     let down = vec![0u16; renderer.bridge_sites().len()];

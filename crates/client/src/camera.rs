@@ -1,7 +1,7 @@
 //! Pan and zoom over the display plane (Equal Earth metres). Screen y grows downward, world y upward.
 
 /// Closest zoom: metres per screen pixel.
-pub const MIN_M_PER_PX: f64 = 100.0;
+pub const MIN_M_PER_PX: f64 = 20.0;
 
 /// The part of the plane that has map on it. The view never leaves it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -49,7 +49,7 @@ pub const PAPER_FROM_M_PER_PX: f64 = 6_000.0;
 /// ... and at this zoom and closer it is fully 3D: tilted, with raised terrain.
 pub const FULL_3D_BELOW_M_PER_PX: f64 = 700.0;
 /// Tilt from straight down when fully 3D.
-pub const MAX_PITCH_DEG: f64 = 48.0;
+pub const MAX_PITCH_DEG: f64 = 34.0;
 /// How much the terrain is raised when fully 3D (real heights are invisible at map scale).
 pub const MAX_EXAGGERATION: f64 = 14.0;
 
@@ -114,7 +114,10 @@ impl Camera {
 
     /// Factor applied to real heights (metres) for drawing.
     pub fn exaggeration(&self) -> f64 {
-        MAX_EXAGGERATION * self.depth_t()
+        // very close up the hills would tower over the towns at the full factor, so it eases
+        // off from 300 m/px down to a third at the closest zoom
+        let close = ((300.0f64.ln() - self.m_per_px.ln()) / (300.0f64.ln() - MIN_M_PER_PX.ln())).clamp(0.0, 1.0);
+        MAX_EXAGGERATION * self.depth_t() * (1.0 - 0.67 * close)
     }
 
     /// Distance from the eye to the target point, chosen so a pixel at the middle of the screen
@@ -295,7 +298,7 @@ mod tests {
     #[test]
     fn tilted_view_round_trips_and_flattens_when_zoomed_out() {
         let mut c = Camera { cx: 1_000_000.0, cy: 5_000_000.0, m_per_px: 400.0, width_px: 1600.0, height_px: 900.0, bounds: world() };
-        assert!(c.pitch() > 0.7 && c.exaggeration() > 10.0);
+        assert!(c.pitch() > 0.5 && c.exaggeration() > 10.0);
         for (px, py) in [(100.0, 100.0), (800.0, 450.0), (1500.0, 800.0)] {
             let (x, y) = c.screen_to_world(px, py);
             let (sx, sy) = c.world_to_screen(x, y);

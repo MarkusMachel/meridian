@@ -74,6 +74,65 @@ pub const TEST_FORMATION: [(u16, u8); 15] = [
     (unit_kind::SUPPLY, echelon::BATTALION),
 ];
 
+/// One unit of a named formation: what it is called, its type and size, where it stands (Equal
+/// Earth metres, as whole numbers so every machine picks the same cell), and which entry of the
+/// same list it reports to.
+pub struct FormationUnit {
+    pub name: &'static str,
+    pub kind: u16,
+    pub echelon: u8,
+    pub x: i32,
+    pub y: i32,
+    pub reports_to: Option<usize>,
+}
+
+/// The West German 1st Armoured Division of 1990 under I Corps, as a first try at a real order
+/// of battle: the corps and division headquarters, the division's three brigades and its
+/// artillery regiment, each at its garrison town (Münster, Hannover, Hildesheim, Braunschweig,
+/// Nienburg). Written from general knowledge of the Bundeswehr's Army Structure 4; names and
+/// garrisons are not checked against a source, and battalions are left out.
+pub const PANZERDIVISION_1: [FormationUnit; 6] = [
+    FormationUnit { name: "I. Korps", kind: unit_kind::HEADQUARTERS, echelon: echelon::CORPS, x: 593_820, y: 6_180_968, reports_to: None },
+    FormationUnit { name: "1. Panzerdivision", kind: unit_kind::HEADQUARTERS, echelon: echelon::DIVISION, x: 754_612, y: 6_221_148, reports_to: Some(0) },
+    FormationUnit { name: "Panzergrenadierbrigade 1", kind: unit_kind::MECHANISED, echelon: echelon::BRIGADE, x: 773_127, y: 6_199_616, reports_to: Some(1) },
+    FormationUnit { name: "Panzerbrigade 2", kind: unit_kind::ARMOUR, echelon: echelon::BRIGADE, x: 816_579, y: 6_211_369, reports_to: Some(1) },
+    FormationUnit { name: "Panzerbrigade 3", kind: unit_kind::ARMOUR, echelon: echelon::BRIGADE, x: 712_627, y: 6_247_484, reports_to: Some(1) },
+    FormationUnit { name: "Artillerieregiment 1", kind: unit_kind::SP_ARTILLERY, echelon: echelon::REGIMENT, x: 744_210, y: 6_226_032, reports_to: Some(1) },
+];
+
+/// A formation is only placed when the map has a cell within this distance of its first unit
+/// (so a small test map that does not reach Germany simply gets none).
+const FORMATION_REACH_M: u32 = 60_000;
+
+/// Put a named formation on the map: each unit in the cell nearest its place, owned by whoever
+/// holds the cell the first unit stands in, with the chain of command set (`UnitExt::parent`).
+/// Returns the new units' IDs, or nothing if the map has no cell near the formation.
+pub fn add_formation(w: &mut World, formation: &[FormationUnit]) -> Vec<UnitId> {
+    let place = |w: &World, u: &FormationUnit| w.map().and_then(|m| m.nearest_cell(u.x, u.y));
+    let Some(first) = formation.first() else { return Vec::new() };
+    let Some((home, away)) = place(w, first) else { return Vec::new() };
+    if away > FORMATION_REACH_M {
+        return Vec::new();
+    }
+    let owner = CountryId(w.cells().map_or(0, |c| c.controller(home.0 as usize)));
+    let mut ids: Vec<UnitId> = Vec::new();
+    for u in formation {
+        let Some((cell, _)) = place(w, u) else { continue };
+        let province = w.map().map_or(ProvinceId(0), |m| ProvinceId(m.cell_province[cell.0 as usize]));
+        let id = w.add_unit_for_setup(Unit { owner, location: province });
+        let parent = u.reports_to.and_then(|k| ids.get(k).copied());
+        if let Some(e) = w.unit_ext_mut(id) {
+            e.cell = Some(cell);
+            e.kind = u.kind;
+            e.echelon = u.echelon;
+            e.name = u.name.to_string();
+            e.parent = parent;
+        }
+        ids.push(id);
+    }
+    ids
+}
+
 /// Placeholder marching numbers so units can be moved about on the map: every unit covers 12 km
 /// of open ground an hour, fording a river costs as much as 30 km, a bridge in at least half
 /// condition costs nothing. Real values per unit type belong to the rules data.
@@ -100,7 +159,8 @@ pub fn scenario(seed: u64, provinces: u32) -> World {
 
 /// The proving-ground rules on the real map: every state is a country that controls its own
 /// provinces, and each country that owns land gets the test formation (`TEST_FORMATION`) on its
-/// first province, one unit to a cell while the province has cells to spare.
+/// first province, one unit to a cell while the province has cells to spare. West Germany also
+/// gets a real formation with its chain of command (`PANZERDIVISION_1`).
 pub fn scenario_on_map(seed: u64, map: std::sync::Arc<meridian_core::Map>) -> World {
     let mut first: Vec<Option<u32>> = vec![None; map.state_count() as usize];
     for (p, &st) in map.province_state.iter().enumerate() {
@@ -109,6 +169,7 @@ pub fn scenario_on_map(seed: u64, map: std::sync::Arc<meridian_core::Map>) -> Wo
     let mut w = World::from_map(seed, map);
     // the permanent bridges of 1990 (none on a map baked before roads and railways were marked on cell edges)
     w.seed_bridges();
+    add_formation(&mut w, &PANZERDIVISION_1);
     for (c, p) in first.iter().enumerate() {
         if let Some(p) = p {
             // units stand in a cell and march cell by cell: spread the formation over the province
