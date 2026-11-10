@@ -4,6 +4,7 @@
 //! simulation thread. Floats are fine here because nothing in this crate feeds the simulation.
 
 pub mod camera;
+pub mod heights;
 pub mod labels;
 pub mod modes;
 pub mod offscreen;

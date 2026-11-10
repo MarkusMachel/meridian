@@ -73,6 +73,21 @@ def relief(inter, extent):
     return out.reshape(-1), info
 
 
+def heights(inter, extent):
+    """Elevation in metres (i16, sea floor negative) on the relief grid, lightly smoothed: the
+    client lifts its 3D terrain from it and colours water by depth."""
+    elev = np.load(Path(inter) / "elev_60s_int16.npy", mmap_mode="r")
+    px, x0, y0, y1, H, xs = _raster_grid(extent)
+    Z = np.zeros((H, RELIEF_W), dtype=np.float32)
+    for r0 in range(0, H, 256):
+        rows = np.arange(r0, min(H, r0 + 256))
+        ok, row, col = _sample_rows(xs, y1 - (rows + 0.5) * px)
+        v = np.asarray(elev)[row, col].astype(np.float32)
+        Z[rows] = np.where(ok, v, -4000.0)
+    Z = ndimage.gaussian_filter(Z, 0.7)
+    return np.clip(np.rint(Z), -32768, 32767).astype("<i2").reshape(-1)
+
+
 def land_colors(ne_dir, extent):
     """Natural Earth II land cover colours (forest, grassland, desert, ice ...) resampled onto the
     same pixel grid as the relief: RGB bytes, row by row. Each pixel averages a 2 x 2 block of the

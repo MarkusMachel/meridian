@@ -275,3 +275,25 @@ All of this is plumbing: tables, conserving primitives, votes and validation. No
 - **Blend:** political mode multiplies the country colour by the land colour (x 1.2) and mixes it 65 % with the plain land colour (x 0.9), so a country keeps its hue but is darker over forest and warmer over desert, and relief shades it as before. Terrain mode now shows the land colours themselves; the debug value mode stays flat. Tried and rejected: a plain 60 % mix (washed out to pastels) and a 1.45 gain (neon over deserts).
 - **Fine ground texture close up:** below 3 km/px the shader adds a three-scale value noise (1.6 km, 450 m, 140 m; plus or minus 8 %), so zoomed in the ground is mottled rather than one flat tone. It is a hash of the world position, so it does not shimmer when panning.
 - **Industry sites have no symbol any more** (the owner asked). They are still in the map data.
+
+## Phase 7: 3D map close up, paper map far out (2026-11-09)
+
+The owner wanted the map to look closer to Hearts of Iron IV's map: terrain, models, water, and a paper map when zoomed out. It stays on wgpu, with no engine change. The renderer has two modes, chosen by zoom.
+
+- **Camera.** It is a perspective camera that keeps the old API. How 3D the view is (`depth_t`) is a smooth step on a log scale of zoom, from 0 at 6,000 m/px and farther out to 1 at 700 m/px and closer. Tilt is 48 degrees times that, and terrain exaggeration is 14 times that. The field of view is 30 degrees, and the camera distance is set so a pixel at the screen centre still covers `m_per_px`. With no tilt the view equals the old flat view. Panning and zooming keep the ground point under the cursor fixed. Tested in `camera.rs`, including a round trip through the tilted view.
+- **Zoomed out: paper map.** The flat map is drawn straight to the screen with a faint paper grain fixed to the world. The sea is an atlas sea: lighter on the shelf, a shade darker past 200, 1,000, 3,000 and 5,000 m, with a thin contour at each. Depth comes from the new `height_m` raster (render file version 7).
+- **Zoomed in: 3D.** Each frame:
+  1. The flat map is drawn from straight above into a 4,096-pixel overlay texture covering the ground on screen plus 8 %. Line widths are scaled so they stay the same on screen.
+  2. A 384 x 384 terrain mesh is raised from the height texture (16-bit float, filterable on every GPU), takes its colour from the overlay, and is lit from the north-west by slope.
+  3. Water has depth colour, slow animated swell, a weak sun highlight and a lighter sheen at low angles. The swell is five directional waves whose crests are bent by noise and whose strength varies by place; it calms with distance so far water does not shimmer. Value-noise waves and straight sine waves were tried first and rejected: the first looked blotchy and boxy, the second like corduroy.
+  4. Distant ground fades into a light haze.
+  5. The political colour fades from 65 % to 45 % as the view tilts, so the ground shows through.
+- **Models.** These are procedural, with no model files.
+  - **Trees** are six-sided cones on a world-fixed jittered grid, about 12 screen pixels apart, below 1,500 m/px. A grid cell has a tree only where the Natural Earth II colour is forest. The test is green minus red over about 0.1 and red under about 0.66; it was checked on samples of taiga, Amazon, Congo, Black Forest, farmland, steppe and desert, and farmland and steppe get none.
+  - **Buildings** are boxes inside built-up areas below 1,200 m/px, using a mask of the urban triangles drawn each frame.
+  - Grid spacing snaps to powers of two so models stay put while zooming. Each kind is capped at 250,000 instances.
+  - Not done yet: ports, airfields and bridges as models; they are still the 2D icons.
+- **Labels, icons and picking** use the drawn terrain height (`heights.rs`, the same bilinear sampling and the same sea-at-zero rule as the shader), so they sit on the mountains, and a click picks the ground under the cursor.
+- **Line culling.** All line layers (borders, cell edges, rivers, roads, railways) are sorted by class and then by world tile (64 x 32). Each frame draws only the tile rows in view. This took the close 3D frame from 20.2 to 7.8 ms at 2560x1440 (budgets.md).
+- **Display only.** Floats are used here, which the determinism rules allow for display. The engine and the map file are unchanged; the path fingerprint is still `afb28d83a9b0e6ef`.
+

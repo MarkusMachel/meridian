@@ -59,6 +59,8 @@ struct App {
     dragging: bool,
     frame_ms: f32,
     last_frame: Instant,
+    /// When the window opened: drives the water animation.
+    started: Instant,
     snapshot: client::Snapshot,
     /// Diagnostics (MERIDIAN_DEBUG): frames and ticks since the last report, and when it was printed.
     debug_frames: u32,
@@ -109,6 +111,7 @@ pub fn run(inputs: Inputs) {
         dragging: false,
         frame_ms: 16.0,
         last_frame: Instant::now(),
+        started: Instant::now(),
         snapshot: Default::default(),
         debug_frames: 0,
         debug_from_tick: 0,
@@ -213,7 +216,7 @@ impl App {
 
     /// Screen position (physical pixels) of a province's centre.
     fn province_screen(&self, p: u32) -> (f64, f64) {
-        self.camera.world_to_screen(self.render.province_mx[p as usize] as f64, self.render.province_my[p as usize] as f64)
+        client::heights::to_screen(&self.camera, &self.render.relief, self.render.province_mx[p as usize] as f64, self.render.province_my[p as usize] as f64)
     }
 
     /// Screen position of a unit's marker. Units sharing a province are fanned out sideways.
@@ -233,7 +236,7 @@ impl App {
     }
 
     fn pick(&self, p: PhysicalPosition<f64>) -> u32 {
-        let (x, y) = self.camera.screen_to_world(p.x, p.y);
+        let (x, y) = client::heights::to_world(&self.camera, &self.render.relief, p.x, p.y);
         self.picker.province_at(x, y).unwrap_or(NO_PROVINCE)
     }
 
@@ -339,22 +342,22 @@ impl App {
             }
         };
         let view = frame.texture.create_view(&Default::default());
-        g.map_renderer.prepare(&g.queue, &self.camera, self.selected, self.hover);
         let mut encoder = g.device.create_command_encoder(&Default::default());
+        let time = self.started.elapsed().as_secs_f32();
+        g.map_renderer.render(&g.device, &g.queue, &mut encoder, &view, &self.camera, self.selected, self.hover, time);
         let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [g.config.width, g.config.height], pixels_per_point: ppp };
         let extra = g.egui_renderer.update_buffers(&g.device, &g.queue, &mut encoder, &jobs, &screen);
         {
             let mut pass = encoder
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("frame"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(Renderer::sea_color()), store: wgpu::StoreOp::Store } })],
+                    label: Some("ui"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
                     multiview_mask: None,
                 })
                 .forget_lifetime();
-            g.map_renderer.draw(&mut pass);
             g.egui_renderer.render(&mut pass, &jobs, &screen);
         }
         g.queue.submit(extra.into_iter().chain(std::iter::once(encoder.finish())));
@@ -566,7 +569,7 @@ impl App {
         let to_pt = |p: (f64, f64)| egui::pos2((p.0 / ppp) as f32, (p.1 / ppp) as f32);
         let painter = ctx.layer_painter(egui::LayerId::background()).with_clip_rect(map_rect);
         if let Some(c) = self.selected_cell {
-            let pts: Vec<egui::Pos2> = self.render.cell_ring(c as usize).map(|(x, y)| to_pt(self.camera.world_to_screen(x as f64, y as f64))).collect();
+            let pts: Vec<egui::Pos2> = self.render.cell_ring(c as usize).map(|(x, y)| to_pt(client::heights::to_screen(&self.camera, &self.render.relief, x as f64, y as f64))).collect();
             painter.add(egui::Shape::closed_line(pts.clone(), egui::Stroke::new(4.0, egui::Color32::WHITE)));
             painter.add(egui::Shape::closed_line(pts, egui::Stroke::new(1.5, egui::Color32::BLACK)));
         }
@@ -693,7 +696,7 @@ impl ApplicationHandler for App {
                             Some((id, owner, _)) => self.selected_unit = Some((id, owner)),
                             None => {
                                 self.selected = self.pick(self.cursor);
-                                let (x, y) = self.camera.screen_to_world(self.cursor.x, self.cursor.y);
+                                let (x, y) = client::heights::to_world(&self.camera, &self.render.relief, self.cursor.x, self.cursor.y);
                                 self.selected_cell = self.cell_picker.cell_at(&self.render, x, y);
                             }
                         }

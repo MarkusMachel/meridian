@@ -67,15 +67,17 @@ Per-tick and per-system time budgets and the simulation memory budget are set in
 
 ## Render file (client data)
 
-- `data/baked/meridian-render.bin` (version 2, Mercator, with cell rings): about 292 MB (92 MB of it the land colour raster), built in about 40 s from the intermediate files, byte-identical across runs. Loads in about 55 ms (release). Level sizes: coarse 368k triangles, medium 768k, fine 960k.
+- `data/baked/meridian-render.bin` (version 7, Equal Earth): about 353 MB (heights 61 MB, land colours 92 MB, relief 30 MB), built from the intermediate files, byte-identical across runs. Level sizes: coarse 368k triangles, medium 768k, fine 960k. Version 2 (Mercator) was about 292 MB and loaded in about 55 ms; the load time of version 7 is not re-measured.
 
-## Client frame time (offscreen, with readback, Apple M4 Pro, 2560x1440, whole world drawn each frame)
+## Client frame time (offscreen, Apple M4 Pro, 2560x1440)
 
-| View | Level | Mean | p50 | p99 | Max |
-| --- | --- | --- | --- | --- | --- |
-| World | 0 | 8.3 ms | 8.5 | 10.6 | 10.6 |
-| Regional (3 km/px) | 1 | 7.4 ms | 9.4 | 11.1 | 11.1 |
-| Close (600 m/px) | 2 | 12.0 ms | 10.6 | 16.7 | 16.7 |
-| Closest (150 m/px) | 2 | 11.4 ms | 10.0 | 25.3 | 25.3 |
+`client --size 2560x1440 --view CX,CY,M --bench 60` (Europe, centre 1000000,5800000; world 0,0). The figure is GPU throughput: 60 frames submitted back to back with no readback, one wait at the end, best of 5 runs (range in brackets). Timing single frames with a readback each swung by about 40 % between identical runs while other programs used the GPU, so it is no longer the budget figure.
 
-Target: 60 fps (16.6 ms) at 2560x1440 with the whole world on screen. Met on average; the slowest close-up frames (16.7 and 25 ms) miss it. Windowed frame time with panels is shown in the top bar and not yet recorded. Cell edges are not culled; that is the first thing to fix if close-up frames miss 60 fps.
+| View | Mode | Level | ms per frame |
+| --- | --- | --- | --- |
+| World (20 km/px) | flat paper map | 0 | 3.1 (3.1 to 3.3) |
+| Regional (3 km/px) | partly tilted | 1 | 5.5 (5.5 to 8.0) |
+| Close (600 m/px) | full 3D, trees, buildings | 2 | 7.8 (7.8 to 10.4) |
+| Closest (150 m/px) | full 3D, trees, buildings | 2 | 7.7 (7.7 to 8.6) |
+
+Target: 60 fps (16.6 ms) at 2560x1440. Met in every view. Before line culling the close 3D view took 20.2 ms: cell edges alone were 7.5 ms and roads and railways 2.7 ms, measured by switching each off. Lines are now drawn only in the world tiles in view (64 x 32 tiles). Of the remaining close-up cost, the terrain pass is about 4 ms and trees and buildings about 1 ms. Windowed frame time with panels is shown in the top bar and not yet recorded.

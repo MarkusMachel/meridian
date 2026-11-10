@@ -11,7 +11,7 @@ use crate::error::{DataError, ErrorKind};
 use std::collections::HashMap;
 use std::path::Path;
 
-pub const RENDER_FORMAT_VERSION: u32 = 6;
+pub const RENDER_FORMAT_VERSION: u32 = 7;
 const KIND_RENDER: u32 = 4;
 const HEADER_LEN: usize = 28;
 
@@ -69,6 +69,8 @@ pub struct Relief {
     pub pixels: Vec<u8>,
     /// Land cover colours on the same grid (Natural Earth II): RGB, 3 bytes per pixel.
     pub land_rgb: Vec<u8>,
+    /// Ground height in metres on the same grid, sea floor below zero (for the 3D view).
+    pub height_m: Vec<i16>,
 }
 
 /// A set of polylines with a class each (lower class = more important), sorted by class.
@@ -163,6 +165,9 @@ impl Dir<'_> {
     }
     fn u32s(&self, name: &str) -> Result<Vec<u32>, DataError> {
         Ok(self.raw(name, 3)?.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+    }
+    fn i16s(&self, name: &str) -> Result<Vec<i16>, DataError> {
+        Ok(self.raw(name, 4)?.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect())
     }
     fn i32s(&self, name: &str) -> Result<Vec<i32>, DataError> {
         Ok(self.raw(name, 5)?.chunks_exact(4).map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
@@ -301,7 +306,11 @@ fn read_relief(d: &Dir) -> Result<Relief, DataError> {
     if land_rgb.len() != 3 * pixels.len() {
         return Err(d.bad("land_rgb", "colour raster size does not match relief_info".into()));
     }
-    Ok(Relief { width: info[0] as u32, height: info[1] as u32, x0: info[2], y0: info[3], x1: info[4], y1: info[5], pixels, land_rgb })
+    let height_m = d.i16s("height_m")?;
+    if height_m.len() != pixels.len() {
+        return Err(d.bad("height_m", "height raster size does not match relief_info".into()));
+    }
+    Ok(Relief { width: info[0] as u32, height: info[1] as u32, x0: info[2], y0: info[3], x1: info[4], y1: info[5], pixels, land_rgb, height_m })
 }
 
 fn read_lines(d: &Dir, prefix: &str) -> Result<LineLayer, DataError> {
@@ -384,7 +393,7 @@ mod tests {
     /// One level: one square province made of two triangles, one coast line.
     fn tiny(tri: [u32; 6]) -> Vec<u8> {
         let mut p = Vec::new();
-        p.extend_from_slice(&45u32.to_le_bytes());
+        p.extend_from_slice(&46u32.to_le_bytes());
         let u = |v: &[u32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
         array(&mut p, "levels_tolerance_m", 3, &u(&[1000]), 1);
         array(&mut p, "l0_vx", 5, &le32(&[0, 10, 10, 0]), 4);
@@ -407,6 +416,7 @@ mod tests {
         array(&mut p, "relief_info", 5, &le32(&[2, 1, -10, -10, 10, 10]), 6);
         array(&mut p, "relief", 1, &[128, 140], 2);
         array(&mut p, "land_rgb", 1, &[10, 20, 30, 40, 50, 60], 6);
+        array(&mut p, "height_m", 4, &[0x10, 0x00, 0xF0, 0xFF], 2);
         array(&mut p, "river_x", 5, &le32(&[0, 5]), 2);
         array(&mut p, "river_y", 5, &le32(&[0, 5]), 2);
         array(&mut p, "river_off", 3, &u(&[0, 2]), 2);
@@ -428,7 +438,7 @@ mod tests {
             array(&mut p, &format!("{pre}_area_km2"), 3, &u(&[100]), 1);
         }
         let mut f = b"MRRD".to_vec();
-        f.extend_from_slice(&6u32.to_le_bytes());
+        f.extend_from_slice(&7u32.to_le_bytes());
         f.extend_from_slice(&4u32.to_le_bytes());
         f.extend_from_slice(&(p.len() as u64).to_le_bytes());
         f.extend_from_slice(&(crc32fast::hash(&p) as u64).to_le_bytes());

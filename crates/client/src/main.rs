@@ -120,6 +120,9 @@ fn main() {
         times.sort_by(|a, b| a.total_cmp(b));
         let mean = times.iter().sum::<f64>() / times.len() as f64;
         eprintln!("bench {}x{} level {}: mean {:.2} ms, p50 {:.2}, p99 {:.2}, max {:.2}", args.size.0, args.size.1, renderer.level_in_use(), mean, times[times.len() / 2], times[times.len() * 99 / 100], times[times.len() - 1]);
+        let through: Vec<f64> = (0..5).map(|_| offscreen::throughput_ms(&gpu, &mut renderer, &camera, args.bench)).collect();
+        let best = through.iter().copied().fold(f64::MAX, f64::min);
+        eprintln!("throughput (no readback, {} frames x 5 runs): best {:.2} ms/frame, runs {}", args.bench, best, through.iter().map(|t| format!("{t:.2}")).collect::<Vec<_>>().join(" "));
         return;
     }
     let t = std::time::Instant::now();

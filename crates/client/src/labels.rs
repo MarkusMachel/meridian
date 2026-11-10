@@ -54,7 +54,7 @@ struct Candidate {
     alpha: f64,
 }
 
-fn candidates(out: &mut Vec<Candidate>, labels: &Labels, kind: LabelKind, camera: &Camera, scale: f64) {
+fn candidates(out: &mut Vec<Candidate>, labels: &Labels, relief: &meridian_data::Relief, kind: LabelKind, camera: &Camera, scale: f64) {
     let (lo, hi) = match kind {
         LabelKind::Country => COUNTRY_FADE,
         LabelKind::Region => REGION_FADE,
@@ -69,7 +69,7 @@ fn candidates(out: &mut Vec<Candidate>, labels: &Labels, kind: LabelKind, camera
         LabelKind::Region => (REGION_MIN_PX * scale, REGION_MAX_PX * scale),
     };
     for i in 0..labels.names.len() {
-        let (x, y) = camera.world_to_screen(labels.x[i] as f64, labels.y[i] as f64);
+        let (x, y) = crate::heights::to_screen(camera, relief, labels.x[i] as f64, labels.y[i] as f64);
         if x < 0.0 || y < 0.0 || x > camera.width_px || y > camera.height_px {
             continue;
         }
@@ -86,8 +86,8 @@ fn candidates(out: &mut Vec<Candidate>, labels: &Labels, kind: LabelKind, camera
 /// The labels to draw for this camera, in drawing order.
 pub fn place(data: &RenderData, camera: &Camera, scale: f64) -> Vec<PlacedLabel> {
     let mut cand = Vec::new();
-    candidates(&mut cand, &data.countries, LabelKind::Country, camera, scale);
-    candidates(&mut cand, &data.regions, LabelKind::Region, camera, scale);
+    candidates(&mut cand, &data.countries, &data.relief, LabelKind::Country, camera, scale);
+    candidates(&mut cand, &data.regions, &data.relief, LabelKind::Region, camera, scale);
     // countries first, then bigger areas first; ties by index so the result is stable
     cand.sort_by(|a, b| (a.kind as u8).cmp(&(b.kind as u8)).then(b.area.cmp(&a.area)).then(a.i.cmp(&b.i)));
     let mut taken: Vec<(f64, f64, f64, f64)> = Vec::new();
@@ -173,7 +173,7 @@ pub fn place_sites(map: &meridian_core::Map, data: &RenderData, camera: &Camera,
             continue;
         }
         let c = map.site_cell[s] as usize;
-        let (x, y) = camera.world_to_screen(data.cell_mx[c] as f64, data.cell_my[c] as f64);
+        let (x, y) = crate::heights::to_screen(camera, &data.relief, data.cell_mx[c] as f64, data.cell_my[c] as f64);
         if x < 0.0 || y < 0.0 || x > camera.width_px || y > camera.height_px {
             continue;
         }
@@ -189,7 +189,7 @@ pub fn place_sites(map: &meridian_core::Map, data: &RenderData, camera: &Camera,
     let mut beside: std::collections::BTreeMap<u32, f64> = std::collections::BTreeMap::new();
     for (_, s) in shown {
         let c = map.site_cell[s] as usize;
-        let (mut x, mut y) = camera.world_to_screen(data.cell_mx[c] as f64, data.cell_my[c] as f64);
+        let (mut x, mut y) = crate::heights::to_screen(camera, &data.relief, data.cell_mx[c] as f64, data.cell_my[c] as f64);
         if map.site_kind[s] != 0 && city_cells.contains(&map.site_cell[s]) {
             let k = beside.entry(map.site_cell[s]).or_insert(0.0);
             *k += 1.0;
@@ -230,7 +230,7 @@ mod tests {
             cell_ring_y: vec![],
             province_mx: vec![],
             province_my: vec![],
-            relief: Relief { width: 1, height: 1, x0: 0, y0: 0, x1: 1, y1: 1, pixels: vec![128], land_rgb: vec![0, 0, 0] },
+            relief: Relief { width: 1, height: 1, x0: 0, y0: 0, x1: 1, y1: 1, pixels: vec![128], land_rgb: vec![0, 0, 0], height_m: vec![0] },
             river_x: vec![],
             river_y: vec![],
             river_off: vec![0],

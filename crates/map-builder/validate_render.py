@@ -21,7 +21,7 @@ def read(path):
     b = Path(path).read_bytes()
     assert b[:4] == b"MRRD", "bad magic"
     ver, kind, n, crc = struct.unpack_from("<IIQQ", b, 4)
-    assert ver == 6 and kind == 4, f"version {ver} kind {kind}"
+    assert ver == 7 and kind == 4, f"version {ver} kind {kind}"
     payload = b[28:28 + n]
     assert len(payload) == n and zlib.crc32(payload) == crc, "bad checksum"
     (count,) = struct.unpack_from("<I", payload, 0)
@@ -93,6 +93,8 @@ def main(inter, path):
         problems.append("relief raster size does not match relief_info")
     elif not 100 < float(A["relief"].astype(np.float64).std()) < 128 and A["relief"].std() < 1.0:
         problems.append("relief raster is flat (no shading)")
+    if len(A["height_m"]) != w * h or A["height_m"].max() < 5000 or A["height_m"].min() > -5000:
+        problems.append("height raster has the wrong size or no mountains / sea floor")
     if len(A["land_rgb"]) != 3 * w * h:
         problems.append("land colour raster size does not match relief_info")
     ro_r = A["river_off"].astype(np.int64)
