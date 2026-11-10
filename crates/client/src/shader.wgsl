@@ -15,8 +15,8 @@ struct Globals {
     px_scale: f32,           // target pixels per screen pixel (above 1 when drawing the 3D overlay)
     relief_k: f32,           // strength of the shaded relief (fades out as real 3D lighting takes over)
     paper: f32,              // 0..1: paper look of the zoomed-out map
-    _p1: f32,
-    _p2: f32,
+    plot_m: f32,             // building plot size in metres (the town plan below), 0 on the paper map
+    plot_fade: f32,          // 0..1: how visible the buildings (and so the streets) are
     _p3: f32,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -211,6 +211,70 @@ fn vs_solid(@location(0) pos: vec2<i32>) -> @builtin(position) vec4<f32> {
 @fragment
 fn fs_solid() -> @location(0) vec4<f32> {
     return style.color;
+}
+
+// The town plan. A town is cut into square plots (the same grid the 3D houses stand on, see
+// terrain.wgsl, which repeats these four functions). Streets run along plot edges: one between
+// every two rows of plots, so each house fronts a street and backs onto a yard, and a cross street
+// every four plots or so. Every 16 plots there is a wider avenue, and each 16 x 16 district has
+// its rows running either east-west or north-south.
+fn plan_swap(c: vec2<i32>) -> bool {
+    return hash2(vec2<i32>(c.x >> 4u, c.y >> 4u) + vec2<i32>(91, 17)) < 0.5;
+}
+/// Is the low edge of column `u` a cross street?
+fn cross_street(u: i32) -> bool {
+    return (u & 3) == 0 || hash2(vec2<i32>(u, 77)) < 0.16;
+}
+/// Half the width of the street on plot edge `k`, in plots.
+fn street_half(k: i32) -> f32 {
+    return select(0.10, 0.15, (k & 15) == 0);
+}
+/// Some blocks are parks: grass and trees, no houses.
+fn is_park(q: vec2<i32>) -> bool {
+    return hash2(vec2<i32>(q.x >> 2u, q.y >> 1u) + vec2<i32>(53, 29)) < 0.09;
+}
+
+struct UrbanOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) rel: vec2<f32>,   // metres from the camera centre
+};
+
+@vertex
+fn vs_urban(@location(0) pos: vec2<i32>) -> UrbanOut {
+    var o: UrbanOut;
+    o.clip = vec4<f32>(to_ndc(pos), 0.0, 1.0);
+    o.rel = vec2<f32>(pos - g.center);
+    return o;
+}
+
+// Built-up areas. On the paper map a plain dark tint; close up, the ground of the town: asphalt
+// streets with pavements, yards and gardens behind the houses, grass in the parks.
+@fragment
+fn fs_urban(i: UrbanOut) -> @location(0) vec4<f32> {
+    if (g.plot_fade <= 0.0) {
+        return style.color;
+    }
+    let p = (vec2<f32>(g.center) + i.rel) / g.plot_m;
+    let cf = floor(p);
+    let c = vec2<i32>(cf);
+    var f = p - cf;
+    var q = c;
+    if (plan_swap(c)) { q = c.yx; f = f.yx; }
+    // distance to the nearest street edge, in plots (negative: on the street)
+    let front = (q.y & 1) == 0;
+    var d = select(1.0 - f.y, f.y, front) - street_half(select(q.y + 1, q.y, front));
+    if (cross_street(q.x)) { d = min(d, f.x - street_half(q.x)); }
+    if (cross_street(q.x + 1)) { d = min(d, 1.0 - f.x - street_half(q.x + 1)); }
+    let aa = max(fwidth(p.x), fwidth(p.y)) * 0.7 + 0.001;
+    let on_street = 1.0 - smoothstep(-aa, aa, d);
+    let on_pavement = 1.0 - smoothstep(0.035 - aa, 0.035 + aa, d);
+    let fine = vnoise(p * 7.0);
+    var ground = mix(vec3<f32>(0.56, 0.54, 0.48), vec3<f32>(0.46, 0.52, 0.37), smoothstep(0.35, 0.9, hash2(c + vec2<i32>(21, 3))));
+    if (is_park(q)) { ground = vec3<f32>(0.37, 0.49, 0.30); }
+    ground = ground * (0.92 + 0.16 * fine);
+    let asphalt = vec3<f32>(0.36, 0.36, 0.38) * (0.96 + 0.08 * fine);
+    let rgb = mix(mix(ground, vec3<f32>(0.66, 0.65, 0.61), on_pavement), asphalt, on_street);
+    return mix(style.color, vec4<f32>(rgb, 0.96), g.plot_fade);
 }
 
 // Built-up areas as a mask for the 3D buildings.

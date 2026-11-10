@@ -28,7 +28,10 @@ struct Globals {
     px_scale: f32,
     relief_k: f32,
     paper: f32,
-    _p: [f32; 3],
+    /// Building plot size in metres and how visible the buildings are (0..1); both 0 on the paper map.
+    plot_m: f32,
+    plot_fade: f32,
+    _p: f32,
 }
 
 /// Uniforms of the 3D pass (see `G3` in terrain.wgsl for what each field holds).
@@ -107,14 +110,27 @@ const STYLES: [([f32; 4], f32, f32); 5] = [
 const RIVER_STYLE: usize = 4;
 /// Map details drawn as extra styles after the five above: roads by class, the two passes of a
 /// railway (dark bed, then light dashes on top for the classic black-and-white line), urban fill.
-const DETAIL_STYLES: [([f32; 4], f32, f32); 6] = [
+const DETAIL_STYLES: [([f32; 4], f32, f32); 10] = [
     ([0.58, 0.24, 0.14, 0.90], 1.9, 0.0),
     ([0.55, 0.34, 0.20, 0.80], 1.3, 0.0),
     ([0.42, 0.34, 0.25, 0.60], 0.9, 0.0),
     ([0.13, 0.10, 0.08, 0.80], 1.9, 0.0),
     ([0.90, 0.86, 0.76, 0.75], 0.8, 10.0),
     ([0.22, 0.19, 0.17, 0.55], 0.0, 0.0),
+    // close up a road is a road: a dark edge under each class, and a broken centre line (set per frame)
+    ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
+    ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
+    ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
+    ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
 ];
+/// Close up (the 3D view) roads turn from the red atlas line into asphalt: colour of the surface
+/// by class (motorway, main road, lane), its width in pixels at the closest zoom, the edge colour
+/// and the centre-line colour.
+const ASPHALT: [([f32; 4], f32); 3] = [([0.33, 0.33, 0.35, 1.0], 9.0), ([0.37, 0.37, 0.38, 1.0], 6.0), ([0.45, 0.43, 0.40, 1.0], 3.6)];
+const ROAD_EDGE: [f32; 4] = [0.17, 0.16, 0.15, 0.85];
+const ROAD_CENTRE: [f32; 4] = [0.93, 0.90, 0.74, 0.95];
+const ROAD_EDGE_STYLE: usize = 11;
+const ROAD_CENTRE_STYLE: usize = 14;
 const ROAD_STYLE: usize = 5;
 const RAIL_BED_STYLE: usize = 8;
 const RAIL_TIE_STYLE: usize = 9;
@@ -272,6 +288,9 @@ pub struct Renderer {
     rails: GpuLines,
     road_tier: usize,
     rail_tier: usize,
+    /// Roads are drawn as asphalt with a dark edge (the 3D view); and with a centre line.
+    road_3d: bool,
+    road_centre: bool,
     urban_vertices: wgpu::Buffer,
     urban_indices: wgpu::Buffer,
     urban_count: u32,
@@ -451,8 +470,8 @@ impl Renderer {
         let urban_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("urban"),
             layout: Some(&layout_line),
-            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_solid"), compilation_options: Default::default(), buffers: &urban_buffers },
-            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_solid"), compilation_options: Default::default(), targets: &target }),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_urban"), compilation_options: Default::default(), buffers: &urban_buffers },
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_urban"), compilation_options: Default::default(), targets: &target }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
@@ -605,6 +624,8 @@ impl Renderer {
             rails,
             road_tier: 0,
             rail_tier: 0,
+            road_3d: false,
+            road_centre: false,
             urban_vertices,
             urban_indices,
             urban_count: data.urban_tri.len() as u32,
@@ -656,6 +677,26 @@ impl Renderer {
             let st = Style { color: *color, width_px: width * widen, dash_px: dash * widen, _pad: [0.0; 2] };
             queue.write_buffer(&self.style_buffers[ROAD_STYLE + k], 0, bytemuck::bytes_of(&st));
         }
+        // Roads: the red line of the paper map becomes asphalt as the view turns 3D, with a dark
+        // edge under it and, on the two bigger classes, a broken centre line.
+        let t = camera.depth_t() as f32;
+        self.road_3d = t > 0.02;
+        let mix = |a: f32, b: f32| a + (b - a) * t;
+        for class in 0..3 {
+            let (red, base_w, _) = DETAIL_STYLES[class];
+            let (grey, close_w) = ASPHALT[class];
+            // the asphalt width is reached at the closest zoom; farther out it follows the old width
+            let width = mix(base_w * widen, (close_w * widen / 4.0).max(base_w * widen));
+            let color = [mix(red[0], grey[0]), mix(red[1], grey[1]), mix(red[2], grey[2]), mix(red[3], grey[3])];
+            queue.write_buffer(&self.style_buffers[ROAD_STYLE + class], 0, bytemuck::bytes_of(&Style { color, width_px: width, dash_px: 0.0, _pad: [0.0; 2] }));
+            let mut edge = ROAD_EDGE;
+            edge[3] *= t;
+            queue.write_buffer(&self.style_buffers[ROAD_EDGE_STYLE + class], 0, bytemuck::bytes_of(&Style { color: edge, width_px: width + 1.0 + 1.6 * widen / 4.0, dash_px: 0.0, _pad: [0.0; 2] }));
+        }
+        let mut centre = ROAD_CENTRE;
+        centre[3] *= ((t - 0.5) * 2.0).clamp(0.0, 1.0) * ((widen - 2.0) / 1.0).clamp(0.0, 1.0);
+        self.road_centre = centre[3] > 0.02;
+        queue.write_buffer(&self.style_buffers[ROAD_CENTRE_STYLE], 0, bytemuck::bytes_of(&Style { color: centre, width_px: 0.28 * widen, dash_px: 4.5 * widen, _pad: [0.0; 2] }));
         // Province borders fade out when the whole world is in view, where 15,000 of them are only noise.
         let fade = (1.0 - camera.m_per_px / 20_000.0).clamp(0.0, 1.0) as f32;
         let mut s = STYLES[1];
@@ -664,7 +705,8 @@ impl Renderer {
     }
 
     /// Uniforms of the flat map drawn around (cx, cy) at `m_per_px` into a `viewport` of pixels.
-    fn globals_2d(&self, camera: &Camera, center: [i32; 2], viewport: [f32; 2], m_per_px: f64, selected: u32, hover: u32) -> Globals {
+    #[allow(clippy::too_many_arguments)]
+    fn globals_2d(&self, camera: &Camera, center: [i32; 2], viewport: [f32; 2], m_per_px: f64, selected: u32, hover: u32, plot: (f32, f32)) -> Globals {
         let t = camera.depth_t() as f32;
         let land_mix = if self.land_mix >= 1.0 { self.land_mix } else { self.land_mix + (self.land_mix.min(LAND_MIX_3D) - self.land_mix) * t };
         Globals {
@@ -681,7 +723,9 @@ impl Renderer {
             px_scale: (camera.m_per_px / m_per_px) as f32,
             relief_k: 1.0 - t,
             paper: 1.0 - t,
-            _p: [0.0; 3],
+            plot_m: plot.0,
+            plot_fade: plot.1,
+            _p: 0.0,
         }
     }
 
@@ -695,7 +739,7 @@ impl Renderer {
         let color_ops = wgpu::Operations { load: wgpu::LoadOp::Clear(SEA), store: wgpu::StoreOp::Store };
         if t <= 0.0 {
             // the paper map: flat, straight to the screen
-            let g = self.globals_2d(camera, center, [camera.width_px as f32, camera.height_px as f32], camera.m_per_px, selected, hover);
+            let g = self.globals_2d(camera, center, [camera.width_px as f32, camera.height_px as f32], camera.m_per_px, selected, hover, (0.0, 0.0));
             queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("paper map"),
@@ -721,7 +765,11 @@ impl Renderer {
         let om = (gw.max(gh) / size).max(camera.m_per_px * 0.5);
         let (ow, oh) = ((gw / om).ceil().min(size).max(1.0), (gh / om).ceil().min(size).max(1.0));
         let ocenter = [((gx0 + gx1) / 2.0).round() as i32, ((gy0 + gy1) / 2.0).round() as i32];
-        let g = self.globals_2d(camera, ocenter, [ow as f32, oh as f32], om, selected, hover);
+        // the building plots: the flat map draws the streets between them, the 3D pass the houses
+        let buildings = self.show_details && self.draw_urban && camera.m_per_px < BUILDINGS_BELOW && self.urban_count > 0;
+        let bld = instances(gx0, gy0, gx1, gy1, camera.m_per_px * BUILDING_SPACING_PX, 100);
+        let bld_fade = if buildings { ((BUILDINGS_BELOW - camera.m_per_px) / (BUILDINGS_BELOW * 0.3)).clamp(0.0, 1.0) } else { 0.0 };
+        let g = self.globals_2d(camera, ocenter, [ow as f32, oh as f32], om, selected, hover, (bld.spacing as f32, bld_fade as f32));
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -736,7 +784,6 @@ impl Renderer {
             self.draw_2d(&mut pass, (gx0, gy0, gx1, gy1));
         }
         // 2. where the towns are, for the buildings
-        let buildings = self.show_details && self.draw_urban && camera.m_per_px < BUILDINGS_BELOW && self.urban_count > 0;
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("urban mask"),
@@ -776,8 +823,6 @@ impl Renderer {
         let eye = camera.eye();
         let tree = instances(gx0, gy0, gx1, gy1, camera.m_per_px * TREE_SPACING_PX, 250);
         let tree_fade = ((TREES_BELOW - camera.m_per_px) / (TREES_BELOW * 0.3)).clamp(0.0, 1.0);
-        let bld = instances(gx0, gy0, gx1, gy1, camera.m_per_px * BUILDING_SPACING_PX, 100);
-        let bld_fade = ((BUILDINGS_BELOW - camera.m_per_px) / (BUILDINGS_BELOW * 0.3)).clamp(0.0, 1.0);
         let show_trees = self.show_details && tree_fade > 0.0;
         let show_blds = buildings && bld_fade > 0.0;
         let ov = rel(ocenter[0] as f64, ocenter[1] as f64);
@@ -794,7 +839,7 @@ impl Renderer {
             center: [center[0], center[1], 0, 0],
             trees: tree.cells,
             blds: bld.cells,
-            sizes: [(tree.spacing * 1.25 * tree_fade) as f32, (bld.spacing * 0.62 * bld_fade) as f32, 0.0, 0.0],
+            sizes: [(tree.spacing * 1.25 * tree_fade) as f32, (bld.spacing * bld_fade) as f32, 0.0, 0.0],
         };
         queue.write_buffer(&self.g3, 0, bytemuck::bytes_of(&g3));
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -852,10 +897,23 @@ impl Renderer {
         for class in 0..self.river_tier {
             self.rivers.draw(pass, class, view);
         }
-        // roads: the less important classes first, so major highways sit on top
+        // roads: the less important classes first, so major highways sit on top. Close up, all the
+        // dark edges go down first, so where roads meet their surfaces join without a line between.
+        if self.road_3d {
+            for class in (0..self.road_tier).rev() {
+                pass.set_bind_group(1, &self.styles[ROAD_EDGE_STYLE + class], &[]);
+                self.roads.draw(pass, class, view);
+            }
+        }
         for class in (0..self.road_tier).rev() {
             pass.set_bind_group(1, &self.styles[ROAD_STYLE + class], &[]);
             self.roads.draw(pass, class, view);
+        }
+        if self.road_centre {
+            pass.set_bind_group(1, &self.styles[ROAD_CENTRE_STYLE], &[]);
+            for class in 0..self.road_tier.min(2) {
+                self.roads.draw(pass, class, view);
+            }
         }
         for style in [RAIL_BED_STYLE, RAIL_TIE_STYLE] {
             pass.set_bind_group(1, &self.styles[style], &[]);

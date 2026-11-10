@@ -195,10 +195,8 @@ fn fs_terrain(i: TOut) -> @location(0) vec4<f32> {
     // mass from far away and the trees do not stand on bare bright ground close up
     let wood = forest_at(i.rel) * (0.75 + 0.5 * vnoise(world / 2600.0)) * smoothstep(0.25, 0.6, vnoise(world / 9000.0) + forest_at(i.rel) * 0.6);
     let floor_tint = mix(vec3<f32>(1.0), FOREST_FLOOR, clamp(wood, 0.0, 1.0) * 0.8 * t);
-    // towns: a grey, slightly mottled ground under the buildings
-    let town = textureSampleLevel(urban_mask, samp, overlay_uv(i.rel), 0.0).r * t;
-    let street = mix(vec3<f32>(1.0), vec3<f32>(0.80, 0.79, 0.78) * (0.9 + 0.2 * vnoise(world / 700.0)), town * 0.7);
-    let land = o.rgb * floor_tint * street * mix(1.0, land_shade(i.rel), t);
+    // (the ground of a town, with its streets, is already in the overlay: `fs_urban` in shader.wgsl)
+    let land = o.rgb * floor_tint * mix(1.0, land_shade(i.rel), t);
     let rgb = sea * (1.0 - o.a) + land;
     return vec4<f32>(hazed(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), pos), 1.0);
 }
@@ -246,28 +244,15 @@ fn latitude_deg(world_y: f32) -> f32 {
     return 90.0 * u * (0.80 + 0.20 * u * u);
 }
 
-// A tree is two six-sided cones, 12 triangles, 36 vertices. A conifer stacks two pointed tiers;
+// A crown is two six-sided cones, 12 triangles, 36 vertices. A conifer stacks two pointed tiers;
 // a broadleaf tree is a lumpy crown (a cone on top of an upside-down cone sharing one uneven ring).
-@vertex
-fn vs_tree(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> MOut {
-    let cb = cell_base(g3.trees, ii);
-    let c = cb.xy;
-    let s = f32(cb.z);
-    let base = vec2<f32>(c * cb.z - g3.center.xy) + vec2<f32>(hash2(c), hash2(c + vec2<i32>(7, 13))) * s;
-    let world_xy = vec2<f32>(g3.center.xy) + base;
-    // woods have clearings and ragged edges: thin the trees out with slow noise
-    let cover = forest_at(base) * smoothstep(0.22, 0.5, vnoise(world_xy / 9000.0) + forest_at(base) * 0.6);
-    let ground_h = height_raw(base);
-    if (g3.sizes.x <= 0.0 || hash2(c + vec2<i32>(11, 2)) >= cover * 1.35 || ground_h <= 0.0 || urban_at(base) > 0.3) {
-        return hidden();
-    }
-    // which kind: conifers toward the poles and up the mountains, rainforest near the equator
-    let lat = abs(latitude_deg(world_xy.y));
-    let cold = smoothstep(49.0, 60.0, lat + ground_h / 60.0 + (vnoise(world_xy / 40000.0) - 0.5) * 12.0);
-    let conifer = hash2(c + vec2<i32>(23, 4)) < cold;
-    let jungle = 1.0 - smoothstep(14.0, 24.0, lat);
-    let size = g3.sizes.x * (0.75 + 0.5 * hash2(c + vec2<i32>(3, 5)));
+struct Crown {
+    p: vec3<f32>,        // position relative to the foot of the tree
+    normal: vec3<f32>,
+    top: f32,            // height of the tree
+};
 
+fn crown(vi: u32, c: vec2<i32>, size: f32, conifer: bool, jungle: f32) -> Crown {
     let face = vi / 3u;
     let corner = vi % 3u;
     let tier = face / 6u;     // 0: upper cone, 1: lower cone
@@ -302,69 +287,154 @@ fn vs_tree(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     let a1 = f32(k1) / 6.0 * tau + turn;
     let p0 = vec3<f32>(cos(a0) * r0, sin(a0) * r0, ring_z);
     let p1 = vec3<f32>(cos(a1) * r1, sin(a1) * r1, ring_z);
-    var p = apex;
-    if (corner == 1u) { p = p0; } else if (corner == 2u) { p = p1; }
+    var out: Crown;
+    out.p = apex;
+    if (corner == 1u) { out.p = p0; } else if (corner == 2u) { out.p = p1; }
     // face normal, pointing away from the trunk
-    var normal = cross(p0 - apex, p1 - apex);
+    out.normal = cross(p0 - apex, p1 - apex);
     let outward = vec3<f32>(cos((a0 + a1) * 0.5), sin((a0 + a1) * 0.5), 0.0);
-    if (dot(normal, outward) < 0.0) { normal = -normal; }
+    if (dot(out.normal, outward) < 0.0) { out.normal = -out.normal; }
+    out.top = top;
+    return out;
+}
 
-    // muted greens: blue-dark conifers, olive broadleaf, deeper green rainforest
+/// Muted greens: blue-dark conifers, olive broadleaf, deeper green rainforest; darker toward the
+/// bottom of the crown, where neighbours shade it.
+fn crown_color(k: Crown, c: vec2<i32>, conifer: bool, jungle: f32) -> vec3<f32> {
     var green = mix(vec3<f32>(0.27, 0.39, 0.19), vec3<f32>(0.17, 0.34, 0.16), jungle);
     if (conifer) { green = vec3<f32>(0.19, 0.32, 0.22); }
     green *= 0.82 + 0.36 * hash2(c + vec2<i32>(17, 1));
-    // darker toward the bottom of the crown, where neighbours shade it
-    let ao = mix(0.62, 1.0, smoothstep(0.0, top * 0.8, p.z));
-    let world = vec3<f32>(base, ground_z(base)) + p;
+    return lit(green, k.normal) * mix(0.62, 1.0, smoothstep(0.0, k.top * 0.8, k.p.z));
+}
+
+@vertex
+fn vs_tree(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> MOut {
+    let cb = cell_base(g3.trees, ii);
+    let c = cb.xy;
+    let s = f32(cb.z);
+    let base = vec2<f32>(c * cb.z - g3.center.xy) + vec2<f32>(hash2(c), hash2(c + vec2<i32>(7, 13))) * s;
+    let world_xy = vec2<f32>(g3.center.xy) + base;
+    // woods have clearings and ragged edges: thin the trees out with slow noise
+    let cover = forest_at(base) * smoothstep(0.22, 0.5, vnoise(world_xy / 9000.0) + forest_at(base) * 0.6);
+    let ground_h = height_raw(base);
+    if (g3.sizes.x <= 0.0 || hash2(c + vec2<i32>(11, 2)) >= cover * 1.35 || ground_h <= 0.0 || urban_at(base) > 0.3) {
+        return hidden();
+    }
+    // which kind: conifers toward the poles and up the mountains, rainforest near the equator
+    let lat = abs(latitude_deg(world_xy.y));
+    let cold = smoothstep(49.0, 60.0, lat + ground_h / 60.0 + (vnoise(world_xy / 40000.0) - 0.5) * 12.0);
+    let conifer = hash2(c + vec2<i32>(23, 4)) < cold;
+    let jungle = 1.0 - smoothstep(14.0, 24.0, lat);
+    let size = g3.sizes.x * (0.75 + 0.5 * hash2(c + vec2<i32>(3, 5)));
+    let k = crown(vi, c, size, conifer, jungle);
+    let world = vec3<f32>(base, ground_z(base)) + k.p;
     var o: MOut;
     o.clip = g3.view_proj * vec4<f32>(world, 1.0);
-    o.color = lit(green, normal) * ao;
+    o.color = crown_color(k, c, conifer, jungle);
     o.pos = world;
     return o;
 }
 
-// A building is four walls, two roof slopes and two gable ends: 42 vertices. With a ridge height
-// of zero the roof is flat (the tall blocks in a city centre).
+// The town plan (the same four functions as in shader.wgsl, which draws the streets; see there).
+fn plan_swap(c: vec2<i32>) -> bool {
+    return hash2(vec2<i32>(c.x >> 4u, c.y >> 4u) + vec2<i32>(91, 17)) < 0.5;
+}
+fn cross_street(u: i32) -> bool {
+    return (u & 3) == 0 || hash2(vec2<i32>(u, 77)) < 0.16;
+}
+fn street_half(k: i32) -> f32 {
+    return select(0.10, 0.15, (k & 15) == 0);
+}
+fn is_park(q: vec2<i32>) -> bool {
+    return hash2(vec2<i32>(q.x >> 2u, q.y >> 1u) + vec2<i32>(53, 29)) < 0.09;
+}
+
+// One building per plot, standing at its street: four walls, two roof slopes and two gable ends,
+// 42 vertices. Three kinds: a detached house; a terrace (the houses of a block joined into one
+// row, same height and roof); and, deep inside a big town, a taller block with a flat roof (ridge
+// height zero). A plot in a park gets a tree instead.
 @vertex
 fn vs_building(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> MOut {
     let cb = cell_base(g3.blds, ii);
     let c = cb.xy;
     let s = f32(cb.z);
-    let centre = vec2<f32>(c * cb.z - g3.center.xy) + 0.5 * s;
-    let base = centre + (vec2<f32>(hash2(c + vec2<i32>(5, 9)), hash2(c + vec2<i32>(2, 4))) - 0.5) * s * 0.22;
-    // how deep inside the town this spot is: the mask a few plots away in eight directions
+    let origin = vec2<f32>(c * cb.z - g3.center.xy);   // the low corner of the plot
+    let centre = origin + 0.5 * s;
+    if (g3.sizes.y <= 0.0 || urban_at(centre) < 0.5 || height_raw(centre) <= 0.0) {
+        return hidden();
+    }
+    // how deep inside the town this plot is: the mask a few plots away in eight directions
     var inside = 0.0;
     for (var k = 0; k < 8; k++) {
         let a = f32(k) * 0.7853982;
-        inside += urban_at(base + vec2<f32>(cos(a), sin(a)) * s * 5.0);
+        inside += urban_at(centre + vec2<f32>(cos(a), sin(a)) * s * 4.0);
     }
     inside = inside / 8.0;
-    // a few empty plots (squares, yards), more of them toward the edge
-    let empty = hash2(c + vec2<i32>(1, 8)) > mix(0.62, 0.90, inside);
-    if (g3.sizes.y <= 0.0 || urban_at(base) < 0.5 || empty || height_raw(base) <= 0.0) {
+    let unit = g3.sizes.y;     // the plot size, shrinking to zero as the buildings fade out
+
+    // the plan: q is the plot in plan coordinates (x along the street, y across)
+    let swap = plan_swap(c);
+    var q = c;
+    if (swap) { q = c.yx; }
+    let block = vec2<i32>(q.x >> 2u, q.y >> 1u);
+    let h1 = hash2(c + vec2<i32>(6, 6));
+    let h2 = hash2(c + vec2<i32>(4, 1));
+    let h3 = hash2(c + vec2<i32>(3, 9));
+
+    if (is_park(q)) {
+        if (vi >= 36u) { return hidden(); }
+        let foot2 = origin + (0.3 + 0.4 * vec2<f32>(h1, h2)) * s;
+        let k = crown(vi, c, unit * (0.50 + 0.25 * h3), false, 0.0);
+        let world = vec3<f32>(foot2, ground_z(foot2)) + k.p;
+        var o: MOut;
+        o.clip = g3.view_proj * vec4<f32>(world, 1.0);
+        o.color = crown_color(k, c, false, 0.0);
+        o.pos = world;
+        return o;
+    }
+    // a few empty plots (yards, squares) toward the edge of the town
+    if (hash2(c + vec2<i32>(1, 8)) > mix(0.70, 0.97, inside)) {
         return hidden();
     }
-    let unit = g3.sizes.y;
-    // centre of a big town: taller blocks with flat roofs
+
+    // free length along the street: the plot less any cross street (and its pavement) at either end
+    let front = (q.y & 1) == 0;     // the street is on the low side
+    let hv = street_half(select(q.y + 1, q.y, front));
+    let lo = select(0.0, street_half(q.x) + 0.045, cross_street(q.x));
+    let hi = select(0.0, street_half(q.x + 1) + 0.045, cross_street(q.x + 1));
+    let avail = 1.0 - lo - hi;
+
     let core = smoothstep(0.93, 1.0, inside);
-    let tower = hash2(c + vec2<i32>(9, 3)) < core * 0.45;
-    var w = unit * (0.95 + 0.45 * hash2(c + vec2<i32>(6, 6)));     // along the ridge
-    var d = unit * (0.62 + 0.25 * hash2(c + vec2<i32>(4, 1)));
-    var wall = unit * (0.30 + 0.22 * hash2(c + vec2<i32>(3, 9)));
-    var ridge = d * 0.42;
+    let tower = hash2(c + vec2<i32>(9, 3)) < core * 0.32;
+    let terrace = !tower && hash2(block + vec2<i32>(71, 5)) < 0.40;
+    let bh = hash2(block + vec2<i32>(15, 44));       // shared by the houses of one block
+    // sizes in plots: w along the street, d across, setback from the pavement
+    var w = avail * (0.60 + 0.22 * h1);
+    var d = 0.40 + 0.14 * h2;
+    var setback = 0.02 + 0.07 * h3;
+    var wall = 0.17 + 0.11 * h3;
+    var ridge = d * 0.44;
+    if (terrace) {
+        w = avail + 0.002;
+        d = 0.42 + 0.10 * bh;
+        setback = 0.025;
+        wall = 0.21 + 0.10 * bh;
+        ridge = d * 0.44;
+    }
     if (tower) {
-        w = unit * (0.85 + 0.45 * hash2(c + vec2<i32>(6, 6)));
-        d = unit * (0.75 + 0.35 * hash2(c + vec2<i32>(4, 1)));
-        wall = unit * (0.65 + 1.0 * hash2(c + vec2<i32>(3, 9)) * hash2(c + vec2<i32>(12, 5)));
+        w = avail * (0.66 + 0.2 * h1);
+        d = 0.50 + 0.18 * h2;
+        setback = 0.04;
+        wall = 0.45 + 0.85 * h3 * hash2(c + vec2<i32>(12, 5));
         ridge = 0.0;
     }
-    // houses of one neighbourhood (8 x 8 plots) face the same way
-    let block = vec2<i32>(c.x >> 3, c.y >> 3);
-    let ang = floor(hash2(block + vec2<i32>(40, 2)) * 4.0) * 0.3927 + f32((c.x + c.y) & 1) * 1.5708 * step(0.7, hash2(c + vec2<i32>(13, 13)));
-    let ca = cos(ang);
-    let sa = sin(ang);
+    let along = lo + avail * 0.5 + (h2 - 0.5) * (avail - w) * 0.8;
+    let across_front = hv + 0.045 + setback + d * 0.5;
+    let foot_plan = vec2<f32>(along, select(1.0 - across_front, across_front, front));
+    let foot = origin + select(foot_plan, foot_plan.yx, swap) * s;
+    w *= unit; d *= unit; wall *= unit; ridge *= unit;
 
-    var p: vec3<f32>;        // local position: x along the ridge, y across, z up
+    var p: vec3<f32>;        // local position: x along the ridge (the street), y across, z up
     var normal: vec3<f32>;
     var is_roof = false;
     var u6 = array<f32, 6>(0.0, 1.0, 1.0, 0.0, 1.0, 0.0);
@@ -385,38 +455,47 @@ fn vs_building(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32)
         // two roof slopes, from the eaves (a little wider than the walls) up to the ridge
         let side = select(-1.0, 1.0, vi >= 30u);
         let k = (vi - 24u) % 6u;
-        let along = (u6[k] - 0.5) * w * 1.06;
+        let run = (u6[k] - 0.5) * w * select(1.05, 1.0, terrace);
         let up = v6[k];
-        p = vec3<f32>(along, side * 0.53 * d * (1.0 - up), wall + ridge * up);
+        p = vec3<f32>(run, side * 0.54 * d * (1.0 - up), wall + ridge * up);
         normal = vec3<f32>(0.0, side * ridge, 0.5 * d + 0.0001);
         is_roof = true;
     } else {
         // gable ends: the triangles under the roof at both ends
         let end = select(-1.0, 1.0, vi >= 39u);
         let k = (vi - 36u) % 3u;
-        var q = vec2<f32>(-0.5 * d, wall);
-        if (k == 1u) { q = vec2<f32>(0.5 * d, wall); } else if (k == 2u) { q = vec2<f32>(0.0, wall + ridge); }
-        p = vec3<f32>(end * 0.5 * w, q.x, q.y);
+        var g2 = vec2<f32>(-0.5 * d, wall);
+        if (k == 1u) { g2 = vec2<f32>(0.5 * d, wall); } else if (k == 2u) { g2 = vec2<f32>(0.0, wall + ridge); }
+        p = vec3<f32>(end * 0.5 * w, g2.x, g2.y);
         normal = vec3<f32>(end, 0.0, 0.0);
     }
-    let local = vec3<f32>(p.x * ca - p.y * sa, p.x * sa + p.y * ca, p.z);
-    let n = vec3<f32>(normal.x * ca - normal.y * sa, normal.x * sa + normal.y * ca, normal.z);
+    let local = vec3<f32>(select(p.xy, p.yx, swap), p.z);
+    let n = vec3<f32>(select(normal.xy, normal.yx, swap), normal.z);
 
-    // muted palette: plaster and concrete walls, slate, brown and dull red roofs
-    let tone = hash2(c + vec2<i32>(8, 8));
-    var color = mix(vec3<f32>(0.66, 0.64, 0.59), vec3<f32>(0.78, 0.75, 0.68), tone);
-    if (tower) { color = mix(vec3<f32>(0.58, 0.58, 0.57), vec3<f32>(0.72, 0.71, 0.68), tone); }
+    // muted palette. Walls: cream plaster, light grey, warm stone. Roofs: each district leans to
+    // terracotta or to slate, with some brown tile; the houses of a terrace share one roof.
+    let district = vec2<i32>(c.x >> 4u, c.y >> 4u);
+    var tone = hash2(c + vec2<i32>(8, 8));
+    var pick = hash2(c + vec2<i32>(2, 2));
+    if (terrace) { tone = bh; pick = hash2(block + vec2<i32>(2, 2)); }
+    var color = mix(vec3<f32>(0.70, 0.69, 0.66), vec3<f32>(0.82, 0.78, 0.69), tone);
+    if (pick > 0.7) { color = mix(color, vec3<f32>(0.74, 0.67, 0.56), 0.6); }
+    if (tower) { color = mix(vec3<f32>(0.64, 0.63, 0.61), vec3<f32>(0.80, 0.77, 0.70), tone); }
     if (is_roof) {
-        let pick = hash2(c + vec2<i32>(2, 2));
-        color = vec3<f32>(0.30, 0.31, 0.34);                                  // slate
-        if (pick > 0.45) { color = vec3<f32>(0.37, 0.31, 0.27); }             // brown tile
-        if (pick > 0.80) { color = vec3<f32>(0.44, 0.32, 0.28); }             // dull red tile
-        if (tower) { color = vec3<f32>(0.40, 0.40, 0.42) * (0.9 + 0.2 * tone); }
+        let slate_town = hash2(district + vec2<i32>(3, 57)) < 0.35;
+        let terracotta = vec3<f32>(0.49, 0.33, 0.27);
+        let slate = vec3<f32>(0.32, 0.33, 0.37);
+        let brown = vec3<f32>(0.40, 0.32, 0.27);
+        color = select(terracotta, slate, slate_town);
+        if (pick > 0.62) { color = brown; }
+        if (pick > 0.86) { color = select(slate, terracotta, slate_town); }
+        color *= 0.90 + 0.2 * tone;
+        if (tower) { color = vec3<f32>(0.38, 0.38, 0.40) * (0.9 + 0.2 * tone); }
     } else {
         // walls are darker near the ground, as if the street were in shadow
-        color *= mix(0.72, 1.0, smoothstep(0.0, wall, p.z));
+        color *= mix(0.74, 1.0, smoothstep(0.0, wall, p.z));
     }
-    let world = vec3<f32>(base, ground_z(base)) + local;
+    let world = vec3<f32>(foot, ground_z(foot)) + local;
     var o: MOut;
     o.clip = g3.view_proj * vec4<f32>(world, 1.0);
     o.color = lit(color, n);
