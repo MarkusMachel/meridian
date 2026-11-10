@@ -109,6 +109,105 @@ fn forest_at(rel: vec2<f32>) -> f32 {
 
 const FOREST_FLOOR: vec3<f32> = vec3<f32>(0.56, 0.66, 0.54);
 
+/// How steep the ground is: metres of height per metre, in x and in y.
+fn slope_at(rel: vec2<f32>) -> vec2<f32> {
+    let e = g3.hpx.xy;
+    let hx = (max(height_raw(rel + vec2<f32>(e.x, 0.0)), 0.0) - max(height_raw(rel - vec2<f32>(e.x, 0.0)), 0.0)) / (2.0 * e.x);
+    let hy = (max(height_raw(rel + vec2<f32>(0.0, e.y)), 0.0) - max(height_raw(rel - vec2<f32>(0.0, e.y)), 0.0)) / (2.0 * e.y);
+    return vec2<f32>(hx, hy);
+}
+
+/// How likely the ground is farmed (0..1), guessed from the land-cover colour and the relief:
+/// some green in it (not desert sand, not ice), not forest, not high, not steep. There is no
+/// farmland layer in the map yet; when there is, this should read it instead.
+fn arable_at(rel: vec2<f32>) -> f32 {
+    let c = textureSampleLevel(land, samp, h_uv(rel), 0.0).rgb;
+    let h = height_raw(rel);
+    let green = smoothstep(-0.03, 0.04, c.g - c.r) * smoothstep(0.90, 0.78, c.r);
+    let low = 1.0 - smoothstep(1500.0, 2600.0, h);
+    let flat = 1.0 - smoothstep(0.05, 0.14, length(slope_at(rel)));
+    return green * (1.0 - forest_at(rel)) * low * flat * step(0.0, h);
+}
+
+// Farmland, painted on the ground as a patchwork of fields, in the way of each part of the world:
+//   Europe and most places: blocks at all angles, cut into strips of wheat, green crops, plough
+//     and stubble, with dark hedges between
+//   Russia: very large straight-edged fields
+//   North America, Australia: big square sections, some with the green circle of a pivot sprinkler
+//   South, East and South-East Asia: small paddies, green or flooded
+//   Middle East, Africa: small plots in earth colours
+// Returned as a tint to multiply the ground by (1 = no change), so borders, roads and the owner's
+// colour drawn on the ground stay visible.
+fn field_tint(world: vec2<f32>, kind: i32) -> vec3<f32> {
+    let plot = f32(g3.blds.w);
+    var scale = 2.0;
+    var straight = false;
+    var hedge = 0.40;
+    var palette = 0;          // 0 temperate, 1 paddies, 2 dry earth
+    var pivots = false;
+    switch kind {
+        case 1: { scale = 4.0; straight = true; hedge = 0.2; }
+        case 2: { scale = 1.4; palette = 2; hedge = 0.25; }
+        case 3: { scale = 1.3; palette = 2; hedge = 0.25; }
+        case 4, 5, 6: { scale = 1.2; palette = 1; hedge = 0.30; }
+        case 7: { scale = 3.0; straight = true; hedge = 0.2; pivots = true; }
+        case 8: { scale = 2.6; hedge = 0.25; }
+        default: {}
+    }
+    let size = plot * scale;
+    let p = world / size;
+    let cell = vec2<i32>(floor(p));
+    let f = p - floor(p) - 0.5;
+    var ang = hash2(cell + vec2<i32>(13, 7)) * 3.14159;
+    if (straight) { ang = select(0.0, 1.5708, hash2(cell + vec2<i32>(13, 7)) > 0.5); }
+    let q = vec2<f32>(f.x * cos(ang) + f.y * sin(ang), f.y * cos(ang) - f.x * sin(ang));
+    // strips across the block, most of them cut once or twice along their length
+    let n = 2.0 + floor(hash2(cell + vec2<i32>(5, 3)) * 3.99);
+    let u = q.x * n + 8.0;
+    let strip = i32(floor(u));
+    let m = 1.0 + floor(hash2(cell * 7 + vec2<i32>(strip, 31)) * 2.99);
+    let v = q.y * m + 8.0 + hash2(cell * 5 + vec2<i32>(strip, 2));
+    let sub = i32(floor(v));
+    let pick = hash2(cell * vec2<i32>(31, 17) + vec2<i32>(strip * 7 + sub * 13, strip * 3 - sub * 5));
+    var col = vec3<f32>(0.80, 0.72, 0.44);                               // ripe grain
+    if (palette == 0) {
+        if (pick > 0.26) { col = vec3<f32>(0.50, 0.62, 0.34); }          // green crop
+        if (pick > 0.50) { col = vec3<f32>(0.41, 0.54, 0.30); }          // darker green: pasture, beet
+        if (pick > 0.66) { col = vec3<f32>(0.55, 0.45, 0.33); }          // ploughed
+        if (pick > 0.80) { col = vec3<f32>(0.78, 0.74, 0.56); }          // stubble
+        if (pick > 0.95) { col = vec3<f32>(0.84, 0.78, 0.32); }          // rapeseed
+    } else if (palette == 1) {
+        col = vec3<f32>(0.46, 0.60, 0.40);
+        if (pick > 0.35) { col = vec3<f32>(0.56, 0.66, 0.44); }
+        if (pick > 0.60) { col = vec3<f32>(0.48, 0.58, 0.56); }          // flooded
+        if (pick > 0.82) { col = vec3<f32>(0.66, 0.66, 0.42); }
+    } else {
+        col = vec3<f32>(0.72, 0.63, 0.45);
+        if (pick > 0.35) { col = vec3<f32>(0.56, 0.60, 0.36); }
+        if (pick > 0.60) { col = vec3<f32>(0.63, 0.53, 0.37); }
+        if (pick > 0.82) { col = vec3<f32>(0.78, 0.71, 0.51); }
+    }
+    // field edges: hedges, tracks and ditches
+    let fu = u - floor(u);
+    let fv = v - floor(v);
+    var edge = min(min(fu, 1.0 - fu) / n, min(fv, 1.0 - fv) / m);
+    edge = min(edge, 0.5 - max(abs(f.x), abs(f.y)));
+    if (pivots && hash2(cell + vec2<i32>(77, 1)) < 0.30) {
+        // a pivot sprinkler: a green circle in a square of stubble, one sector of it another crop
+        let rr = length(f);
+        col = vec3<f32>(0.74, 0.70, 0.52);
+        if (rr < 0.46) {
+            col = vec3<f32>(0.42, 0.58, 0.32);
+            if (fract(atan2(f.y, f.x) / 6.2831853 + hash2(cell + vec2<i32>(3, 3))) < 0.3) { col = vec3<f32>(0.62, 0.66, 0.38); }
+        }
+        edge = min(abs(rr - 0.46), 0.5 - max(abs(f.x), abs(f.y)));
+    }
+    let px = g3.misc.y / size;                      // one screen pixel, in blocks
+    let line = 1.0 - smoothstep(px * 0.5, px * 1.6, edge);
+    col = col * (1.0 - hedge * line) * (0.95 + 0.10 * hash2(cell + vec2<i32>(strip, sub)));
+    return clamp(col / vec3<f32>(0.68, 0.66, 0.46), vec3<f32>(0.55), vec3<f32>(1.35));
+}
+
 // ---------------------------------------------------------------- terrain
 
 struct TOut {
@@ -137,11 +236,9 @@ fn vs_terrain(@builtin(vertex_index) vi: u32) -> TOut {
 
 /// Brightness of the ground from its slope: 1 on flat ground, brighter facing the light.
 fn land_shade(rel: vec2<f32>) -> f32 {
-    let e = g3.hpx.xy;
-    let hx = (max(height_raw(rel + vec2<f32>(e.x, 0.0)), 0.0) - max(height_raw(rel - vec2<f32>(e.x, 0.0)), 0.0)) / (2.0 * e.x);
-    let hy = (max(height_raw(rel + vec2<f32>(0.0, e.y)), 0.0) - max(height_raw(rel - vec2<f32>(0.0, e.y)), 0.0)) / (2.0 * e.y);
+    let sl = slope_at(rel);
     let ex = g3.misc.x;
-    let n = normalize(vec3<f32>(-hx * ex, -hy * ex, 1.0));
+    let n = normalize(vec3<f32>(-sl.x * ex, -sl.y * ex, 1.0));
     let l = normalize(LIGHT);
     return clamp(dot(n, l) / l.z, 0.45, 1.3);
 }
@@ -200,6 +297,16 @@ fn fs_terrain(i: TOut) -> @location(0) vec4<f32> {
     // roads, railways and rivers run through the woods in the open, not under the dark floor
     let tint = mix(floor_tint, vec3<f32>(1.0), mask.g);
     var land = o.rgb * tint * mix(1.0, land_shade(i.rel), t);
+    // farmland: a patchwork of fields, close up, outside towns and off the roads
+    let field_fade = (1.0 - smoothstep(900.0, 1600.0, g3.misc.y)) * t * (1.0 - mask.r) * (1.0 - mask.g);
+    if (field_fade > 0.01) {
+        let farmed = arable_at(i.rel);
+        if (farmed > 0.01) {
+            let ll = lat_lon(world);
+            let k = farmed * (1.0 - smoothstep(56.0, 62.0, abs(ll.x))) * field_fade;
+            land *= mix(vec3<f32>(1.0), field_tint(world, culture(ll)), k * 0.9);
+        }
+    }
     // rivers are water: the same moving surface as the sea, in a shallow colour
     land = mix(land, water(i.rel, pos, 45.0) * o.a, mask.b * t);
     let rgb = sea * (1.0 - o.a) + land;
@@ -504,12 +611,14 @@ fn vs_tree(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     // woods have clearings and ragged edges: thin the trees out with slow noise
     let tree_line = 1.0 - 0.6 * smoothstep(62.0, 69.0, lat + ground_h / 80.0);
     let wooded = lush * smoothstep(0.22, 0.5, vnoise(world_xy / 9000.0) + lush * 0.6) * 1.35 * tree_line;
-    let cover = max(wooded, scrub * 0.13);
+    // and farmland has a tree here and there, along the hedges and by the farms
+    let scattered = max(scrub * 0.13, arable_at(base) * 0.022 * (1.0 - smoothstep(56.0, 62.0, lat)));
+    let cover = max(wooded, scattered);
     let m = textureSampleLevel(urban_mask, samp, overlay_uv(base), 0.0);
     if (hash2(c + vec2<i32>(11, 2)) >= cover || m.r > 0.3 || m.g > 0.25) {
         return hidden();
     }
-    let open = wooded < scrub * 0.13 || lush < 0.5;      // scattered trees, not a wood
+    let open = wooded < scattered || lush < 0.5;      // scattered trees, not a wood
     let pick = hash2(c + vec2<i32>(23, 4));
     let cold = smoothstep(52.0, 62.0, lat + ground_h / 60.0 + (vnoise(world_xy / 40000.0) - 0.5) * 12.0);
     let tropic = 1.0 - smoothstep(14.0, 24.0, lat);
@@ -536,7 +645,7 @@ fn vs_tree(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
         shape = select(UMBRELLA, PALM, pick > 1.0 - 0.3 * tropic);
         green = select(vec3<f32>(0.40, 0.43, 0.22), vec3<f32>(0.27, 0.41, 0.19), shape == PALM);
         size *= 1.15;
-    } else if (open) {
+    } else if (open && lat < 44.0) {
         // Mediterranean: stone pines, cypresses, olive-grey trees
         green = vec3<f32>(0.37, 0.41, 0.27);
         if (pick > 0.75) { shape = CONIFER; slim = 0.5; tall = 1.15; green = vec3<f32>(0.16, 0.27, 0.19); }
@@ -570,6 +679,92 @@ fn is_park(q: vec2<i32>) -> bool {
     return hash2(vec2<i32>(q.x >> 2u, q.y >> 1u) + vec2<i32>(53, 29)) < 0.09;
 }
 
+struct HouseV {
+    p: vec3<f32>,        // local position: x along the ridge, y across, z up
+    normal: vec3<f32>,
+    is_roof: bool,
+};
+
+/// Vertex `vi` (0..41) of a house: four walls, two roof slopes, two gable ends. `w` is its length
+/// along the ridge, `d` its depth, `wall` the wall height, `ridge` the roof height above the walls
+/// (0 = flat roof), `eaves` how far the roof overhangs at the ends (1 = not at all).
+fn house_vertex(vi: u32, w: f32, d: f32, wall: f32, ridge: f32, eaves: f32) -> HouseV {
+    var p: vec3<f32>;        // local position: x along the ridge (the street), y across, z up
+    var normal: vec3<f32>;
+    var is_roof = false;
+    var u6 = array<f32, 6>(0.0, 1.0, 1.0, 0.0, 1.0, 0.0);
+    var v6 = array<f32, 6>(0.0, 0.0, 1.0, 0.0, 1.0, 1.0);
+    if (vi < 24u) {
+        // walls
+        let face = vi / 6u;
+        let k = vi % 6u;
+        let uu = u6[k] - 0.5;
+        let vv = v6[k] * wall;
+        switch face {
+            case 0u: { p = vec3<f32>(uu * w, -0.5 * d, vv); normal = vec3<f32>(0.0, -1.0, 0.0); }
+            case 1u: { p = vec3<f32>(0.5 * w, uu * d, vv); normal = vec3<f32>(1.0, 0.0, 0.0); }
+            case 2u: { p = vec3<f32>(-uu * w, 0.5 * d, vv); normal = vec3<f32>(0.0, 1.0, 0.0); }
+            default: { p = vec3<f32>(-0.5 * w, -uu * d, vv); normal = vec3<f32>(-1.0, 0.0, 0.0); }
+        }
+    } else if (vi < 36u) {
+        // two roof slopes, from the eaves (a little wider than the walls) up to the ridge
+        let side = select(-1.0, 1.0, vi >= 30u);
+        let k = (vi - 24u) % 6u;
+        let run = (u6[k] - 0.5) * w * eaves;
+        let up = v6[k];
+        p = vec3<f32>(run, side * 0.54 * d * (1.0 - up), wall + ridge * up);
+        normal = vec3<f32>(0.0, side * ridge, 0.5 * d + 0.0001);
+        is_roof = true;
+    } else {
+        // gable ends: the triangles under the roof at both ends
+        let end = select(-1.0, 1.0, vi >= 39u);
+        let k = (vi - 36u) % 3u;
+        var g2 = vec2<f32>(-0.5 * d, wall);
+        if (k == 1u) { g2 = vec2<f32>(0.5 * d, wall); } else if (k == 2u) { g2 = vec2<f32>(0.0, wall + ridge); }
+        p = vec3<f32>(end * 0.5 * w, g2.x, g2.y);
+        normal = vec3<f32>(end, 0.0, 0.0);
+    }
+    return HouseV(p, normal, is_roof);
+}
+
+// Out in the farmland about one plot in twenty has a farm: one long low house with its barn under
+// the same roof, in the colours of its part of the world.
+fn farmstead(vi: u32, c: vec2<i32>, origin: vec2<f32>, s: f32) -> MOut {
+    if (hash2(c + vec2<i32>(61, 23)) > 0.05) {
+        return hidden();
+    }
+    let foot = origin + (0.25 + 0.5 * vec2<f32>(hash2(c + vec2<i32>(6, 6)), hash2(c + vec2<i32>(4, 1)))) * s;
+    let m = textureSampleLevel(urban_mask, samp, overlay_uv(foot), 0.0);
+    let ll = lat_lon(vec2<f32>(g3.center.xy) + foot);
+    if (m.r > 0.2 || m.g > 0.3 || arable_at(foot) * (1.0 - smoothstep(56.0, 62.0, abs(ll.x))) < 0.5) {
+        return hidden();
+    }
+    let st = house_style(culture(ll));
+    let unit = g3.sizes.y;
+    let tone = hash2(c + vec2<i32>(8, 8));
+    let w = unit * (0.42 + 0.22 * hash2(c + vec2<i32>(3, 9)));
+    let d = unit * 0.26;
+    let wall = unit * 0.14;
+    let flat_roof = st.flat > 0.7;
+    let ridge = select(d * max(st.pitch, 0.28), 0.0, flat_roof);
+    let hv3 = house_vertex(vi, w, d, wall, ridge, 1.05);
+    let turned = hash2(c + vec2<i32>(19, 2)) < 0.5;
+    let local = vec3<f32>(select(hv3.p.xy, hv3.p.yx, turned), hv3.p.z);
+    let n = vec3<f32>(select(hv3.normal.xy, hv3.normal.yx, turned), hv3.normal.z);
+    var color = mix(st.wall_a, st.wall_b, tone);
+    if (hv3.is_roof) {
+        color = select(select(st.roof_a, st.roof_c, tone > 0.6), st.flat_roof, flat_roof) * (0.9 + 0.2 * tone);
+    } else {
+        color *= mix(0.74, 1.0, smoothstep(0.0, wall, hv3.p.z));
+    }
+    let world = vec3<f32>(foot, ground_z(foot)) + local;
+    var o: MOut;
+    o.clip = g3.view_proj * vec4<f32>(world, 1.0);
+    o.color = lit(color, n);
+    o.pos = world;
+    return o;
+}
+
 // One building per plot, standing at its street: four walls, two roof slopes and two gable ends,
 // 42 vertices. Three kinds: a detached house; a terrace (the houses of a block joined into one
 // row, same height and roof); and, deep inside a big town, a taller block with a flat roof (ridge
@@ -581,8 +776,11 @@ fn vs_building(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32)
     let s = f32(cb.z);
     let origin = vec2<f32>(c * cb.z - g3.center.xy);   // the low corner of the plot
     let centre = origin + 0.5 * s;
-    if (g3.sizes.y <= 0.0 || urban_at(centre) < 0.5 || height_raw(centre) <= 0.0) {
+    if (g3.sizes.y <= 0.0 || height_raw(centre) <= 0.0) {
         return hidden();
+    }
+    if (urban_at(centre) < 0.5) {
+        return farmstead(vi, c, origin, s);
     }
     // how deep inside the town this plot is: the mask a few plots away in eight directions
     var inside = 0.0;
@@ -668,41 +866,10 @@ fn vs_building(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32)
     }
     w *= unit; d *= unit; wall *= unit; ridge *= unit;
 
-    var p: vec3<f32>;        // local position: x along the ridge (the street), y across, z up
-    var normal: vec3<f32>;
-    var is_roof = false;
-    var u6 = array<f32, 6>(0.0, 1.0, 1.0, 0.0, 1.0, 0.0);
-    var v6 = array<f32, 6>(0.0, 0.0, 1.0, 0.0, 1.0, 1.0);
-    if (vi < 24u) {
-        // walls
-        let face = vi / 6u;
-        let k = vi % 6u;
-        let uu = u6[k] - 0.5;
-        let vv = v6[k] * wall;
-        switch face {
-            case 0u: { p = vec3<f32>(uu * w, -0.5 * d, vv); normal = vec3<f32>(0.0, -1.0, 0.0); }
-            case 1u: { p = vec3<f32>(0.5 * w, uu * d, vv); normal = vec3<f32>(1.0, 0.0, 0.0); }
-            case 2u: { p = vec3<f32>(-uu * w, 0.5 * d, vv); normal = vec3<f32>(0.0, 1.0, 0.0); }
-            default: { p = vec3<f32>(-0.5 * w, -uu * d, vv); normal = vec3<f32>(-1.0, 0.0, 0.0); }
-        }
-    } else if (vi < 36u) {
-        // two roof slopes, from the eaves (a little wider than the walls) up to the ridge
-        let side = select(-1.0, 1.0, vi >= 30u);
-        let k = (vi - 24u) % 6u;
-        let run = (u6[k] - 0.5) * w * select(1.05, 1.0, terrace);
-        let up = v6[k];
-        p = vec3<f32>(run, side * 0.54 * d * (1.0 - up), wall + ridge * up);
-        normal = vec3<f32>(0.0, side * ridge, 0.5 * d + 0.0001);
-        is_roof = true;
-    } else {
-        // gable ends: the triangles under the roof at both ends
-        let end = select(-1.0, 1.0, vi >= 39u);
-        let k = (vi - 36u) % 3u;
-        var g2 = vec2<f32>(-0.5 * d, wall);
-        if (k == 1u) { g2 = vec2<f32>(0.5 * d, wall); } else if (k == 2u) { g2 = vec2<f32>(0.0, wall + ridge); }
-        p = vec3<f32>(end * 0.5 * w, g2.x, g2.y);
-        normal = vec3<f32>(end, 0.0, 0.0);
-    }
+    let hv3 = house_vertex(vi, w, d, wall, ridge, select(1.05, 1.0, terrace));
+    let p = hv3.p;
+    let normal = hv3.normal;
+    let is_roof = hv3.is_roof;
     let local = vec3<f32>(select(p.xy, p.yx, swap), p.z);
     let n = vec3<f32>(select(normal.xy, normal.yx, swap), normal.z);
 
