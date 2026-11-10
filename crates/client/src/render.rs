@@ -144,6 +144,148 @@ pub fn city_landmarks(urban: &[[i32; 2]], tri: &[u32], cities: &[[i32; 2]]) -> V
     out
 }
 
+/// A place where a road or railway crosses a river: where, which way the road runs (a unit
+/// vector), the sine of the angle between road and river, the river's class and how wide it is
+/// there (share of its class width), and the way (0..2: road class; `RAIL_WAY` + rail class).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BridgeSite {
+    pub pos: [i32; 2],
+    pub dir: [f32; 2],
+    pub sin: f32,
+    pub river_class: u8,
+    pub river_share: f32,
+    pub way: u8,
+}
+const RAIL_WAY: u8 = 3;
+/// A bridge as the GPU sees it: place, direction, length and width in metres, kind (bit 0: railway).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct BridgeInst {
+    pos: [i32; 2],
+    dir: [f32; 2],
+    size_m: [f32; 2],
+    kind: u32,
+    _pad: u32,
+}
+/// A bridge is five boxes (deck, two sides, two abutments): 36 vertices each.
+const BRIDGE_VERTS: u32 = 180;
+const MAX_BRIDGES: usize = 6_000;
+/// Bridges show below this zoom (metres per pixel).
+const BRIDGES_BELOW: f64 = 900.0;
+/// Rivers start at this share of their width at the source and reach full width this far down.
+const RIVER_SOURCE_SHARE: f64 = 0.30;
+const RIVER_TAPER_M: f64 = 300_000.0;
+
+/// Ground height in metres at a world point (nearest pixel of the relief raster; 0 outside it).
+fn relief_height(rf: &meridian_data::render_file::Relief, x: i32, y: i32) -> i16 {
+    let (w, h) = (rf.width as i64, rf.height as i64);
+    let (sx, sy) = ((rf.x1 - rf.x0) as i64, (rf.y1 - rf.y0) as i64);
+    if w == 0 || h == 0 || sx <= 0 || sy <= 0 {
+        return 0;
+    }
+    let col = (x as i64 - rf.x0 as i64) * w / sx;
+    let row = (rf.y1 as i64 - y as i64) * h / sy;
+    if col < 0 || row < 0 || col >= w || row >= h {
+        return 0;
+    }
+    rf.height_m.get((row * w + col) as usize).copied().unwrap_or(0)
+}
+
+/// The rivers as segments with their class, each carrying how wide the river is at its two ends
+/// (0..255, packed into `dist` as a + 256 * b; see `vs_river`). A river line is narrow at its
+/// source and reaches full width `RIVER_TAPER_M` downstream. The source is the higher end of the
+/// line, and only counts if no other river line ends there (Natural Earth cuts one river into
+/// several lines; those joins must not narrow).
+fn river_segments(data: &RenderData, class: impl Fn(usize) -> u8) -> Vec<(u8, LineSeg)> {
+    let (x, y, off) = (&data.river_x, &data.river_y, &data.river_off);
+    let lines: Vec<(usize, usize)> = (0..off.len().saturating_sub(1)).map(|i| (off[i] as usize, off[i + 1] as usize)).filter(|(a, b)| b - a >= 2).collect();
+    // how many river lines end at each place (to 500 m)
+    let key = |i: usize| (x[i].div_euclid(500), y[i].div_euclid(500));
+    let mut ends: std::collections::BTreeMap<(i32, i32), u32> = std::collections::BTreeMap::new();
+    for &(a, b) in &lines {
+        *ends.entry(key(a)).or_insert(0) += 1;
+        *ends.entry(key(b - 1)).or_insert(0) += 1;
+    }
+    let mut out = Vec::new();
+    let mut along: Vec<f64> = Vec::new();
+    for (li, &(a, b)) in lines.iter().enumerate() {
+        along.clear();
+        along.push(0.0);
+        for k in a..b - 1 {
+            let d = (((x[k + 1] - x[k]) as f64).powi(2) + ((y[k + 1] - y[k]) as f64).powi(2)).sqrt();
+            along.push(along[k - a] + d);
+        }
+        let total = along[b - 1 - a];
+        let from_start = relief_height(&data.relief, x[a], y[a]) >= relief_height(&data.relief, x[b - 1], y[b - 1]);
+        let source = if from_start { a } else { b - 1 };
+        let tapers = ends[&key(source)] == 1;
+        let reach = RIVER_TAPER_M.min(total).max(1.0);
+        let share = |k: usize| -> f32 {
+            if !tapers {
+                return 255.0;
+            }
+            let d = if from_start { along[k - a] } else { total - along[k - a] };
+            let t = (d / reach).clamp(0.0, 1.0);
+            ((RIVER_SOURCE_SHARE + (1.0 - RIVER_SOURCE_SHARE) * t * t * (3.0 - 2.0 * t)) * 255.0).round() as f32
+        };
+        // the class comes from the line's index in the file, as `classed_lines` gives it
+        let line_index = (0..off.len() - 1).filter(|&i| off[i + 1] as usize - off[i] as usize >= 2).nth(li).unwrap_or(li);
+        for k in a..b - 1 {
+            out.push((class(line_index), LineSeg { a: [x[k], y[k], x[k + 1], y[k + 1]], dist: share(k) + 256.0 * share(k + 1) }));
+        }
+    }
+    out
+}
+
+/// Where the ways (roads and railways, each with its way code) cross the rivers. Two bridges of
+/// the same kind closer than about 400 m count as one.
+fn find_bridges(rivers: &[(u8, LineSeg)], ways: &[(u8, LineSeg)]) -> Vec<BridgeSite> {
+    const CELL: i32 = 20_000;
+    let cells = |s: &LineSeg| {
+        let (x0, x1) = (s.a[0].min(s.a[2]).div_euclid(CELL), s.a[0].max(s.a[2]).div_euclid(CELL));
+        let (y0, y1) = (s.a[1].min(s.a[3]).div_euclid(CELL), s.a[1].max(s.a[3]).div_euclid(CELL));
+        (x0..=x1).flat_map(move |cx| (y0..=y1).map(move |cy| (cx, cy)))
+    };
+    // every river segment under each grid cell it touches, sorted so a cell is one run
+    let mut grid: Vec<((i32, i32), u32)> = rivers.iter().enumerate().flat_map(|(i, (_, s))| cells(s).map(move |c| (c, i as u32))).collect();
+    grid.sort_unstable();
+    let mut seen: std::collections::BTreeSet<(i32, i32, bool)> = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for &(way, w) in ways {
+        let (px, py) = (w.a[0] as f64, w.a[1] as f64);
+        let (rx, ry) = (w.a[2] as f64 - px, w.a[3] as f64 - py);
+        let len = (rx * rx + ry * ry).sqrt();
+        if len < 1.0 {
+            continue;
+        }
+        for cell in cells(&w) {
+            let start = grid.partition_point(|e| e.0 < cell);
+            for &(_, ri) in grid[start..].iter().take_while(|e| e.0 == cell) {
+                let (class, r) = rivers[ri as usize];
+                let (qx, qy) = (r.a[0] as f64, r.a[1] as f64);
+                let (sx, sy) = (r.a[2] as f64 - qx, r.a[3] as f64 - qy);
+                let cross = rx * sy - ry * sx;
+                let rlen = (sx * sx + sy * sy).sqrt();
+                if cross.abs() < 1e-9 || rlen < 1.0 {
+                    continue;
+                }
+                let t = ((qx - px) * sy - (qy - py) * sx) / cross;
+                let u = ((qx - px) * ry - (qy - py) * rx) / cross;
+                if !(0.0..=1.0).contains(&t) || !(0.0..=1.0).contains(&u) {
+                    continue;
+                }
+                let pos = [(px + rx * t).round() as i32, (py + ry * t).round() as i32];
+                if !seen.insert((pos[0].div_euclid(400), pos[1].div_euclid(400), way >= RAIL_WAY)) {
+                    continue;
+                }
+                let (w1, w0) = ((r.dist / 256.0).floor(), r.dist % 256.0);
+                out.push(BridgeSite { pos, dir: [(rx / len) as f32, (ry / len) as f32], sin: (cross.abs() / (len * rlen)) as f32, river_class: class, river_share: (w0 + (w1 - w0) * u as f32) / 255.0, way });
+            }
+        }
+    }
+    out
+}
+
 /// One little vehicle as the GPU sees it: where it is, which way it heads (a unit vector), how long
 /// it is in metres, and its kind (low two bits: `CAR`, `TRUCK`, `LOCO`, `WAGON`; the rest: a seed
 /// for its colour).
@@ -290,7 +432,7 @@ const STYLES: [([f32; 4], f32, f32); 5] = [
 const RIVER_STYLE: usize = 4;
 /// Map details drawn as extra styles after the five above: roads by class, the two passes of a
 /// railway (dark bed, then light dashes on top for the classic black-and-white line), urban fill.
-const DETAIL_STYLES: [([f32; 4], f32, f32); 14] = [
+const DETAIL_STYLES: [([f32; 4], f32, f32); 18] = [
     ([0.58, 0.24, 0.14, 0.90], 1.9, 0.0),
     ([0.55, 0.34, 0.20, 0.80], 1.3, 0.0),
     ([0.42, 0.34, 0.25, 0.60], 0.9, 0.0),
@@ -305,6 +447,11 @@ const DETAIL_STYLES: [([f32; 4], f32, f32); 14] = [
     // rivers by class: big, medium, small, streams (set per frame: they widen as you zoom in)
     ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
     ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
+    // and the bank drawn under each class of river
+    ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
+    ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
+    ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
+    ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
     ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
     ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0),
 ];
@@ -317,7 +464,9 @@ const RIVERS_STREAMS_BELOW: f64 = 1_800.0;
 const RIVER_STREAM_RANK: u8 = 10;
 const RIVER_CLASS_STYLE: usize = 15;
 /// Colour of a river close up (the paper map keeps the ink blue of `STYLES`).
-const RIVER_WATER: [f32; 4] = [0.22, 0.40, 0.52, 1.0];
+const RIVER_WATER: [f32; 4] = [0.30, 0.50, 0.64, 1.0];
+const RIVER_BANK: [f32; 4] = [0.15, 0.23, 0.25, 0.55];
+const RIVER_BANK_STYLE: usize = 19;
 /// Close up (the 3D view) roads turn from the red atlas line into asphalt: colour of the surface
 /// by class (motorway, main road, lane), its width in pixels at the closest zoom, the edge colour
 /// and the centre-line colour.
@@ -496,6 +645,8 @@ pub struct Renderer {
     road_centre: bool,
     /// Width of each road class on screen this frame (pixels), for the traffic lanes.
     road_width_px: [f32; 3],
+    rail_width_px: f32,
+    river_width_px: [f32; 4],
     urban_vertices: wgpu::Buffer,
     urban_indices: wgpu::Buffer,
     urban_count: u32,
@@ -511,6 +662,11 @@ pub struct Renderer {
     /// `water` marks rivers as well as clearing them.
     clear_pipeline: wgpu::RenderPipeline,
     water_pipeline: wgpu::RenderPipeline,
+    river_pipeline: wgpu::RenderPipeline,
+    bridge_pipeline: wgpu::RenderPipeline,
+    bridge_sites: Vec<BridgeSite>,
+    bridges: wgpu::Buffer,
+    bridge_count: u32,
     vehicle_pipeline: wgpu::RenderPipeline,
     vehicles: wgpu::Buffer,
     /// Reused each frame for the traffic in view.
@@ -724,12 +880,12 @@ impl Renderer {
         // the mask: red = town, green = keep clear (roads, railways, rivers), blue = river water
         let mask_format = wgpu::TextureFormat::Rgba8Unorm;
         let mask_target = [Some(wgpu::ColorTargetState { format: mask_format, blend: None, write_mask: wgpu::ColorWrites::RED })];
-        let mask_lines = |label: &str, write_mask: wgpu::ColorWrites| {
+        let mask_lines = |label: &str, vs: &str, fs: &str, write_mask: wgpu::ColorWrites| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&layout_line),
-                vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_line"), compilation_options: Default::default(), buffers: &line_buffers },
-                fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_mask"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format: mask_format, blend: None, write_mask })] }),
+                vertex: wgpu::VertexState { module: &shader, entry_point: Some(vs), compilation_options: Default::default(), buffers: &line_buffers },
+                fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some(fs), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format: mask_format, blend: None, write_mask })] }),
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
@@ -737,8 +893,20 @@ impl Renderer {
                 cache: None,
             })
         };
-        let clear_pipeline = mask_lines("mask: clear", wgpu::ColorWrites::GREEN);
-        let water_pipeline = mask_lines("mask: water", wgpu::ColorWrites::GREEN | wgpu::ColorWrites::BLUE);
+        // roads and railways are drawn after the rivers and take the water away again (bridges)
+        let clear_pipeline = mask_lines("mask: clear", "vs_line", "fs_mask_way", wgpu::ColorWrites::GREEN | wgpu::ColorWrites::BLUE);
+        let water_pipeline = mask_lines("mask: water", "vs_river", "fs_river_mask", wgpu::ColorWrites::GREEN | wgpu::ColorWrites::BLUE);
+        let river_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("river"),
+            layout: Some(&layout_line),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_river"), compilation_options: Default::default(), buffers: &line_buffers },
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_river"), compilation_options: Default::default(), targets: &target }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
         let mask_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("urban mask"),
             layout: Some(&layout_fill),
@@ -893,6 +1061,25 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        let bridge_attrs = [
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Sint32x2, offset: 0, shader_location: 0 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 8, shader_location: 1 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 16, shader_location: 2 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32, offset: 24, shader_location: 3 },
+        ];
+        let bridge_buffers = [Some(wgpu::VertexBufferLayout { array_stride: 32, step_mode: wgpu::VertexStepMode::Instance, attributes: &bridge_attrs })];
+        let bridge_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("bridges"),
+            layout: Some(&layout3),
+            vertex: wgpu::VertexState { module: &terrain_shader, entry_point: Some("vs_bridge"), compilation_options: Default::default(), buffers: &bridge_buffers },
+            fragment: Some(wgpu::FragmentState { module: &terrain_shader, entry_point: Some("fs_model"), compilation_options: Default::default(), targets: &opaque }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState { format: DEPTH_FORMAT, depth_write_enabled: Some(true), depth_compare: Some(wgpu::CompareFunction::Less), stencil: Default::default(), bias: Default::default() }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let bridges = device.create_buffer(&wgpu::BufferDescriptor { label: Some("bridges"), size: (MAX_BRIDGES * std::mem::size_of::<BridgeInst>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let vehicles = device.create_buffer(&wgpu::BufferDescriptor { label: Some("vehicles"), size: (MAX_VEHICLES * std::mem::size_of::<VehicleInst>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
 
         let grid = TileGrid::new(data.bounds());
@@ -916,7 +1103,11 @@ impl Renderer {
             let r = data.river_rank[i];
             if r <= RIVER_MAJOR_RANK { 0 } else if r <= RIVER_MEDIUM_RANK { 1 } else if r < RIVER_STREAM_RANK { 2 } else { 3 }
         };
-        let rivers = GpuLines::new(device, "rivers", grid, 4, classed_lines(&data.river_x, &data.river_y, &data.river_off, river_class), false);
+        let river_items = river_segments(data, river_class);
+        let mut ways: Vec<(u8, LineSeg)> = classed_lines(&data.roads.x, &data.roads.y, &data.roads.off, |i| data.roads.class[i].min(2));
+        ways.extend(classed_lines(&data.rails.x, &data.rails.y, &data.rails.off, |i| RAIL_WAY + data.rails.class[i].min(2)));
+        let bridge_sites = find_bridges(&river_items, &ways);
+        let rivers = GpuLines::new(device, "rivers", grid, 4, river_items, false);
         let roads = GpuLines::new(device, "roads", grid, 3, classed_lines(&data.roads.x, &data.roads.y, &data.roads.off, |i| data.roads.class[i]), true);
         let rails = GpuLines::new(device, "rails", grid, 3, classed_lines(&data.rails.x, &data.rails.y, &data.rails.off, |i| data.rails.class[i]), true);
         let urban_verts: Vec<[i32; 2]> = if data.urban_vx.is_empty() { vec![[0, 0]] } else { (0..data.urban_vx.len()).map(|i| [data.urban_vx[i], data.urban_vy[i]]).collect() };
@@ -944,6 +1135,8 @@ impl Renderer {
             road_3d: false,
             road_centre: false,
             road_width_px: [0.0; 3],
+            rail_width_px: 0.0,
+            river_width_px: [0.0; 4],
             urban_vertices,
             urban_indices,
             urban_count: data.urban_tri.len() as u32,
@@ -956,6 +1149,11 @@ impl Renderer {
             draw_plazas: false,
             clear_pipeline,
             water_pipeline,
+            river_pipeline,
+            bridge_pipeline,
+            bridge_sites,
+            bridges,
+            bridge_count: 0,
             vehicle_pipeline,
             vehicles,
             vehicle_scratch: Vec::new(),
@@ -1034,13 +1232,20 @@ impl Renderer {
             edge[3] *= t;
             queue.write_buffer(&self.style_buffers[ROAD_EDGE_STYLE + class], 0, bytemuck::bytes_of(&Style { color: edge, width_px: width + 1.0 + 1.6 * widen / 4.0, dash_px: 0.0, _pad: [0.0; 2] }));
         }
+        self.rail_width_px = DETAIL_STYLES[3].1 * widen;
         self.road_width_px = [0, 1, 2].map(|class: usize| mix(DETAIL_STYLES[class].1 * widen, (ASPHALT[class].1 * widen / 4.0).max(DETAIL_STYLES[class].1 * widen)));
         // Rivers widen the same way, and turn from map ink to water colour.
         let grow = ((1_500.0 / camera.m_per_px - 1.0) / 12.0).clamp(0.0, 1.0) as f32;
         for (class, (far, close)) in RIVER_WIDTHS.iter().enumerate() {
             let ink = STYLES[RIVER_STYLE].0;
             let color = [mix(ink[0], RIVER_WATER[0]), mix(ink[1], RIVER_WATER[1]), mix(ink[2], RIVER_WATER[2]), mix(ink[3], RIVER_WATER[3])];
-            queue.write_buffer(&self.style_buffers[RIVER_CLASS_STYLE + class], 0, bytemuck::bytes_of(&Style { color, width_px: far + (close - far) * grow, dash_px: 0.0, _pad: [0.0; 2] }));
+            let width_px = far + (close - far) * grow;
+            self.river_width_px[class] = width_px;
+            queue.write_buffer(&self.style_buffers[RIVER_CLASS_STYLE + class], 0, bytemuck::bytes_of(&Style { color, width_px, dash_px: 0.0, _pad: [0.0; 2] }));
+            // the bank pass is told apart in the shader by a dash value of 1
+            let mut bank = RIVER_BANK;
+            bank[3] *= t;
+            queue.write_buffer(&self.style_buffers[RIVER_BANK_STYLE + class], 0, bytemuck::bytes_of(&Style { color: bank, width_px, dash_px: 1.0, _pad: [0.0; 2] }));
         }
         let mut centre = ROAD_CENTRE;
         centre[3] *= ((t - 0.5) * 2.0).clamp(0.0, 1.0) * ((widen - 2.0) / 1.0).clamp(0.0, 1.0);
@@ -1234,6 +1439,31 @@ impl Renderer {
             queue.write_buffer(&self.vehicles, 0, bytemuck::cast_slice(&list));
             self.vehicle_scratch = list;
         }
+        // bridges: where a road or railway that shows crosses a river that shows
+        self.bridge_count = 0;
+        if self.show_details && camera.m_per_px < BRIDGES_BELOW {
+            let fade = ((BRIDGES_BELOW - camera.m_per_px) / (BRIDGES_BELOW * 0.25)).clamp(0.0, 1.0);
+            let mut list: Vec<BridgeInst> = Vec::new();
+            for b in &self.bridge_sites {
+                let (x, y) = (b.pos[0] as f64, b.pos[1] as f64);
+                let rail = b.way >= RAIL_WAY;
+                let class = (b.way % RAIL_WAY) as usize;
+                let shown = (b.river_class as usize) < self.river_tier && class < if rail { self.rail_tier } else { self.road_tier };
+                if !shown || x < gx0 || x > gx1 || y < gy0 || y > gy1 {
+                    continue;
+                }
+                if list.len() >= MAX_BRIDGES {
+                    break;
+                }
+                let river_px = (self.river_width_px[b.river_class as usize] * b.river_share).max(1.0) as f64;
+                let way_px = if rail { self.rail_width_px } else { self.road_width_px[class] } as f64;
+                // long enough to span the river where the way crosses it at a slant, plus a little bank
+                let len_m = (river_px / (b.sin as f64).max(0.4) + way_px * 0.8 + 3.0) * camera.m_per_px;
+                list.push(BridgeInst { pos: b.pos, dir: b.dir, size_m: [len_m as f32, (way_px * 1.12 * camera.m_per_px * fade) as f32], kind: u32::from(rail) | ((b.pos[0] as u32 ^ b.pos[1] as u32) << 1), _pad: 0 });
+            }
+            queue.write_buffer(&self.bridges, 0, bytemuck::cast_slice(&list));
+            self.bridge_count = list.len() as u32;
+        }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("terrain"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: color_ops })],
@@ -1261,6 +1491,11 @@ impl Renderer {
                 pass.set_vertex_buffer(0, buf.slice(..));
                 pass.draw(0..LANDMARK_VERTS, 0..*n);
             }
+        }
+        if self.bridge_count > 0 {
+            pass.set_pipeline(&self.bridge_pipeline);
+            pass.set_vertex_buffer(0, self.bridges.slice(..));
+            pass.draw(0..BRIDGE_VERTS, 0..self.bridge_count);
         }
         if !self.vehicle_scratch.is_empty() {
             pass.set_pipeline(&self.vehicle_pipeline);
@@ -1299,11 +1534,19 @@ impl Renderer {
                 pass.draw(0..6, 0..*n);
             }
         }
-        pass.set_pipeline(&self.line_pipeline);
+        // rivers: every bank first, then the water over them (see `fs_river`)
+        pass.set_pipeline(&self.river_pipeline);
+        if self.road_3d {
+            for class in (0..self.river_tier).rev() {
+                pass.set_bind_group(1, &self.styles[RIVER_BANK_STYLE + class], &[]);
+                self.rivers.draw(pass, class, view);
+            }
+        }
         for class in (0..self.river_tier).rev() {
             pass.set_bind_group(1, &self.styles[RIVER_CLASS_STYLE + class], &[]);
             self.rivers.draw(pass, class, view);
         }
+        pass.set_pipeline(&self.line_pipeline);
         // roads: the less important classes first, so major highways sit on top. Close up, all the
         // dark edges go down first, so where roads meet their surfaces join without a line between.
         if self.road_3d {
@@ -1429,6 +1672,63 @@ mod tests {
                 assert_eq!(t[i - 1].kind & 3, WAGON);
             }
         }
+    }
+
+    #[test]
+    fn rivers_taper_from_their_source_and_bridges_stand_where_ways_cross_them() {
+        use meridian_data::render_file::{Labels, LineLayer, Relief};
+        // one river of two lines end to end, flowing east from the hills (x = 0) to the plain;
+        // the relief is 100 m high in the west half and 10 m in the east half
+        let relief = Relief { width: 2, height: 1, x0: 0, y0: -50_000, x1: 800_000, y1: 50_000, pixels: vec![128; 2], land_rgb: vec![0; 6], height_m: vec![100, 10] };
+        let data = RenderData {
+            checksum: 0,
+            levels: vec![],
+            cell_seg: vec![],
+            cell_mx: vec![],
+            cell_my: vec![],
+            cell_ring_off: vec![0],
+            cell_ring_x: vec![],
+            cell_ring_y: vec![],
+            province_mx: vec![],
+            province_my: vec![],
+            relief,
+            river_x: vec![0, 150_000, 300_000, 500_000, 500_000, 700_000],
+            river_y: vec![0; 6],
+            river_off: vec![0, 4, 6],
+            river_rank: vec![3, 3],
+            roads: LineLayer::default(),
+            rails: LineLayer::default(),
+            urban_vx: vec![],
+            urban_vy: vec![],
+            urban_tri: vec![],
+            countries: Labels::default(),
+            regions: Labels::default(),
+        };
+        let segs = river_segments(&data, |_| 0);
+        let ends: Vec<(f32, f32)> = segs.iter().map(|(_, s)| (s.dist % 256.0, (s.dist / 256.0).floor())).collect();
+        assert_eq!(ends.len(), 4);
+        // narrow at the source, half-way wide after 150 km, full after 300 km, and it stays full:
+        // the second line starts where the first ends, so that join does not narrow
+        assert_eq!(ends[0].0, (RIVER_SOURCE_SHARE * 255.0).round() as f32);
+        assert!(ends[0].1 > ends[0].0 && ends[0].1 < 255.0);
+        assert_eq!(ends[0].1, ends[1].0);
+        assert_eq!((ends[1].1, ends[2], ends[3]), (255.0, (255.0, 255.0), (255.0, 255.0)));
+
+        // a road crossing at x = 100 km at right angles, a railway crossing twice 100 m apart
+        // (one bridge), and a road that stops short of the river (no bridge)
+        let ways = [
+            (0u8, LineSeg { a: [100_000, -5_000, 100_000, 5_000], dist: 0.0 }),
+            (RAIL_WAY, LineSeg { a: [400_000, -5_000, 400_000, 5_000], dist: 0.0 }),
+            (RAIL_WAY, LineSeg { a: [400_100, -5_000, 400_100, 5_000], dist: 0.0 }),
+            (1u8, LineSeg { a: [600_000, 1_000, 600_000, 5_000], dist: 0.0 }),
+        ];
+        let b = find_bridges(&segs, &ways);
+        assert_eq!(b.len(), 2);
+        assert_eq!((b[0].pos, b[0].way, b[0].dir), ([100_000, 0], 0, [0.0, 1.0]));
+        assert!((b[0].sin - 1.0).abs() < 1e-6);
+        // the river is still narrow 100 km from its source, and full width at 400 km
+        assert!(b[0].river_share > 0.3 && b[0].river_share < 0.6, "{}", b[0].river_share);
+        assert_eq!((b[1].pos, b[1].way, b[1].river_share), ([400_000, 0], RAIL_WAY, 1.0));
     }
 
     #[test]

@@ -202,6 +202,79 @@ fn fs_line(i: LineOut) -> @location(0) vec4<f32> {
     return style.color;
 }
 
+// Rivers: a ribbon with round joins and soft banks, narrow at the source and widening downstream
+// (the look of the rivers on the Hearts of Iron IV map). Each segment is drawn as a capsule whose
+// half width runs from one end's value to the other's; the two values (0..255, share of the
+// style's width) are packed into the segment's `dist` as a + 256 * b. A river is drawn in two
+// passes over all its segments: first the bank (style.dash_px = 1: a little wider, darker, soft),
+// then the water (dash_px = 0), so no segment's bank shows inside its neighbour.
+struct RiverOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) p: vec2<f32>,      // pixels from the segment's start: x along it, y across
+    @location(1) len: f32,          // length of the segment in pixels
+    @location(2) half: vec2<f32>,   // half width in pixels at the start and at the end
+};
+
+@vertex
+fn vs_river(@builtin(vertex_index) vi: u32, l: LineIn) -> RiverOut {
+    let pa = vec2<f32>(l.a - g.center) * g.inv_scale;
+    let pb = vec2<f32>(l.b - g.center) * g.inv_scale;
+    var d = pb - pa;
+    let len = length(d);
+    if (len < 1e-6) { d = vec2<f32>(1.0, 0.0); } else { d = d / len; }
+    let n = vec2<f32>(-d.y, d.x);
+    let w1 = floor(l.dist / 256.0);
+    let w0 = l.dist - w1 * 256.0;
+    // never thinner than a hairline, so a river does not vanish on the paper map
+    let half = max(vec2<f32>(w0, w1) / 255.0 * style.width_px * 0.5, vec2<f32>(0.45)) * g.px_scale;
+    let reach = max(half.x, half.y) + 2.5 * g.px_scale;
+    var end = array<f32, 6>(0.0, 0.0, 1.0, 0.0, 1.0, 1.0);
+    var side = array<f32, 6>(-1.0, 1.0, -1.0, 1.0, 1.0, -1.0);
+    let local = vec2<f32>(mix(-reach, len + reach, end[vi]), side[vi] * reach);
+    var o: RiverOut;
+    o.clip = vec4<f32>((pa + d * local.x + n * local.y) / (g.viewport * 0.5), 0.0, 1.0);
+    o.p = local;
+    o.len = len;
+    o.half = half;
+    return o;
+}
+
+/// x: distance from the segment's centre line in pixels; y: the river's half width there.
+fn river_reach(i: RiverOut) -> vec2<f32> {
+    let t = clamp(i.p.x / max(i.len, 1e-6), 0.0, 1.0);
+    return vec2<f32>(distance(i.p, vec2<f32>(t * i.len, 0.0)), mix(i.half.x, i.half.y, t));
+}
+
+@fragment
+fn fs_river(i: RiverOut) -> @location(0) vec4<f32> {
+    let dh = river_reach(i);
+    let px = g.px_scale;
+    if (style.dash_px > 0.5) {
+        // the bank: a soft darker rim just outside the water
+        let a = 1.0 - smoothstep(dh.y + 0.2 * px, dh.y + 1.6 * px, dh.x);
+        return vec4<f32>(style.color.rgb, style.color.a * a);
+    }
+    // the water: lighter along the middle, deeper toward the banks
+    let a = 1.0 - smoothstep(dh.y - 0.6 * px, dh.y + 0.6 * px, dh.x);
+    let k = clamp(dh.x / max(dh.y, 1e-6), 0.0, 1.0);
+    let rgb = mix(style.color.rgb * 1.22 + vec3<f32>(0.04), style.color.rgb * 0.90, smoothstep(0.15, 0.95, k));
+    return vec4<f32>(rgb, style.color.a * a);
+}
+
+// The river in the mask (green: keep clear, blue: water).
+@fragment
+fn fs_river_mask(i: RiverOut) -> @location(0) vec4<f32> {
+    let dh = river_reach(i);
+    if (dh.x > dh.y + 0.5 * g.px_scale) { discard; }
+    return vec4<f32>(1.0, 1.0, 1.0, 1.0);
+}
+
+// Roads and railways in the mask: keep clear, and not water (a road crosses a river on a bridge).
+@fragment
+fn fs_mask_way() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+}
+
 // Solid fills in one colour (built-up areas): the style's colour, no per-vertex data but position.
 @vertex
 fn vs_solid(@location(0) pos: vec2<i32>) -> @builtin(position) vec4<f32> {

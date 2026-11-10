@@ -328,7 +328,9 @@ fn fs_terrain(i: TOut) -> @location(0) vec4<f32> {
         }
     }
     // rivers are water: the same moving surface as the sea, in a shallow colour
-    land = mix(land, water(i.rel, pos, 45.0) * o.a, mask.b * t);
+    // rivers keep their painted ribbon (see `fs_river`); here the water only shimmers as it flows
+    let ripple = vnoise(world / (g3.misc.y * 5.0) + vec2<f32>(g3.eye.w * 0.55, g3.eye.w * 0.2)) + vnoise(world / (g3.misc.y * 2.2) - vec2<f32>(g3.eye.w * 0.4, 0.0));
+    land *= 1.0 + (ripple - 1.0) * 0.16 * mask.b * t;
     let rgb = sea * (1.0 - o.a) + land;
     return vec4<f32>(hazed(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), pos), 1.0);
 }
@@ -1242,10 +1244,75 @@ fn vs_vehicle(@builtin(vertex_index) vi: u32, @location(0) pos: vec2<i32>, @loca
     }
     p = (p + b.at) * len_m;
     let side = vec2<f32>(-dir.y, dir.x);
-    let world = vec3<f32>(foot + dir * p.x + side * p.y, ground_z(foot) + p.z);
+    // (lifted a little, so a bridge deck does not swallow the wheels)
+    let world = vec3<f32>(foot + dir * p.x + side * p.y, ground_z(foot) + p.z + len_m * 0.05);
     var o: MOut;
     o.clip = g3.view_proj * vec4<f32>(world, 1.0);
     o.color = lit(b.color, vec3<f32>(dir * normal.x + side * normal.y, normal.z));
+    o.pos = world;
+    return o;
+}
+
+// ---------------------------------------------------------------- bridges
+//
+// Where a road or railway crosses a river (`find_bridges` in render.rs). A road bridge is a deck
+// with a concrete parapet along each side; a railway bridge is a deck between two steel girders.
+// Both stand on a stone abutment at each bank. Five boxes; x along the bridge, y across, z up.
+
+@vertex
+fn vs_bridge(@builtin(vertex_index) vi: u32, @location(0) pos: vec2<i32>, @location(1) dir: vec2<f32>, @location(2) size_m: vec2<f32>, @location(3) kind: u32) -> MOut {
+    let foot = vec2<f32>(pos - g3.center.xy);
+    let part = vi / 36u;
+    let face = (vi % 36u) / 6u;
+    if (size_m.y <= 0.0 || face == 5u) {
+        return hidden();
+    }
+    let len = size_m.x;
+    let wid = size_m.y;
+    let rail = (kind & 1u) == 1u;
+    // each box: centre (along, across), half size (along, across), bottom, height, colour
+    var at = vec2<f32>(0.0);
+    var half = vec2<f32>(len * 0.5, wid * 0.5);
+    var z0 = 0.0;
+    var h = wid * 0.06;
+    var color = select(vec3<f32>(0.38, 0.38, 0.40), vec3<f32>(0.27, 0.25, 0.23), rail);       // the deck
+    if (part == 1u || part == 2u) {
+        // the sides: a low parapet on a road bridge, a girder as high as a wagon on a railway bridge
+        let side = select(-1.0, 1.0, part == 2u);
+        at = vec2<f32>(0.0, side * wid * 0.5);
+        half = vec2<f32>(len * 0.5, wid * select(0.07, 0.08, rail));
+        h = wid * select(0.20, 0.50, rail);
+        let steel = select(vec3<f32>(0.33, 0.38, 0.36), vec3<f32>(0.46, 0.28, 0.23), hash2(vec2<i32>(i32(kind >> 1u), 3)) > 0.5);
+        color = select(vec3<f32>(0.76, 0.75, 0.71), steel, rail);
+    } else if (part >= 3u) {
+        // the abutments, one at each bank
+        let end = select(-1.0, 1.0, part == 4u);
+        at = vec2<f32>(end * len * 0.5, 0.0);
+        half = vec2<f32>(wid * 0.16, wid * 0.68);
+        h = wid * 0.14;
+        color = vec3<f32>(0.62, 0.60, 0.56);
+    }
+    var u6 = array<f32, 6>(0.0, 1.0, 1.0, 0.0, 1.0, 0.0);
+    var v6 = array<f32, 6>(0.0, 0.0, 1.0, 0.0, 1.0, 1.0);
+    let k = vi % 6u;
+    let uu = u6[k] * 2.0 - 1.0;
+    var p: vec3<f32>;
+    var normal: vec3<f32>;
+    switch face {
+        case 0u: { p = vec3<f32>(uu * half.x, -half.y, v6[k] * h); normal = vec3<f32>(0.0, -1.0, 0.0); }
+        case 1u: { p = vec3<f32>(half.x, uu * half.y, v6[k] * h); normal = vec3<f32>(1.0, 0.0, 0.0); }
+        case 2u: { p = vec3<f32>(-uu * half.x, half.y, v6[k] * h); normal = vec3<f32>(0.0, 1.0, 0.0); }
+        case 3u: { p = vec3<f32>(-half.x, -uu * half.y, v6[k] * h); normal = vec3<f32>(-1.0, 0.0, 0.0); }
+        default: { p = vec3<f32>(uu * half.x, (v6[k] * 2.0 - 1.0) * half.y, h); normal = vec3<f32>(0.0, 0.0, 1.0); }
+    }
+    p = p + vec3<f32>(at, z0);
+    let side_dir = vec2<f32>(-dir.y, dir.x);
+    // the whole bridge is level, at the height of the higher bank
+    let level = max(ground_z(foot + dir * len * 0.5), ground_z(foot - dir * len * 0.5));
+    let world = vec3<f32>(foot + dir * p.x + side_dir * p.y, level + p.z);
+    var o: MOut;
+    o.clip = g3.view_proj * vec4<f32>(world, 1.0);
+    o.color = lit(color, vec3<f32>(dir * normal.x + side_dir * normal.y, normal.z));
     o.pos = world;
     return o;
 }
