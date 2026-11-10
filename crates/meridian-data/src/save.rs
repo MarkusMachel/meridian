@@ -19,9 +19,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 const MAGIC: &[u8; 4] = b"MRSV";
-pub const SAVE_VERSION: u32 = 1;
+pub const SAVE_VERSION: u32 = 2;
 /// The oldest save version `migrate` can bring forward.
-pub const OLDEST_MIGRATABLE: u32 = 1;
+pub const OLDEST_MIGRATABLE: u32 = 2;
 const KIND_SAVE: u32 = 3;
 const HEADER_LEN: usize = 28;
 

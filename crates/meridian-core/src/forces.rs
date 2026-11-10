@@ -27,6 +27,25 @@ pub struct Transit {
     pub arrive_tick: u64,
 }
 
+/// A march in progress: a ground unit moving cell by cell along a planned route. It stands in
+/// its current cell until `arrive_tick`, then steps into the next one.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct March {
+    /// The cells still to enter, in reverse: the next one is last, the destination first.
+    pub path: Vec<u32>,
+    /// The tick on which the unit enters the next cell.
+    pub arrive_tick: u64,
+}
+
+impl March {
+    pub fn next(&self) -> Option<CellId> {
+        self.path.last().map(|&c| CellId(c))
+    }
+    pub fn destination(&self) -> Option<CellId> {
+        self.path.first().map(|&c| CellId(c))
+    }
+}
+
 /// A standing order held by a unit (or a headquarters). The engine validates and stores it;
 /// rules systems carry it out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -67,6 +86,7 @@ pub struct UnitExt {
     pub traits: TraitSet,
     pub transit: Option<Transit>,
     pub order: Option<UnitOrder>,
+    pub march: Option<March>,
 }
 
 impl Default for UnitExt {
@@ -85,6 +105,7 @@ impl Default for UnitExt {
             traits: TraitSet::new(),
             transit: None,
             order: None,
+            march: None,
         }
     }
 }
@@ -289,6 +310,16 @@ impl UnitExt {
                 }
                 h.write_u64(t.arrive_tick);
             }
+        }
+        // hashed only when present, like the other late additions, so worlds where nobody
+        // marches keep their old hashes
+        if let Some(m) = &self.march {
+            h.write_u8(0xA7);
+            h.write_u32(m.path.len() as u32);
+            for &c in &m.path {
+                h.write_u32(c);
+            }
+            h.write_u64(m.arrive_tick);
         }
     }
 }

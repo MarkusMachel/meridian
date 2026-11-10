@@ -78,14 +78,14 @@ fn main() {
     let cities = client::labels::city_positions(&map, &render);
     let Some(out) = args.screenshot.clone() else {
         let world = proving_ground::scenario_on_map(1, map.clone());
-        let session = Session::new(world, Box::new(proving_ground::schedule(false)), CountryId(0));
+        let session = Session::new(world, Box::new(proving_ground::rules(false)), CountryId(0));
         app::run(app::Inputs { map, render: Arc::new(render), session, view: args.view });
         return;
     };
     let terrain = modes::dominant_terrain(&map);
 
     let world = proving_ground::scenario_on_map(1, map);
-    let mut session = Session::new(world, Box::new(proving_ground::schedule(false)), CountryId(0));
+    let mut session = Session::new(world, Box::new(proving_ground::rules(false)), CountryId(0));
     session.set_speed(Speed::Run(5));
     while session.refresh().tick < args.ticks {
         session.frame();

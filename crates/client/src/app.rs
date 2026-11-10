@@ -6,7 +6,7 @@ use client::modes::{self, Mode};
 use client::render::{Renderer, NO_PROVINCE};
 use client::session::Session;
 use client::{CellPicker, Picker, Speed};
-use meridian_core::{Command, CountryId, Map, ProvinceId, UnitId};
+use meridian_core::{Command, CountryId, Map, UnitId};
 use meridian_data::RenderData;
 use std::sync::Arc;
 use std::time::Instant;
@@ -95,7 +95,7 @@ pub fn run(inputs: Inputs) {
     let terrain = modes::dominant_terrain(&inputs.map);
     let mut app = App {
         map: inputs.map.clone(),
-        session: Session::new(meridian_core::World::new(0, 1, 1), Box::new(proving_ground::schedule(false)), CountryId(0)),
+        session: Session::new(meridian_core::World::new(0, 1, 1), Box::new(proving_ground::rules(false)), CountryId(0)),
         picker,
         cell_picker,
         render: inputs.render.clone(),
@@ -196,7 +196,6 @@ impl App {
             self.shown_tick = Some(snap.tick);
             self.colors_dirty = false;
         }
-        self.orders.retain(|&(u, to)| snap.units.iter().any(|x| x.0 == u && x.2 != to));
         self.snapshot = snap;
     }
 
@@ -220,7 +219,7 @@ impl App {
         };
         match meridian_data::load_world(SAVE_PATH, &bytes, Some(self.map.clone())) {
             Ok(world) => {
-                self.session = Session::new(world, Box::new(proving_ground::schedule(false)), CountryId(0));
+                self.session = Session::new(world, Box::new(proving_ground::rules(false)), CountryId(0));
                 self.orders.clear();
                 self.selected_unit = None;
                 self.shown_tick = None;
@@ -235,15 +234,24 @@ impl App {
         client::heights::to_screen(&self.camera, &self.render.relief, self.render.province_mx[p as usize] as f64, self.render.province_my[p as usize] as f64)
     }
 
-    /// Screen position of a unit's marker. Units sharing a province are fanned out sideways.
+    /// Screen position (physical pixels) of a cell's centre.
+    fn cell_screen(&self, c: u32) -> (f64, f64) {
+        client::heights::to_screen(&self.camera, &self.render.relief, self.render.cell_mx[c as usize] as f64, self.render.cell_my[c as usize] as f64)
+    }
+
+    /// Screen position of a unit's marker: the cell it stands in (or its province's centre when
+    /// the cell is not known). Units sharing a place are fanned out sideways.
     fn unit_markers(&self) -> Vec<(u32, u16, (f64, f64))> {
-        let mut seen: std::collections::BTreeMap<u32, u32> = Default::default();
+        let mut seen: std::collections::BTreeMap<(bool, u32), u32> = Default::default();
         self.snapshot
             .units
             .iter()
-            .map(|&(id, owner, prov)| {
-                let k = seen.entry(prov).or_insert(0);
-                let (x, y) = self.province_screen(prov);
+            .enumerate()
+            .map(|(i, &(id, owner, prov))| {
+                let cell = self.snapshot.unit_cells.get(i).map_or(u32::MAX, |c| c.0);
+                let in_cell = (cell as usize) < self.render.cell_mx.len();
+                let k = seen.entry(if in_cell { (true, cell) } else { (false, prov) }).or_insert(0);
+                let (x, y) = if in_cell { self.cell_screen(cell) } else { self.province_screen(prov) };
                 let pos = (x + *k as f64 * 14.0, y);
                 *k += 1;
                 (id, owner, pos)
@@ -619,9 +627,11 @@ impl App {
         }
         let markers = self.unit_markers();
         // arrows for orders that have not finished
-        for &(unit, to) in &self.orders {
+        // (marches as the simulation has them: from each marching unit to the cell it is heading for)
+        let marching: Vec<(u32, u32)> = self.snapshot.units.iter().zip(&self.snapshot.unit_cells).filter(|(_, c)| (c.1 as usize) < self.render.cell_mx.len()).map(|(u, c)| (u.0, c.1)).collect();
+        for &(unit, to) in &marching {
             if let Some(&(_, _, from)) = markers.iter().find(|m| m.0 == unit) {
-                let (a, b) = (to_pt(from), to_pt(self.province_screen(to)));
+                let (a, b) = (to_pt(from), to_pt(self.cell_screen(to)));
                 let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(20, 20, 20));
                 painter.line_segment([a, b], stroke);
                 let d = (b - a).normalized();
@@ -723,12 +733,12 @@ impl ApplicationHandler for App {
                 _ => {}
             },
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } if !over_ui => {
-                let to = self.pick(self.cursor);
-                if let (Some((unit, owner)), true) = (self.selected_unit, to != NO_PROVINCE) {
-                    self.session.issue(Command::MoveUnit { issuer: CountryId(owner), unit: UnitId(unit), to: ProvinceId(to) });
-                    self.orders.retain(|o| o.0 != unit);
-                    self.orders.push((unit, to));
-                    self.status = format!("ordered unit {unit} to province {to}");
+                // units move from cell to cell: the order names the cell under the cursor, and the
+                // simulation plans the route (roads, rivers, bridges) and marches the unit along it
+                let (x, y) = client::heights::to_world(&self.camera, &self.render.relief, self.cursor.x, self.cursor.y);
+                if let (Some((unit, owner)), Some(to)) = (self.selected_unit, self.cell_picker.cell_at(&self.render, x, y)) {
+                    self.session.issue(Command::MoveToCell { issuer: CountryId(owner), unit: UnitId(unit), to: meridian_core::CellId(to) });
+                    self.status = format!("ordered unit {unit} to cell {to}");
                 }
             }
             WindowEvent::MouseWheel { delta, .. } if !over_ui => {

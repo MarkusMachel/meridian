@@ -105,10 +105,25 @@ pub trait Ruleset {
     fn can_build_bridge(&self, _world: &World, _unit: UnitId) -> bool {
         false
     }
+    /// How this unit marches overland; `None` if it cannot (the default).
+    fn march_profile(&self, _world: &World, _unit: UnitId) -> Option<MarchProfile> {
+        None
+    }
 
     fn project_template(&self, _kind: u16) -> Option<ProjectTemplate> {
         None
     }
+}
+
+/// How a unit moves on the ground, chosen by the rules for each unit: what the terrain, roads
+/// and rivers cost it, how sound a bridge must be to carry it, and how far it gets in a tick
+/// (an hour) over ground that costs nothing extra.
+#[derive(Clone, Debug)]
+pub struct MarchProfile {
+    pub costs: crate::map::CellCosts,
+    /// A bridge below this condition (0 to 1000) cannot carry the unit.
+    pub min_bridge_condition: u16,
+    pub m_per_tick: u32,
 }
 
 /// A deferred effect such as bombardment damage. `kind` is defined by the ruleset.
@@ -641,6 +656,7 @@ impl World {
             }
         }
         self.complete_transits();
+        self.advance_marches(ruleset);
         ruleset.run(self, signals);
         // Event phase: everything raised so far is applied in a fixed order.
         // `sort_by_key` is stable, so equal keys keep their raise order.
@@ -772,7 +788,7 @@ impl World {
             Command::SetStance { .. } | Command::Mobilize { .. } | Command::Demobilize { .. } | Command::Appoint { .. } | Command::Launch { .. }
             | Command::AirMission { .. } | Command::Transit { .. } | Command::SetDoctrine { .. } | Command::Withdraw { .. } | Command::Hold { .. }
             | Command::CancelOrder { .. } | Command::Fortify { .. } | Command::AmphibiousAssault { .. } | Command::JoinAssault { .. }
-            | Command::Bombard { .. } | Command::BuildBridge { .. } | Command::DismantleBridge { .. } | Command::DemolishBridge { .. } => self.apply_order(cmd, ruleset),
+            | Command::Bombard { .. } | Command::BuildBridge { .. } | Command::DismantleBridge { .. } | Command::DemolishBridge { .. } | Command::MoveToCell { .. } => self.apply_order(cmd, ruleset),
             Command::ChooseEvent { issuer, event, option } => {
                 self.check_country(issuer)?;
                 let set = ruleset.event_set().ok_or(Rejection::Refused("no events in this ruleset"))?;

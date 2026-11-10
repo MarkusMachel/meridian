@@ -340,6 +340,40 @@ impl Map {
         self.find_cell_path_bridged(from, to, costs, scratch, &|_, _| false)
     }
 
+    /// Cost in metres of going from cell `a` along its edge `e` (an index into the cell graph):
+    /// the distance scaled by the terrain of the cell entered, or by road or rail when both
+    /// cells have one, plus the river or bridge extra when a river runs across the edge.
+    fn edge_cost(&self, a: u32, e: usize, costs: &CellCosts, bridged: &dyn Fn(u32, u32) -> bool) -> u32 {
+        let r = &self.raw;
+        let b = r.c_dst[e] as usize;
+        let a = a as usize;
+        let mut pct = costs.terrain_percent[(r.cell_terrain[b] as usize).min(7)];
+        let both = |bit: u8| r.cell_flags[a] & bit != 0 && r.cell_flags[b] & bit != 0;
+        if both(cell_flag::ROAD) {
+            pct = pct.min(costs.road_percent);
+        }
+        if both(cell_flag::RAIL) {
+            pct = pct.min(costs.rail_percent);
+        }
+        let mut c = scaled(r.c_dist_m[e], pct);
+        if r.c_flags[e] & cell_edge_flag::RIVER != 0 {
+            c = c.saturating_add(if bridged(a as u32, b as u32) { costs.bridge_extra_m } else { costs.river_extra_m });
+        }
+        c
+    }
+
+    /// Cost in metres of one step between two neighbouring cells, exactly as the pathfinder
+    /// counts it; `None` if they are not neighbours.
+    pub fn cell_step_cost(&self, a: CellId, b: CellId, costs: &CellCosts, bridged: bool) -> Option<u32> {
+        let e = self.cell_edges(a).find(|&e| self.raw.c_dst[e] == b.0)?;
+        Some(self.edge_cost(a.0, e, costs, &|_, _| bridged))
+    }
+
+    /// Does a river run across the shared border of these two neighbouring cells?
+    pub fn river_between(&self, a: CellId, b: CellId) -> bool {
+        self.cell_edges(a).any(|e| self.raw.c_dst[e] == b.0 && self.raw.c_flags[e] & cell_edge_flag::RIVER != 0)
+    }
+
     /// River edges where a road or a railway crosses (`a < b`, with the edge's flags): the
     /// places that had a permanent bridge in 1990. Ascending by (a, b).
     pub fn bridge_edges(&self) -> Vec<(u32, u32, u8)> {
@@ -370,23 +404,7 @@ impl Map {
             &r.c_dst,
             from.0,
             to.0,
-            |a, e| {
-                let b = r.c_dst[e] as usize;
-                let a = a as usize;
-                let mut pct = costs.terrain_percent[(r.cell_terrain[b] as usize).min(7)];
-                let both = |bit: u8| r.cell_flags[a] & bit != 0 && r.cell_flags[b] & bit != 0;
-                if both(cell_flag::ROAD) {
-                    pct = pct.min(costs.road_percent);
-                }
-                if both(cell_flag::RAIL) {
-                    pct = pct.min(costs.rail_percent);
-                }
-                let mut c = scaled(r.c_dist_m[e], pct);
-                if r.c_flags[e] & cell_edge_flag::RIVER != 0 {
-                    c = c.saturating_add(if bridged(a as u32, b as u32) { costs.bridge_extra_m } else { costs.river_extra_m });
-                }
-                c
-            },
+            |a, e| self.edge_cost(a, e, costs, bridged),
             |n| scaled_floor(dist_m(r.cell_x[n as usize], r.cell_y[n as usize], gx, gy), min_pct),
             scratch,
         )

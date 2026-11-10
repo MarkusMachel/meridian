@@ -41,7 +41,7 @@ pub use derived::{front_segments, CellControl, FrontSegment, Projection, UnitsBy
 pub use econ::{apply_recipe, banded_price, staffing_permille, Building, Economy, Finance, PopGroup, PopTable, ProductionOrder, Project, ProjectSpec, ProjectTemplate, Recipe, TradeRoute};
 pub use events::{EventDef, EventSet, EventState, Pending};
 pub use flows::{apply_flows, propagate_supply, split_shortage, CostGraph, Flow, Source, SupplyResult};
-pub use forces::{Destination, Forces, Hull, Officer, Pilot, Transit, UnitExt, UnitOrder};
+pub use forces::{Destination, Forces, Hull, March, Officer, Pilot, Transit, UnitExt, UnitOrder};
 pub use hooks::{Condition, Effect, HookError, HookSet, Rule};
 pub use ids::{CellId, CountryId, HullId, OfficerId, PilotId, ProvinceId, SiteId, UnitId};
 pub use map::{CellCosts, Map, NodeCosts, Path, PathScratch, RawMap};
@@ -53,4 +53,4 @@ pub use schedule::{Rate, Schedule, ScheduleBuilder, ScheduleError, System, Timin
 pub use sim::{SimHandle, SimStats, MAX_QUERY_NS};
 pub use tech::{Program, Tech};
 pub use view::{ContactId, CountryView, KnownUnit};
-pub use world::{ClientEvent, Message, Event, MapRef, Ruleset, Site, SiteKind, TickReport, Unit, World};
+pub use world::{ClientEvent, Message, Event, MapRef, MarchProfile, Ruleset, Site, SiteKind, TickReport, Unit, World};

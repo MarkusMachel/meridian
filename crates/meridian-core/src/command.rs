@@ -35,6 +35,9 @@ pub enum Command {
     AirMission { issuer: CountryId, unit: UnitId, kind: u8, target: CellId },
     /// Move a whole unit by air, sea or other long hop; it arrives after a ruleset-set time.
     Transit { issuer: CountryId, unit: UnitId, to: CellId },
+    /// March overland to a cell, cell by cell, along the cheapest route (a new order replaces
+    /// the old route; ordering a unit to the cell it stands in halts it).
+    MoveToCell { issuer: CountryId, unit: UnitId, to: CellId },
     SetDoctrine { issuer: CountryId, track: u8, target: u16 },
     Withdraw { issuer: CountryId, unit: UnitId },
     /// Hold at all costs.

@@ -6,7 +6,7 @@
 use crate::command::{Command, Rejection};
 use crate::combat::{Bridge, DOCTRINE_TRACKS};
 use crate::forces::{Destination, UnitOrder};
-use crate::ids::{CellId, CountryId, UnitId};
+use crate::ids::{CellId, CountryId, ProvinceId, UnitId};
 use crate::map::{cell_edge_flag, cell_flag};
 use crate::world::{Ruleset, World};
 
@@ -32,6 +32,53 @@ impl World {
         match self.map.as_ref() {
             Some(m) if c.0 < m.0.cell_count() => Ok(()),
             _ => Err(Rejection::NoSuchCell(c)),
+        }
+    }
+
+    /// Is there a bridge between these two cells that can carry a load needing `min_condition`?
+    fn bridge_usable(&self, a: CellId, b: CellId, min_condition: u16) -> bool {
+        self.combat.bridge(a, b).is_some_and(|br| br.condition >= min_condition.max(1))
+    }
+
+    /// Ticks a marching unit needs to step from a cell into a neighbour: the step's cost in
+    /// metres (terrain, road, river or bridge as they are now) over the unit's pace, at least 1.
+    fn march_step_ticks(&self, from: CellId, to: CellId, profile: &crate::world::MarchProfile) -> u64 {
+        let map = self.map.as_ref().expect("marching needs a map");
+        let bridged = self.bridge_usable(from, to, profile.min_bridge_condition);
+        let cost = map.0.cell_step_cost(from, to, &profile.costs, bridged).unwrap_or(u32::MAX);
+        (cost as u64).div_ceil(profile.m_per_tick.max(1) as u64).max(1)
+    }
+
+    /// Move every marching unit whose step is due into its next cell, in unit order, and set
+    /// its next step. A unit that comes to a river with no usable bridge ahead (the bridge may
+    /// have been blown since the route was planned) plans its route again from where it stands:
+    /// it may go round, or ford and pay for it. A unit the rules no longer let march stops.
+    pub(crate) fn advance_marches(&mut self, ruleset: &dyn Ruleset) {
+        let Some(map) = self.map.clone() else { return };
+        let now = self.clock.tick();
+        let mut scratch: Option<crate::map::PathScratch> = None;
+        for i in 0..self.units.len() {
+            if self.unit_ext[i].march.as_ref().is_none_or(|m| m.arrive_tick > now) {
+                continue;
+            }
+            let mut march = self.unit_ext[i].march.take().expect("checked above");
+            let Some(entered) = march.path.pop() else { continue };
+            self.unit_ext[i].cell = Some(CellId(entered));
+            if let Some(u) = self.units[i].as_mut() {
+                u.location = ProvinceId(map.0.cell_province[entered as usize]);
+            }
+            let (Some(&next), Some(&goal)) = (march.path.last(), march.path.first()) else { continue };
+            let Some(profile) = ruleset.march_profile(self, UnitId(i as u32)).filter(|p| p.m_per_tick > 0) else { continue };
+            let (here, mut next) = (CellId(entered), CellId(next));
+            if map.0.river_between(here, next) && !self.bridge_usable(here, next, profile.min_bridge_condition) {
+                let s = scratch.get_or_insert_with(|| crate::map::PathScratch::new(map.0.cell_count() as usize));
+                let Some(route) = self.find_cell_path(here, CellId(goal), &profile.costs, profile.min_bridge_condition, s) else { continue };
+                march.path = route.nodes.iter().skip(1).rev().copied().collect();
+                let Some(&n) = march.path.last() else { continue };
+                next = CellId(n);
+            }
+            march.arrive_tick = now + self.march_step_ticks(here, next, &profile);
+            self.unit_ext[i].march = Some(march);
         }
     }
 
@@ -216,6 +263,28 @@ impl World {
                     return Err(Rejection::Refused("unit is already moving"));
                 }
             }
+            Command::MoveToCell { issuer, unit, to } => {
+                self.owned_unit(issuer, unit)?;
+                let pos = self.position_of(unit)?;
+                self.check_cell(to)?;
+                if self.unit_ext[unit.index()].transit.is_some() {
+                    return Err(Rejection::Refused("unit is in transit"));
+                }
+                let profile = ruleset.march_profile(self, unit).filter(|p| p.m_per_tick > 0).ok_or(Rejection::Refused("unit cannot march"))?;
+                if pos == to {
+                    self.unit_ext[unit.index()].march = None;
+                    return Ok(());
+                }
+                let cells = self.map.as_ref().expect("check_cell proved a map exists").0.cell_count() as usize;
+                // (search memory is made per order for now; a busy AI will want to reuse it)
+                let mut scratch = crate::map::PathScratch::new(cells);
+                let route = self.find_cell_path(pos, to, &profile.costs, profile.min_bridge_condition, &mut scratch).ok_or(Rejection::Refused("no route for that move"))?;
+                // the route as the march keeps it: without the cell the unit stands in, next cell last
+                let path: Vec<u32> = route.nodes.iter().skip(1).rev().copied().collect();
+                let Some(&first) = path.last() else { return Err(Rejection::Refused("no route for that move")) };
+                let arrive_tick = self.clock.tick() + self.march_step_ticks(pos, CellId(first), &profile);
+                self.unit_ext[unit.index()].march = Some(crate::forces::March { path, arrive_tick });
+            }
             Command::SetDoctrine { issuer, track, target } => {
                 if issuer.0 >= self.country_count {
                     return Err(Rejection::NoSuchCountry(issuer));
@@ -328,6 +397,15 @@ mod tests {
         fn can_build_bridge(&self, _: &World, _: UnitId) -> bool {
             true
         }
+        fn march_profile(&self, _: &World, _: UnitId) -> Option<crate::world::MarchProfile> {
+            Some(march_rules())
+        }
+    }
+
+    /// Fording a river costs as much as 40 km of open ground; a sound bridge costs nothing.
+    fn march_rules() -> crate::world::MarchProfile {
+        let costs = crate::map::CellCosts { river_extra_m: 40_000, bridge_extra_m: 0, ..Default::default() };
+        crate::world::MarchProfile { costs, min_bridge_condition: 500, m_per_tick: 5_000 }
     }
 
     const C0: CountryId = CountryId(0);
@@ -539,6 +617,110 @@ mod tests {
         assert_eq!(cost(&w, &mut s, 1), without, "a destroyed bridge carries nothing");
         // a permanent bridge cannot be dismantled and taken away
         refused(&w, Command::DismantleBridge { issuer: c0, unit: UnitId(0), a: CellId(40), b: CellId(41) }, "only your own laid");
+    }
+
+    #[test]
+    fn units_march_cell_by_cell_and_rivers_and_blown_bridges_slow_them() {
+        use crate::map::PathScratch;
+        // a river down the whole map between columns 8 and 9, so there is no way round it;
+        // the only bridge place is in row 2, between cells 40 and 41
+        let river_world = || {
+            let mut r = test_map(16, 16);
+            // open plain everywhere, no roads: the straight row is the one cheapest route
+            r.cell_terrain.iter_mut().for_each(|t| *t = 0);
+            r.cell_flags.iter_mut().for_each(|f| *f = 0);
+            for y in 0..16usize {
+                for (a, b) in [(y * 16 + 8, y * 16 + 9), (y * 16 + 9, y * 16 + 8)] {
+                    for e in r.c_off[a] as usize..r.c_off[a + 1] as usize {
+                        if r.c_dst[e] as usize == b {
+                            r.c_flags[e] |= cell_edge_flag::RIVER;
+                        }
+                    }
+                }
+            }
+            let mut w = World::from_map(1, Arc::new(Map::from_raw(r).expect("map")));
+            let id = w.add_unit_for_setup(Unit { owner: C0, location: ProvinceId(0) });
+            w.unit_ext_mut(id).unwrap().cell = Some(CellId(38));
+            w
+        };
+        let rules = march_rules();
+        // march from cell 38 (two cells west of the bridge) to 43; returns (tick, cell) for each
+        // cell entered and whether each step was over a usable bridge at that moment
+        let run = |bridge: Option<u16>, blow_at: Option<u64>| -> Vec<(u64, u32)> {
+            let mut w = river_world();
+            if let Some(condition) = bridge {
+                w.combat_mut().set_bridge(Bridge { a: 40, b: 41, condition, laid: false, owner: C0 });
+            }
+            let order = Command::MoveToCell { issuer: C0, unit: UnitId(0), to: CellId(43) };
+            assert!(w.tick(std::slice::from_ref(&order), &Capable).rejected.is_empty());
+            let mut seen = vec![(0u64, 38u32)];
+            let mut t = 0;
+            while w.unit_ext(UnitId(0)).unwrap().march.is_some() {
+                t += 1;
+                assert!(t < 500, "the march never ends");
+                if blow_at == Some(t) {
+                    w.combat_mut().damage_bridge(CellId(40), CellId(41), 1000);
+                }
+                w.tick(&[], &Capable);
+                let cell = w.unit_ext(UnitId(0)).unwrap().cell.unwrap().0;
+                if cell != seen.last().unwrap().1 {
+                    seen.push((t, cell));
+                }
+            }
+            assert_eq!(seen.last().unwrap().1, 43);
+            // the unit's province follows its cell
+            assert_eq!(w.unit(UnitId(0)).unwrap().location.0, w.map().unwrap().cell_province[43]);
+            seen
+        };
+        // what the pathfinder says: the route and its cost with and without the bridge
+        let w = river_world();
+        let map = w.map().unwrap();
+        let mut s = PathScratch::new(256);
+        let with_bridge = map.find_cell_path_bridged(CellId(38), CellId(43), &rules.costs, &mut s, &|a, b| (a.min(b), a.max(b)) == (40, 41)).unwrap();
+        let without = map.find_cell_path(CellId(38), CellId(43), &rules.costs, &mut s).unwrap();
+        assert!(with_bridge.nodes.windows(2).any(|p| (p[0], p[1]) == (40, 41)), "the bridged route uses the bridge: {:?}", with_bridge.nodes);
+        assert!(without.cost > with_bridge.cost, "fording must cost more than the bridge");
+        // ticks of a whole march: each step's cost over the pace, rounded up
+        let ticks = |route: &[u32], bridged: bool| -> u64 {
+            route.windows(2).map(|p| (map.cell_step_cost(CellId(p[0]), CellId(p[1]), &rules.costs, bridged && (p[0], p[1]) == (40, 41)).unwrap() as u64).div_ceil(5_000).max(1)).sum()
+        };
+
+        // over a sound bridge: the pathfinder's route, cell by cell, each step taking its time
+        let over = run(Some(1000), None);
+        assert_eq!(over.iter().map(|x| x.1).collect::<Vec<_>>(), with_bridge.nodes);
+        assert_eq!(over.last().unwrap().0, ticks(&with_bridge.nodes, true));
+        // no bridge, or one too weak for the unit: the fording route, and it takes longer
+        for bridge in [None, Some(300)] {
+            let forded = run(bridge, None);
+            assert_eq!(forded.iter().map(|x| x.1).collect::<Vec<_>>(), without.nodes);
+            assert_eq!(forded.last().unwrap().0, ticks(&without.nodes, false));
+            assert!(forded.last().unwrap().0 > over.last().unwrap().0);
+        }
+        // the bridge is blown while the unit is still walking toward it: it follows the bridged
+        // route to the bank (cell 40), plans again there, and arrives later than over the bridge
+        let blown = run(Some(1000), Some(1));
+        let bank = blown.iter().position(|x| x.1 == 40).expect("it reaches the bank");
+        assert_eq!(blown[..=bank].iter().map(|x| x.1).collect::<Vec<_>>(), with_bridge.nodes[..=bank]);
+        let onward = map.find_cell_path(CellId(40), CellId(43), &rules.costs, &mut s).unwrap();
+        assert_eq!(blown[bank..].iter().map(|x| x.1).collect::<Vec<_>>(), onward.nodes);
+        assert!(blown.last().unwrap().0 > over.last().unwrap().0);
+
+        // orders: a unit with no position, an unknown cell, a ruleset that lets nobody march
+        let mut w = world();
+        let go = |unit, to| Command::MoveToCell { issuer: C0, unit: UnitId(unit), to: CellId(to) };
+        assert_eq!(w.dry_run(&go(0, 43), &super::tests::rules()), Err(Rejection::Refused("unit cannot march")));
+        assert_eq!(w.dry_run(&go(0, 9_999), &Capable), Err(Rejection::NoSuchCell(CellId(9_999))));
+        assert!(matches!(w.dry_run(&go(2, 43), &Capable), Err(Rejection::NotOwner { .. })));
+        // a new order replaces the route, and an order to the cell it stands in halts the unit
+        assert!(w.tick(&[go(0, 43)], &Capable).rejected.is_empty());
+        assert_eq!(w.unit_ext(UnitId(0)).unwrap().march.as_ref().unwrap().destination(), Some(CellId(43)));
+        assert!(w.tick(&[go(0, 8)], &Capable).rejected.is_empty());
+        assert_eq!(w.unit_ext(UnitId(0)).unwrap().march.as_ref().unwrap().destination(), Some(CellId(8)));
+        let here = w.unit_ext(UnitId(0)).unwrap().cell.unwrap();
+        let hash_marching = w.state_hash();
+        assert!(w.tick(&[go(0, here.0)], &Capable).rejected.is_empty());
+        assert!(w.unit_ext(UnitId(0)).unwrap().march.is_none());
+        assert_ne!(w.state_hash(), hash_marching, "a march is part of the state");
     }
 
     #[test]

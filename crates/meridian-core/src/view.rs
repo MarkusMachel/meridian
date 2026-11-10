@@ -69,6 +69,14 @@ impl<'a> CountryView<'a> {
         }
     }
 
+    /// Where one of the country's own units stands and where it is marching to, if it is:
+    /// (cell, destination cell). `None` for a unit that is not this country's.
+    pub fn own_unit_place(&self, id: UnitId) -> Option<(Option<crate::ids::CellId>, Option<crate::ids::CellId>)> {
+        self.world.unit(id).filter(|u| u.owner == self.country)?;
+        let e = self.world.unit_ext(id)?;
+        Some((e.cell, e.march.as_ref().and_then(|m| m.destination())))
+    }
+
     /// Every bridge with its condition. Bridges are landmarks: any country knows where they are
     /// and whether they stand.
     pub fn bridges(&self) -> &'a [crate::combat::Bridge] {
