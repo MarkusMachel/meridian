@@ -4,6 +4,8 @@ Written 2026-11-08 and 2026-11-09 (economy, politics, diplomacy, intelligence, t
 
 ## How to read this file
 
+**Map redesign (2026-11-10):** section 25 replaces the earlier map design (irregular cells on a flat Equal Earth map) with hexagon levels on a globe and a ladder of military map scales. Where sections 2, 11, 13 and the build guide's section 3A speak of cells of about 225 km², read them with section 25 in mind until they are rewritten.
+
 - **Engine** means code in `meridian-core` or `meridian-data`: state, primitives, validation. It must be deterministic and know nothing about specific weapons, countries or numbers.
 - **Data** means content in RON or CSV files (catalogs, templates, tables, rules). Changing it never requires engine changes.
 - **Rules** means gameplay formulas and numbers (the G1 to G5 backlog in the guide). Rules are decided later. The engine only has to make them expressible.
@@ -1106,3 +1108,74 @@ Technology and research have no map mode; they live in panels, except that resea
 - The player interface is decided in outline (section 21) and the AI approach is decided in outline (section 20); the events system is designed in outline (section 19); politics (section 15), diplomacy structure (section 16), intelligence (section 17) and tech (section 18) are designed in outline. Combat resolution (section 12) and the economy (section 14) are designed in outline; their numbers are rules.
 - Economy items still open are listed at the end of section 14, politics items at the end of section 15, diplomacy items at the end of section 16, intelligence items at the end of section 17, tech items at the end of section 18, event items at the end of section 19, AI items at the end of section 20, interface items at the end of section 21.
 - Data sources: see `docs/data-sources.md` (checked 2026-11-09). Still to check: GHS-BUILT and GHS-SMOD terms (GHS-POP is verified; SIPRI is commercial-only), HydroSHEDS documentation, an oil field and industry source, and the individual US government documents for orders of battle. Decide whether to use OpenStreetMap (share-alike) for the map.
+
+## 25. Map redesign: a globe, hexagon levels, military map scales
+
+Decided 2026-11-10, as the start of a second big rewrite. Nothing in this section is built. The map as built today (provinces from real admin-1 regions, about 600,000 irregular cells of about 225 km² on an Equal Earth plane, a 3D view over it) stays in the repo until its replacement works.
+
+### Map scales on screen
+
+The map is shown as military maps at five scales, and zooming moves from one to the next with a transition between them:
+
+| Map scale | Ground distance per 1 cm | Purpose |
+| --- | --- | --- |
+| 1:1,000,000 | 10 km | Theatre strategy |
+| 1:250,000 | 2.5 km | Corps operations |
+| 1:100,000 | 1 km | Operational planning |
+| 1:50,000 | 500 m | Tactical planning |
+| 1:25,000 | 250 m | Local tactical planning |
+
+- The graphics will probably mix 2D and 3D.
+- **Assumed, not yet confirmed by the owner:** the maps are drawn by the client from data, in the style of military topographic maps, not scanned paper maps. Scanned US military charts (ONC, TPC, JOG, Army Map Service sheets) are public-domain works and good style references, but a picture cannot show what the game changes (borders, blown bridges), and nothing public-domain covers the world at 1:100,000 or finer.
+
+### Hexagons instead of irregular cells
+
+- **Why.** Every hexagon has six neighbours at the same distance, so movement, range, frontage and zones of control behave the same everywhere. A river lies on hexagon edges and a bridge is a hexagon edge, which replaces the weak rule of today ("a river passes between these two cells"). A hexagon's place and outline follow from its number, so nothing has to be stored to draw or pick it. The levels of a hexagon hierarchy match the map scales.
+- **The grid is on the globe.** A flat hexagon grid on a projected map was rejected: the projection stretches shapes toward the poles, so the hexagons would not be the same size on the ground. The candidate is H3, an open hexagon grid of the whole globe with fixed levels. Each level has 12 pentagons, and finer hexagons fit inside coarser ones only approximately.
+- **Three levels are simulated** (the owner chose three over two):
+
+| H3 level | Edge | Area (average; smallest to largest) | Land hexagons (estimate, 29 % of the globe) | Role | Map scales |
+| --- | --- | --- | --- | --- | --- |
+| 5 | about 10 km | 253 km² (154 to 305) | about 590,000 | Always on, the whole world | 1:1,000,000 to 1:250,000 |
+| 7 | about 1.4 km | 5.2 km² (3.1 to 6.2) | about 29 million | Opened where units fight | 1:100,000 to 1:50,000 |
+| 8 | about 530 m | 0.74 km² (0.45 to 0.89) | about 200 million | Opened for local tactical play | 1:25,000 |
+
+  Level 5 is almost the size and number of today's cells, so the always-on layer costs about the same. Levels 7 and 8 are far too many to simulate everywhere; they open and close like provinces open into cells today (active sets). Level 6 (about 3.7 km, 36 km²) is not used.
+- **Provinces stay** as the political and administrative layer above the hexagons (real admin-1 regions). A hexagon belongs to the province and country that holds its centre. The real border lines are drawn on the map; in the simulation a border follows hexagon edges. Very small states need a rule so they keep at least one hexagon.
+- **What survives in the engine.** The engine treats cells as a graph of neighbours with stored distances, so pathfinding, flows, marches, bridges and the per-cell state keep working when the cells are hexagons. The map builder, the map file and the client's drawing are what get rewritten.
+
+### A globe
+
+- **The simulation uses positions on the sphere.** Each hexagon centre is a point in three dimensions in whole metres from the Earth's centre (it fits the 32-bit integers used now). Distance is integer arithmetic on those points: no projection formulas, no floats, true distances at every latitude. There is no map edge: the Pacific wraps and the poles are not a special case, so the planned antimeridian links are not needed.
+- **The client draws a globe** (the owner chose a drawn globe over a flat projected map on screen). Zoomed out it is a globe; zoomed in toward the map scales the curvature disappears by itself, so the military maps look the same as on a flat map. The flat paper-map look when zoomed out is given up.
+- **Cost.** The client's map drawing is rebuilt: a camera that orbits a sphere, the map drawn as tiles on its surface, positions sent to the graphics card relative to the camera (it cannot hold metres at Earth scale precisely), picking and labels on a sphere.
+
+### Data for the map scales
+
+Sources checked on 2026-11-10 are in `docs/data-sources.md`. In short:
+
+- **1:1,000,000:** VMAP0 (the Digital Chart of the World, public domain, compiled 1991 to 1993 from the ONC charts, so close to 1990) and Natural Earth.
+- **1:250,000:** VMAP1 where it was released (only partly public; parts of Iraq are), GRIP4 roads (CC0, modern), built-up areas from GHSL (a 1990 layer exists), contours from open elevation data.
+- **1:100,000 to 1:25,000:** the only worldwide detail is OpenStreetMap (or Overture Maps, whose roads and buildings come from it): modern, not 1990, and under a share-alike licence on the data.
+
+### Engine and builder work this implies
+
+- A new map builder: H3 level-5 hexagons for the land, their neighbours, distances, terrain, province and country by centre, rivers and roads snapped to hexagon edges, population per hexagon; sea zones again.
+- A new map file (hexagon numbers, three-dimensional integer centres, edge flags) and loader; the map checksum and every golden hash change.
+- Opening a level-5 hexagon into its level-7 hexagons, and those into level 8, and closing them again, exactly and deterministically (the design of today opens a province into its cells).
+- Fine terrain for levels 7 and 8 wherever a fight can happen. Baked for the whole world it is roughly 100 to 200 MB for level 7 and close to 1 GB for level 8 at a few bytes per hexagon (rough estimates). **Suggested, not decided:** bake level 7 for the world, and generate level 8 when it opens, from coarser data, in a repeatable way.
+- The client: globe camera, map tiles per scale, the transition between scales, counters and command lines on the globe.
+- What was built on 2026-11-09 and 2026-11-10 for the flat map (trees, towns, landmarks, farmland, traffic, rivers, bridges drawn in 3D) is display code for the old map. How much of it carries over depends on the new look.
+
+### Still open
+
+- Confirm drawn maps rather than scanned ones.
+- Whether OpenStreetMap's share-alike condition on the map data is acceptable. The three fine scales depend on it.
+- Whether fine-level terrain is baked for the whole world or generated when a hexagon opens (see the suggestion above).
+- What levels 7 and 8 simulate that level 5 does not (the tactical rules), and when they open and close.
+- How the brigade and division model, combat width and frontage (section 12) read on hexagons of 10 km, 1.4 km and 530 m.
+- The H3 library: `h3o` is a pure-Rust version; its licence and upkeep could not be checked on 2026-11-10 (its page did not load). The engine may need only numbers baked by the builder, plus the integer parent and child steps.
+- How map tiles are cut on the globe, and how much of the world ships at each scale (the whole world at 1:25,000 is tens of gigabytes of source data).
+- 1990 accuracy at the fine scales: the worldwide data is modern, so roads and suburbs built after 1990 show unless they are corrected by hand where it matters.
+- The order of work, and which parts of the current engine phases (3 and 7 above all) are redone.
+

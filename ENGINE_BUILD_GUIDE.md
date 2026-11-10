@@ -131,6 +131,8 @@ These were not fully confirmed when this guide was written. Check them on crates
 
 ## 3A. Map scale decisions
 
+**Superseded in outline on 2026-11-10.** The owner decided to replace the two-layer map below (provinces and irregular cells of about 225 km² on a flat Equal Earth map) with hexagon levels on a globe (H3 levels 5, 7 and 8) shown as military maps at five scales. The decision and what is still open are in `docs/design-notes.md` section 25. This section still describes the map as it is built today; it and Phases 3 and 7 are to be re-planned before that rewrite starts.
+
 Agreed 2026-11-08 as working defaults; Phase 3 may adjust them.
 
 | Item | Decision |
@@ -562,6 +564,8 @@ These are the gameplay phases, to be re-planned once the engine passes Phase 8. 
 - [x] Data source policy: facts we extract and author ourselves are not limited by the source's license (record provenance, write our own wording, no bulk copying); datasets we import and bake must be public domain, CC0 or attribution-only, and non-commercial ones stay out (decided 2026-11-09; see `docs/data-sources.md`).
 - [ ] Data-source follow-ups: GHS-BUILT and GHS-SMOD terms (GHS-POP verified; SIPRI is commercial-only), HydroSHEDS documentation, an oil field and industry source, whether to use OpenStreetMap (share-alike). Add a license field per data layer and a commercial-build check in the bake step.
 - [x] Bulk tables as CSV, structured data as RON (decided 2026-11-08).
+- [x] Map redesign (2026-11-10): hexagon levels on a globe replace the irregular cells on a flat map: H3 level 5 always on (about 10 km), level 7 where units fight (about 1.4 km), level 8 for local tactical play (about 530 m); the simulation uses whole-metre positions on the sphere; the client draws a globe and military maps at 1:1,000,000, 1:250,000, 1:100,000, 1:50,000 and 1:25,000 with transitions. See `docs/design-notes.md` section 25.
+- [ ] Map redesign, still open: drawn or scanned maps (drawn is assumed); OpenStreetMap's share-alike data licence for the fine scales; fine terrain baked or generated; what levels 7 and 8 simulate; the H3 library (`h3o` unverified); the order of the rewrite.
 
 ---
 

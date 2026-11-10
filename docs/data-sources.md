@@ -94,6 +94,30 @@ Two cases, because licensing applies differently to each.
 | Orders of battle, equipment specifications | IISS Military Balance | Commercial publication | No | Not verified | Do not copy. Do not depend on it |
 | Orders of battle, equipment specifications, general reference | Wikipedia | Text is **CC BY-SA 4.0** for new edits (older edits BY-SA 3.0), per Creative Commons' announcement of the move. Media files carry their own licenses. Wikidata is CC0 (from memory, not re-verified here) | Text: share-alike, so avoid importing | Partly verified | Do not copy text or tables into our data. Use it to find primary sources, then cite those. Facts we extract and write in our own words are covered by the fact-extraction policy, with provenance. Wikidata structured facts (CC0) are safe to import if needed |
 
+## Map data by scale (checked 2026-11-10)
+
+For the map redesign (`docs/design-notes.md` section 25): military maps at five scales, drawn by the client from data.
+
+| Scale | Source | What it gives | License | Commercial use | Era | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1:1,000,000 | VMAP0 / Digital Chart of the World (US NGA) | Roads, railways, rivers, towns, airfields, contours, vegetation | Public domain ("Level 0 coverage is global and entirely in the public domain"); attribution statements asked for; its boundaries and reference library layers are copyrighted to Esri | Yes (not the Esri layers) | Compiled 1991 to 1993 from the ONC charts | Read on Wikipedia's Vector Map article, not on an NGA page |
+| 1:1,000,000 | Natural Earth | As used now | Public domain | Yes | Modern | Verified earlier |
+| 1:250,000 | VMAP1 (US NGA) | The same themes at 1:250,000 | "Only partly in the public domain"; 57 of 234 tiles downloadable as of 2006, among them parts of Iraq | Per tile | From the 1:250,000 Joint Operations Graphics | Secondhand; find the released tiles and their terms |
+| 1:250,000 | GRIP4 global roads (PBL) | Roads in five classes | CC0 ("provided under a Creative Commons License (CC-0) and is free to use") | Yes | Modern; built from many sources including OpenStreetMap | Verified at globio.info |
+| 1:250,000 and finer | GHSL built-up (GHS-BUILT) | Shapes of towns, with a 1990 layer | Expected CC BY 4.0 like GHS-POP | Yes, with attribution | 1975 to 2030 in steps | License verified for GHS-POP only |
+| All | SRTM 30 m elevation (NASA) | Relief and contours | Public domain (US government work), from memory | Yes | 2000 | Not re-verified |
+| All | Copernicus DEM GLO-30 | Relief and contours | "Free basis for the general public under the terms and conditions of the Licence" (the licence text itself was not read) | Believed yes, with attribution | 2011 to 2015 | Partly verified |
+| 1:100,000 to 1:25,000 | OpenStreetMap | Streets, tracks, buildings, land use, water | ODbL. Map images are a "Produced Work": any licence, attribution only. Data shipped with the game that is adapted from OSM is a "Derivative Database" and "must continue to be licensed under the ODbL" | Yes, with those conditions | 2020s | Verified at osmfoundation.org |
+| 1:100,000 to 1:25,000 | Overture Maps | The same, repackaged | Base, buildings, divisions and transportation themes are ODbL (they come from OpenStreetMap); places are mostly CDLA Permissive 2.0 | As OpenStreetMap | 2020s | Verified at docs.overturemaps.org |
+| 1:100,000 to 1:25,000 | ESA WorldCover 10 m | Forest, farmland, wetland, built-up | CC BY 4.0 | Yes, with attribution | 2020, 2021 | Verified earlier |
+| Style reference | Scanned US military charts: ONC (1:1,000,000), TPC (1:500,000), JOG and Army Map Service sheets (1:250,000), at the University of Texas map collection | The look of the maps of the time | "Most of the maps scanned ... are in the public domain. No permissions are needed to copy them"; credit to the University of Texas Libraries is appreciated; "the U.S. Government may claim copyright outside of the U.S. for maps such as nautical and aeronautical charts"; agency seals may not be used on merchandise | Probably, per sheet | 1950s to 1990s | The page does not name these series or commercial use |
+| Avoid | Soviet General Staff maps (1:1,000,000 to 1:25,000, the whole world) | Detailed period maps | Copyright status unclear (from memory) | No | 1970s to 1980s | Not checked |
+
+- **The fine scales depend on one decision:** whether OpenStreetMap's share-alike condition on the map data is acceptable (the game's code is not affected by it).
+- **Nothing open and worldwide shows 1990 at 1:100,000 or finer.** The fine scales will show the world of the 2020s unless corrected by hand where it matters.
+- **Size:** the whole world from OpenStreetMap is tens of gigabytes; 1:25,000 cannot ship for the whole world.
+- **Hexagon grid:** H3 (level sizes from h3geo.org/docs/core-library/restable). The pure-Rust library `h3o` could not be checked (its page did not load).
+
 ## Findings that change the design
 
 1. **Keep provenance and license per data layer.** The design principle already says every catalog entry records a source and confidence. Add a license field and a "commercial build" flag, so the bake step can refuse to include a non-commercial or share-alike source in a commercial build and can generate the attribution file automatically.
@@ -131,6 +155,13 @@ Two cases, because licensing applies differently to each.
 - [USGS copyrights and credits](https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits)
 - [FAO database terms of use](https://www.fao.org/contact-us/terms/db-terms-of-use/en/)
 - [World Bank terms of use for datasets](https://www.worldbank.org/ext/en/legal/terms-conditions/datasets)
+- [Vector Map (VMAP0, VMAP1, Digital Chart of the World)](https://en.wikipedia.org/wiki/Vector_Map)
+- [University of Texas Libraries map collection FAQ](https://guides.lib.utexas.edu/maps/faq)
+- [GRIP global roads database](https://www.globio.info/download-grip-dataset)
+- [Overture Maps attribution and licences](https://docs.overturemaps.org/attribution/)
+- [OpenStreetMap Foundation licence and legal FAQ](https://osmfoundation.org/wiki/Licence_and_Legal_FAQ)
+- [Copernicus DEM on the AWS open data registry](https://registry.opendata.aws/copernicus-dem/)
+- [H3 table of cell statistics by level](https://h3geo.org/docs/core-library/restable/)
 - [Creative Commons: Wikipedia moves to CC 4.0](https://creativecommons.org/2023/06/29/wikipedia-moves-to-cc-4-0-licenses/)
 - [Data Rescue Project: The World Factbook is Gone](https://www.datarescueproject.org/guest-post-the-world-factbook-is-gone/)
 - [WTOP/AP: CIA ends publication of the World Factbook](https://wtop.com/government/2026/02/cia-ends-publication-of-its-popular-world-factbook-reference-tool/)

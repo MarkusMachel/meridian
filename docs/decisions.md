@@ -416,3 +416,13 @@ The owner asked for counters that stack when zoomed out (as in Hearts of Iron IV
 - **Brigades and divisions.** As in the design notes, the brigade is the unit on the map; a division or corps is a headquarters unit that brigades report to. Nothing yet follows from the chain (no orders passed down, no command range, no bonuses): that is rules work.
 - **Saves.** Units gained three fields in all today (type, size, name), so `SAVE_VERSION` is 3.
 - **Not checked on the real map:** `scenario_on_map` could not be run here (no baked map), so the placement of the division at the German towns is untested; `add_formation` skips the formation if the map has no cell within 60 km of Münster.
+
+## Map redesign decided: hexagon levels on a globe, five map scales (2026-11-10)
+
+A design decision, not built. The owner is starting a second big rewrite of the map and the graphics.
+
+- The map is shown as military maps at 1:1,000,000, 1:250,000, 1:100,000, 1:50,000 and 1:25,000, with transitions while zooming; the graphics will probably mix 2D and 3D.
+- The irregular cells are replaced by hexagons on the globe: H3 level 5 (about 10 km) always on, level 7 (about 1.4 km) where units fight, level 8 (about 530 m) for local tactical play. Provinces stay as the political layer.
+- The simulation uses whole-metre positions on the sphere, and the client draws a globe.
+- The design, the reasons, the data found for each scale and the long list of open points are in `docs/design-notes.md` section 25 and `docs/data-sources.md`. The build guide's section 3A is marked as superseded in outline.
+- Today's map (cells, flat 3D view) remains the working one until its replacement exists.
