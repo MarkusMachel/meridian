@@ -95,6 +95,55 @@ struct FillVertex {
     prov: u32,
 }
 
+/// One city as the GPU sees it, for its landmark: where the town is, how big the built-up area
+/// around it is (radius of a circle of the same area), and a seed for variety.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq)]
+pub struct CityInst {
+    pub pos: [i32; 2],
+    pub radius_m: f32,
+    pub seed: u32,
+}
+/// A landmark is six parts of 72 vertices each (see `vs_landmark` in terrain.wgsl).
+const LANDMARK_VERTS: u32 = 432;
+/// A city site is tied to the built-up area whose nearest triangle is within this distance.
+const TOWN_REACH_M: f64 = 30_000.0;
+
+/// Where each city's landmark stands. `cities` are site positions (cell centres, so often beside
+/// the town, not in it): each is moved to the centre of the nearest built-up triangle within
+/// `TOWN_REACH_M`, and gets the size of the built-up area around that point. Cities with no
+/// built-up area nearby are left out. The order of `cities` is kept.
+pub fn city_landmarks(urban: &[[i32; 2]], tri: &[u32], cities: &[[i32; 2]]) -> Vec<CityInst> {
+    // centre and area of every built-up triangle
+    let tris: Vec<(f64, f64, f64)> = tri
+        .chunks_exact(3)
+        .map(|t| {
+            let [a, b, c] = [urban[t[0] as usize], urban[t[1] as usize], urban[t[2] as usize]].map(|p| (p[0] as f64, p[1] as f64));
+            let area = ((b.0 - a.0) * (c.1 - a.1) - (c.0 - a.0) * (b.1 - a.1)).abs() / 2.0;
+            ((a.0 + b.0 + c.0) / 3.0, (a.1 + b.1 + c.1) / 3.0, area)
+        })
+        .collect();
+    let mut out = Vec::new();
+    for (i, city) in cities.iter().enumerate() {
+        let (x, y) = (city[0] as f64, city[1] as f64);
+        let d2 = |t: &(f64, f64, f64)| (t.0 - x).powi(2) + (t.1 - y).powi(2);
+        // nearest triangle (ties to the first, so the result does not depend on float noise)
+        let Some(near) = tris.iter().filter(|t| t.2 > 0.0 && d2(t) <= TOWN_REACH_M * TOWN_REACH_M).min_by(|a, b| d2(a).total_cmp(&d2(b))) else {
+            continue;
+        };
+        // the middle of the town: area-weighted centre of the triangles around that one
+        let around: Vec<&(f64, f64, f64)> = tris.iter().filter(|t| (t.0 - near.0).powi(2) + (t.1 - near.1).powi(2) <= TOWN_REACH_M * TOWN_REACH_M).collect();
+        let area: f64 = around.iter().map(|t| t.2).sum();
+        let cx = around.iter().map(|t| t.0 * t.2).sum::<f64>() / area;
+        let cy = around.iter().map(|t| t.1 * t.2).sum::<f64>() / area;
+        // if that centre fell outside every triangle (a ring-shaped town), stay on the nearest one
+        let inside = around.iter().any(|t| (t.0 - cx).powi(2) + (t.1 - cy).powi(2) <= t.2);
+        let (px, py) = if inside { (cx, cy) } else { (near.0, near.1) };
+        out.push(CityInst { pos: [px.round() as i32, py.round() as i32], radius_m: (area / std::f64::consts::PI).sqrt() as f32, seed: i as u32 });
+    }
+    out
+}
+
 /// Province id meaning "none" for selection and hover.
 pub const NO_PROVINCE: u32 = u32::MAX;
 
@@ -295,6 +344,13 @@ pub struct Renderer {
     urban_indices: wgpu::Buffer,
     urban_count: u32,
     urban_pipeline: wgpu::RenderPipeline,
+    /// Built-up triangles kept on the CPU, to place city landmarks (`set_cities`).
+    urban_cpu: (Vec<[i32; 2]>, Vec<u32>),
+    cities: Option<(wgpu::Buffer, u32)>,
+    plaza_pipeline: wgpu::RenderPipeline,
+    hole_pipeline: wgpu::RenderPipeline,
+    landmark_pipeline: wgpu::RenderPipeline,
+    draw_plazas: bool,
     draw_urban: bool,
     relief_org: [i32; 2],
     relief_span: [f32; 2],
@@ -514,6 +570,36 @@ impl Renderer {
             cache: None,
         });
 
+        // city landmarks: one instance per city (position, town radius, seed)
+        let city_attrs = [
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Sint32x2, offset: 0, shader_location: 0 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 8, shader_location: 1 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32, offset: 12, shader_location: 2 },
+        ];
+        let city_buffers = [Some(wgpu::VertexBufferLayout { array_stride: 16, step_mode: wgpu::VertexStepMode::Instance, attributes: &city_attrs })];
+        let plaza_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("plaza"),
+            layout: Some(&layout_fill),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_plaza"), compilation_options: Default::default(), buffers: &city_buffers },
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_plaza"), compilation_options: Default::default(), targets: &target }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let hole_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("plaza hole"),
+            layout: Some(&layout_fill),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_plaza"), compilation_options: Default::default(), buffers: &city_buffers },
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_hole"), compilation_options: Default::default(), targets: &mask_target }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         // --- 3D: overlay and mask targets, the height texture, the terrain and model pipelines ---
         let overlay_size = OVERLAY_SIZE.min(device.limits().max_texture_dimension_2d);
         let target_tex = |label: &str, format: wgpu::TextureFormat| {
@@ -577,6 +663,17 @@ impl Renderer {
         let terrain_pipeline = pipeline3("terrain", "vs_terrain", "fs_terrain");
         let tree_pipeline = pipeline3("trees", "vs_tree", "fs_model");
         let building_pipeline = pipeline3("buildings", "vs_building", "fs_model");
+        let landmark_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("landmarks"),
+            layout: Some(&layout3),
+            vertex: wgpu::VertexState { module: &terrain_shader, entry_point: Some("vs_landmark"), compilation_options: Default::default(), buffers: &city_buffers },
+            fragment: Some(wgpu::FragmentState { module: &terrain_shader, entry_point: Some("fs_model"), compilation_options: Default::default(), targets: &opaque }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState { format: DEPTH_FORMAT, depth_write_enabled: Some(true), depth_compare: Some(wgpu::CompareFunction::Less), stencil: Default::default(), bias: Default::default() }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
 
         let grid = TileGrid::new(data.bounds());
         let levels = data
@@ -630,6 +727,12 @@ impl Renderer {
             urban_indices,
             urban_count: data.urban_tri.len() as u32,
             urban_pipeline,
+            urban_cpu: (urban_verts.clone(), urban_idx.clone()),
+            cities: None,
+            plaza_pipeline,
+            hole_pipeline,
+            landmark_pipeline,
+            draw_plazas: false,
             draw_urban: false,
             relief_org: [rf.x0, rf.y1],
             relief_span: [(rf.x1 - rf.x0) as f32, (rf.y1 - rf.y0) as f32],
@@ -655,6 +758,17 @@ impl Renderer {
     }
 
     /// One colour per province (RGBA8).
+    /// Tell the renderer where the cities are (site positions in world metres), so each town that
+    /// is big enough on screen gets a landmark in the style of its part of the world.
+    pub fn set_cities(&mut self, device: &wgpu::Device, cities: &[[i32; 2]]) {
+        let inst = city_landmarks(&self.urban_cpu.0, &self.urban_cpu.1, cities);
+        self.cities = if inst.is_empty() {
+            None
+        } else {
+            Some((device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("cities"), contents: bytemuck::cast_slice(&inst), usage: wgpu::BufferUsages::VERTEX }), inst.len() as u32))
+        };
+    }
+
     pub fn set_colors(&self, queue: &wgpu::Queue, colors: &[Rgba]) {
         assert_eq!(colors.len(), self.province_count, "one colour per province");
         queue.write_buffer(&self.colors, 0, bytemuck::cast_slice(colors));
@@ -670,6 +784,7 @@ impl Renderer {
         self.road_tier = tier(camera.m_per_px, ROADS_BELOW) * details;
         self.rail_tier = tier(camera.m_per_px, RAILS_BELOW) * details;
         self.draw_urban = self.show_details && camera.m_per_px < URBAN_BELOW;
+        self.draw_plazas = false;   // set by the 3D path when buildings show
         // Roads and railways get wider as you zoom in (up to 4x their base width below 300 m/px),
         // so close up they are features you can see and click, not hairlines.
         let widen = (1_200.0 / camera.m_per_px).clamp(1.0, 4.0) as f32;
@@ -770,6 +885,7 @@ impl Renderer {
         let bld = instances(gx0, gy0, gx1, gy1, camera.m_per_px * BUILDING_SPACING_PX, 100);
         let bld_fade = if buildings { ((BUILDINGS_BELOW - camera.m_per_px) / (BUILDINGS_BELOW * 0.3)).clamp(0.0, 1.0) } else { 0.0 };
         let g = self.globals_2d(camera, ocenter, [ow as f32, oh as f32], om, selected, hover, (bld.spacing as f32, bld_fade as f32));
+        self.draw_plazas = bld_fade > 0.0 && self.cities.is_some();
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -800,6 +916,12 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.urban_vertices.slice(..));
                 pass.set_index_buffer(self.urban_indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..self.urban_count, 0, 0..1);
+                // no houses on the landmark squares
+                if let (true, Some((buf, n))) = (self.draw_plazas, &self.cities) {
+                    pass.set_pipeline(&self.hole_pipeline);
+                    pass.set_vertex_buffer(0, buf.slice(..));
+                    pass.draw(0..6, 0..*n);
+                }
             }
         }
 
@@ -864,6 +986,11 @@ impl Renderer {
         if show_blds {
             pass.set_pipeline(&self.building_pipeline);
             pass.draw(0..42, 0..bld.count);
+            if let Some((buf, n)) = &self.cities {
+                pass.set_pipeline(&self.landmark_pipeline);
+                pass.set_vertex_buffer(0, buf.slice(..));
+                pass.draw(0..LANDMARK_VERTS, 0..*n);
+            }
         }
     }
 
@@ -891,6 +1018,11 @@ impl Renderer {
             pass.set_vertex_buffer(0, self.urban_vertices.slice(..));
             pass.set_index_buffer(self.urban_indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.urban_count, 0, 0..1);
+            if let (true, Some((buf, n))) = (self.draw_plazas, &self.cities) {
+                pass.set_pipeline(&self.plaza_pipeline);
+                pass.set_vertex_buffer(0, buf.slice(..));
+                pass.draw(0..6, 0..*n);
+            }
         }
         pass.set_pipeline(&self.line_pipeline);
         pass.set_bind_group(1, &self.styles[RIVER_STYLE], &[]);
@@ -980,6 +1112,23 @@ mod tests {
         assert_eq!(segs[3].a[0], 5000);
         // a view off the grid still finds the edge tiles, never panics
         assert_eq!(count(0, (-1e9, -1e9, -1e8, -1e8)), 1);
+    }
+
+    #[test]
+    fn city_landmarks_move_into_their_town_and_skip_cities_without_one() {
+        // one square town of 10 km by 10 km around (100 km, 100 km), as two triangles
+        let urban = [[95_000, 95_000], [105_000, 95_000], [105_000, 105_000], [95_000, 105_000]];
+        let tri = [0, 1, 2, 0, 2, 3];
+        // a site 12 km beside the town, one far from any town, one inside it
+        let got = city_landmarks(&urban, &tri, &[[112_000, 100_000], [400_000, 100_000], [99_000, 101_000]]);
+        assert_eq!(got.len(), 2);
+        assert_eq!((got[0].seed, got[1].seed), (0, 2));
+        for g in &got {
+            assert_eq!(g.pos, [100_000, 100_000]);
+            // a circle with the area of the square: r = sqrt(100 km2 / pi) = 5,642 m
+            assert!((g.radius_m - 5_642.0).abs() < 2.0, "{}", g.radius_m);
+        }
+        assert!(city_landmarks(&[[0, 0]], &[0, 0, 0], &[[0, 0]]).is_empty());
     }
 
     #[test]

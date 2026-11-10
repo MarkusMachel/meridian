@@ -277,6 +277,55 @@ fn fs_urban(i: UrbanOut) -> @location(0) vec4<f32> {
     return mix(style.color, vec4<f32>(rgb, 0.96), g.plot_fade);
 }
 
+// City landmarks stand on a square in the middle of their town. The square is four plots
+// by four, on plot corners (`landmark_at`, repeated in terrain.wgsl, which builds the landmark).
+// A town shows its landmark only when it is at least four plots in radius.
+fn floor_div(a: i32, b: i32) -> i32 {
+    let m = a % b;
+    return (a - select(m, m + b, m < 0)) / b;
+}
+fn landmark_at(pos: vec2<i32>, plot: i32) -> vec2<i32> {
+    return vec2<i32>(floor_div(pos.x + plot / 2, plot), floor_div(pos.y + plot / 2, plot)) * plot;
+}
+
+struct PlazaOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,   // -1..1 across the square
+};
+
+@vertex
+fn vs_plaza(@builtin(vertex_index) vi: u32, @location(0) pos: vec2<i32>, @location(1) radius: f32, @location(2) seed: u32) -> PlazaOut {
+    var cx = array<f32, 6>(-1.0, 1.0, 1.0, -1.0, 1.0, -1.0);
+    var cy = array<f32, 6>(-1.0, -1.0, 1.0, -1.0, 1.0, 1.0);
+    var o: PlazaOut;
+    o.uv = vec2<f32>(cx[vi], cy[vi]);
+    if (g.plot_fade <= 0.0 || radius < 4.0 * g.plot_m) {
+        o.clip = vec4<f32>(0.0, 0.0, -2.0, 1.0);   // outside the depth range: dropped
+        return o;
+    }
+    let c = landmark_at(pos, i32(g.plot_m));
+    let rel = vec2<f32>(c - g.center) + o.uv * 2.25 * g.plot_m;
+    o.clip = vec4<f32>(rel * g.inv_scale / (g.viewport * 0.5), 0.0, 1.0);
+    return o;
+}
+
+// The square in the town mask: no houses and no trees here.
+@fragment
+fn fs_hole(i: PlazaOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+}
+
+// The square on the ground: light paving with a darker rim.
+@fragment
+fn fs_plaza(i: PlazaOut) -> @location(0) vec4<f32> {
+    let k = max(abs(i.uv.x), abs(i.uv.y));
+    if (k > 0.9) { discard; }
+    let slabs = step(0.5, fract(i.uv.x * 6.75)) + step(0.5, fract(i.uv.y * 6.75));
+    var rgb = vec3<f32>(0.72, 0.70, 0.65) * (0.96 + 0.03 * slabs);
+    if (k > 0.84) { rgb = vec3<f32>(0.52, 0.51, 0.49); }
+    return vec4<f32>(rgb, g.plot_fade);
+}
+
 // Built-up areas as a mask for the 3D buildings.
 @fragment
 fn fs_mask() -> @location(0) vec4<f32> {

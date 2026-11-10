@@ -2,8 +2,9 @@
 //! steppe, a city, a town, a coast) through the real renderer and writes PNG screenshots. It needs
 //! no baked map, so the look of the 3D models can be checked on any machine with a GPU adapter.
 //!
-//! `cargo run --release -p client --example scene_probe -- OUT_DIR [LAT_DEG]`
-//! LAT_DEG moves the scene north or south (default 50), which changes the kinds of tree.
+//! `cargo run --release -p client --example scene_probe -- OUT_DIR [LAT_DEG] [LON_DEG]`
+//! LAT_DEG and LON_DEG (default 50, 5) move the scene around the world, which changes the kinds
+//! of tree and the style of the towns and their landmarks.
 
 use client::camera::{Bounds, Camera};
 use client::offscreen;
@@ -60,7 +61,7 @@ fn scene(y_base: i32) -> RenderData {
             } else if x < 300.0 {
                 [0.31, 0.50, 0.29] // dense forest
             } else {
-                [0.86, 0.80, 0.64] // dry
+                if patch > 0.45 { [0.72, 0.77, 0.56] } else { [0.86, 0.80, 0.64] } // dry, with patches of scrub
             };
             land_rgb.extend(rgb.map(|v| (v * 255.0) as u8));
         }
@@ -123,17 +124,45 @@ fn scene(y_base: i32) -> RenderData {
     }
 }
 
+/// Equal Earth x (metres) of a longitude at a latitude.
+fn x_of(lat_deg: f64, lon_deg: f64) -> i32 {
+    let theta = (3f64.sqrt() / 2.0 * lat_deg.to_radians().sin()).asin();
+    let t2 = theta * theta;
+    let d = 1.340264 + 3.0 * -0.081106 * t2 + t2 * t2 * t2 * (7.0 * 0.000893 + 9.0 * 0.003796 * t2);
+    (2.0 * 3f64.sqrt() * lon_deg.to_radians() * theta.cos() / (3.0 * d) * 6_371_008.8) as i32
+}
+
+/// Move the whole scene east by `dx` metres.
+fn shift_x(d: &mut RenderData, dx: i32) {
+    let add = |v: &mut Vec<i32>| v.iter_mut().for_each(|x| *x += dx);
+    for l in &mut d.levels {
+        add(&mut l.vx);
+        add(&mut l.line_x);
+    }
+    d.cell_seg.iter_mut().step_by(2).for_each(|x| *x += dx);
+    for v in [&mut d.cell_mx, &mut d.cell_ring_x, &mut d.province_mx, &mut d.river_x, &mut d.roads.x, &mut d.rails.x, &mut d.urban_vx] {
+        add(v);
+    }
+    d.relief.x0 += dx;
+    d.relief.x1 += dx;
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let out = std::path::PathBuf::from(args.next().unwrap_or_else(|| "scene".into()));
     let lat: f64 = args.next().and_then(|v| v.parse().ok()).unwrap_or(50.0);
     std::fs::create_dir_all(&out).expect("create output directory");
+    let lon: f64 = args.next().and_then(|v| v.parse().ok()).unwrap_or(5.0);
     let y_base = y_of_lat(lat) - H / 2;
-    let data = scene(y_base);
+    let x_base = x_of(lat, lon) - W / 2;
+    let mut data = scene(y_base);
+    shift_x(&mut data, x_base);
     let gpu = offscreen::headless_gpu().expect("no GPU adapter available");
     eprintln!("GPU: {}", gpu.adapter_name);
     let mut renderer = Renderer::new(&gpu.device, &gpu.queue, offscreen::FORMAT, &data, 1);
     renderer.set_colors(&gpu.queue, &[[150, 160, 120, 255]]);
+    // the city sites: a little off the middle of each town, as cell centres are on the real map
+    renderer.set_cities(&gpu.device, &[[x_base + 304_000, y_base + 197_000], [x_base + 392_000, y_base + 301_000], [x_base + 221_000, y_base + 91_000]]);
     let (x0, y0, x1, y1) = data.bounds();
     let (w, h) = (1600u32, 1000u32);
     // (name, centre x, centre y above the scene's bottom edge, metres per pixel)
@@ -143,13 +172,14 @@ fn main() {
         ("forest_close", 250_000.0, 320_000.0, 110.0),
         ("forest_mid", 250_000.0, 320_000.0, 350.0),
         ("south_close", 250_000.0, 70_000.0, 130.0),
+        ("dry_close", 400_000.0, 70_000.0, 130.0),
         ("mountains", 150_000.0, 200_000.0, 400.0),
         ("town", 390_000.0, 300_000.0, 110.0),
         ("far", 300_000.0, 200_000.0, 1_000.0),
     ];
     for (name, cx, cy, m) in shots {
         let mut camera = Camera::fit(w as f64, h as f64, Bounds::around(x0, y0, x1, y1));
-        camera.cx = cx;
+        camera.cx = x_base as f64 + cx;
         camera.cy = y_base as f64 + cy;
         camera.m_per_px = m;
         camera.clamp();

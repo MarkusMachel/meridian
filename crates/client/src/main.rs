@@ -75,6 +75,7 @@ fn main() {
     let map = Arc::new(meridian_data::load_map_file(&args.data.join("meridian-map.bin")).unwrap_or_else(|e| panic!("{}", e[0])));
     let render = meridian_data::load_render_file(&args.data.join("meridian-render.bin")).unwrap_or_else(|e| panic!("{e}"));
     let provinces = map.province_count() as usize;
+    let cities = client::labels::city_positions(&map, &render);
     let Some(out) = args.screenshot.clone() else {
         let world = proving_ground::scenario_on_map(1, map.clone());
         let session = Session::new(world, Box::new(proving_ground::schedule(false)), CountryId(0));
@@ -95,6 +96,7 @@ fn main() {
     let gpu = offscreen::headless_gpu().expect("no GPU adapter available");
     eprintln!("GPU: {}", gpu.adapter_name);
     let mut renderer = Renderer::new(&gpu.device, &gpu.queue, offscreen::FORMAT, &render, provinces);
+    renderer.set_cities(&gpu.device, &cities);
     let colors = match args.mode {
         Mode::Political => modes::political(&snap.controllers),
         Mode::Value => modes::value_ramp(&snap.values),

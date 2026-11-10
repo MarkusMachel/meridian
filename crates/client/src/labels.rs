@@ -116,6 +116,18 @@ pub fn place(data: &RenderData, camera: &Camera, scale: f64) -> Vec<PlacedLabel>
     out
 }
 
+/// Where the cities of 1990 are (the centre of each city site's cell, in world metres), in site
+/// order. The renderer puts a landmark in the town nearest to each (`Renderer::set_cities`).
+pub fn city_positions(map: &meridian_core::Map, data: &RenderData) -> Vec<[i32; 2]> {
+    (0..map.site_count() as usize)
+        .filter(|&s| map.site_kind[s] == 0 && map.site_built[s] <= 1990 && map.site_destroyed[s] > 1990)
+        .map(|s| {
+            let c = map.site_cell[s] as usize;
+            [data.cell_mx[c], data.cell_my[c]]
+        })
+        .collect()
+}
+
 /// A site (city, port, airfield, ...) to draw: a marker, and a name if there is room for it.
 #[derive(Clone, Debug)]
 pub struct SiteMark {

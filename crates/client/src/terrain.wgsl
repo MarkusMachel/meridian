@@ -238,21 +238,171 @@ fn urban_at(rel: vec2<f32>) -> f32 {
     return textureSampleLevel(urban_mask, samp, overlay_uv(rel), 0.0).r;
 }
 
-/// Latitude in degrees from Equal Earth y (rough: within about two degrees, enough to pick trees).
-fn latitude_deg(world_y: f32) -> f32 {
-    let u = clamp(world_y / 8392000.0, -1.0, 1.0);
-    return 90.0 * u * (0.80 + 0.20 * u * u);
+/// Latitude and longitude in degrees (x: latitude, y: longitude) of a point in Equal Earth metres:
+/// the projection run backwards (Newton's method on y, four steps are plenty).
+fn lat_lon(w: vec2<f32>) -> vec2<f32> {
+    let radius = 6371008.8;
+    let a1 = 1.340264;
+    let a2 = -0.081106;
+    let a3 = 0.000893;
+    let a4 = 0.003796;
+    let yy = clamp(w.y / radius, -1.3173, 1.3173);
+    var th = yy / a1;
+    for (var k = 0; k < 4; k++) {
+        let t2 = th * th;
+        let t6 = t2 * t2 * t2;
+        let f = th * (a1 + a2 * t2 + t6 * (a3 + a4 * t2)) - yy;
+        let df = a1 + 3.0 * a2 * t2 + t6 * (7.0 * a3 + 9.0 * a4 * t2);
+        th = th - f / df;
+    }
+    let t2 = th * th;
+    let t6 = t2 * t2 * t2;
+    let df = a1 + 3.0 * a2 * t2 + t6 * (7.0 * a3 + 9.0 * a4 * t2);
+    let lon = w.x * 0.8660254 * df / (radius * max(cos(th), 0.05));
+    let lat = asin(clamp(sin(th) / 0.8660254, -1.0, 1.0));
+    return vec2<f32>(lat, lon) * 57.29578;
 }
 
-// A crown is two six-sided cones, 12 triangles, 36 vertices. A conifer stacks two pointed tiers;
-// a broadleaf tree is a lumpy crown (a cone on top of an upside-down cone sharing one uneven ring).
+// Parts of the world with their own look of town (houses and landmark). These are broad boxes of
+// latitude and longitude, good enough to tell Europe from the Gulf; they are a display choice only.
+const EUROPE: i32 = 0;        // pitched terracotta and slate roofs; church with a spire
+const RUSSIA: i32 = 1;        // metal roofs, many grey blocks; church with an onion dome
+const MIDDLE_EAST: i32 = 2;   // flat roofs, sand and white walls; mosque with dome and minaret
+const AFRICA: i32 = 3;        // low houses, tin roofs, earth walls; small white church
+const SOUTH_ASIA: i32 = 4;    // flat concrete roofs, pale walls; temple tower
+const EAST_ASIA: i32 = 5;     // dark tile roofs, many tall blocks; pagoda
+const SE_ASIA: i32 = 6;       // steep red-brown roofs; gilded stupa
+const NEW_WORLD: i32 = 7;     // North America and Australia: shingle roofs; skyscrapers
+const LATIN: i32 = 8;         // pastel walls, tile and flat roofs; church with two towers
+
+fn culture(ll: vec2<f32>) -> i32 {
+    let lat = ll.x;
+    let lon = ll.y;
+    if (lon < -30.0) {
+        if (lat > 30.0) { return NEW_WORLD; }
+        return LATIN;
+    }
+    if (lon > 110.0 && lat < -10.0) { return NEW_WORLD; }
+    if (lon > 97.0 && lon < 150.0 && lat > 20.0 && (lat < 46.0 || (lon > 120.0 && lat < 54.0))) { return EAST_ASIA; }
+    if (lon > 92.0 && lat <= 28.0) { return SE_ASIA; }
+    if (lon > 72.0 && lon <= 92.0 && lat < 32.0) { return SOUTH_ASIA; }
+    if (lon > -18.0 && lon < 52.0 && lat <= 12.0) { return AFRICA; }
+    // the south and east shores of the Mediterranean, Turkey, Arabia, Iran, Central Asia
+    var north = 35.5;
+    if (lon > 10.0) { north = 34.0; }
+    if (lon > 26.0) { north = 42.0; }
+    if (lon > 45.0) { north = 45.0; }
+    if (lon > -18.0 && lon <= 80.0 && lat > 12.0 && lat < north) { return MIDDLE_EAST; }
+    if (lon > 27.0) { return RUSSIA; }
+    return EUROPE;
+}
+
+/// The part of the world a town plot belongs to. Borders are blurred a little with slow noise so
+/// styles do not change along a ruler-straight line.
+fn culture_at(world_xy: vec2<f32>) -> i32 {
+    let wobble = vec2<f32>(vnoise(world_xy / 180000.0), vnoise(world_xy / 180000.0 + vec2<f32>(40.0, 9.0))) - 0.5;
+    return culture(lat_lon(world_xy) + wobble * 3.0);
+}
+
+/// How houses look in one part of the world.
+struct HouseStyle {
+    pitch: f32,              // ridge height as a share of the depth (0 = flat roofs only)
+    flat: f32,               // share of houses with a flat roof
+    wall_a: vec3<f32>,
+    wall_b: vec3<f32>,
+    wall_c: vec3<f32>,       // the odd one out
+    roof_a: vec3<f32>,       // districts lean to roof_a or roof_b
+    roof_b: vec3<f32>,
+    roof_c: vec3<f32>,
+    flat_roof: vec3<f32>,
+    towers: f32,             // how many tall blocks, against Europe = 1
+    tower_h: f32,            // how tall
+    tower_wall: vec3<f32>,
+};
+
+fn house_style(kind: i32) -> HouseStyle {
+    var st: HouseStyle;
+    // Europe
+    st.pitch = 0.44; st.flat = 0.0;
+    st.wall_a = vec3<f32>(0.70, 0.69, 0.66); st.wall_b = vec3<f32>(0.82, 0.78, 0.69); st.wall_c = vec3<f32>(0.74, 0.67, 0.56);
+    st.roof_a = vec3<f32>(0.49, 0.33, 0.27); st.roof_b = vec3<f32>(0.32, 0.33, 0.37); st.roof_c = vec3<f32>(0.40, 0.32, 0.27);
+    st.flat_roof = vec3<f32>(0.50, 0.50, 0.50);
+    st.towers = 1.0; st.tower_h = 1.0; st.tower_wall = vec3<f32>(0.72, 0.70, 0.66);
+    switch kind {
+        case 1: {   // Russia
+            st.pitch = 0.38; st.flat = 0.15;
+            st.wall_a = vec3<f32>(0.66, 0.65, 0.63); st.wall_b = vec3<f32>(0.78, 0.74, 0.62); st.wall_c = vec3<f32>(0.52, 0.42, 0.34);
+            st.roof_a = vec3<f32>(0.42, 0.44, 0.46); st.roof_b = vec3<f32>(0.27, 0.36, 0.31); st.roof_c = vec3<f32>(0.43, 0.29, 0.25);
+            st.towers = 1.6; st.tower_h = 1.1; st.tower_wall = vec3<f32>(0.68, 0.68, 0.67);
+        }
+        case 2: {   // Middle East
+            st.pitch = 0.0; st.flat = 1.0;
+            st.wall_a = vec3<f32>(0.80, 0.72, 0.58); st.wall_b = vec3<f32>(0.88, 0.85, 0.78); st.wall_c = vec3<f32>(0.72, 0.62, 0.48);
+            st.flat_roof = vec3<f32>(0.78, 0.73, 0.63);
+            st.towers = 0.8; st.tower_h = 0.9; st.tower_wall = vec3<f32>(0.82, 0.78, 0.70);
+        }
+        case 3: {   // Africa south of the Sahara
+            st.pitch = 0.18; st.flat = 0.25;
+            st.wall_a = vec3<f32>(0.70, 0.56, 0.42); st.wall_b = vec3<f32>(0.80, 0.76, 0.68); st.wall_c = vec3<f32>(0.62, 0.46, 0.34);
+            st.roof_a = vec3<f32>(0.56, 0.57, 0.58); st.roof_b = vec3<f32>(0.50, 0.35, 0.27); st.roof_c = vec3<f32>(0.44, 0.44, 0.45);
+            st.flat_roof = vec3<f32>(0.62, 0.58, 0.52);
+            st.towers = 0.5; st.tower_h = 0.8;
+        }
+        case 4: {   // South Asia
+            st.pitch = 0.20; st.flat = 0.8;
+            st.wall_a = vec3<f32>(0.86, 0.83, 0.76); st.wall_b = vec3<f32>(0.84, 0.74, 0.62); st.wall_c = vec3<f32>(0.66, 0.76, 0.80);
+            st.roof_a = vec3<f32>(0.50, 0.35, 0.28); st.roof_b = vec3<f32>(0.52, 0.52, 0.52); st.roof_c = vec3<f32>(0.44, 0.36, 0.30);
+            st.flat_roof = vec3<f32>(0.64, 0.63, 0.60);
+            st.towers = 1.0; st.tower_h = 1.0; st.tower_wall = vec3<f32>(0.80, 0.78, 0.72);
+        }
+        case 5: {   // East Asia
+            st.pitch = 0.32; st.flat = 0.25;
+            st.wall_a = vec3<f32>(0.80, 0.80, 0.78); st.wall_b = vec3<f32>(0.66, 0.66, 0.66); st.wall_c = vec3<f32>(0.58, 0.48, 0.40);
+            st.roof_a = vec3<f32>(0.27, 0.28, 0.30); st.roof_b = vec3<f32>(0.29, 0.35, 0.44); st.roof_c = vec3<f32>(0.38, 0.31, 0.27);
+            st.towers = 1.5; st.tower_h = 1.35; st.tower_wall = vec3<f32>(0.74, 0.75, 0.76);
+        }
+        case 6: {   // South-East Asia
+            st.pitch = 0.58; st.flat = 0.2;
+            st.wall_a = vec3<f32>(0.82, 0.78, 0.68); st.wall_b = vec3<f32>(0.58, 0.46, 0.35); st.wall_c = vec3<f32>(0.86, 0.84, 0.78);
+            st.roof_a = vec3<f32>(0.50, 0.30, 0.24); st.roof_b = vec3<f32>(0.45, 0.36, 0.30); st.roof_c = vec3<f32>(0.50, 0.50, 0.50);
+            st.towers = 0.9; st.tower_h = 1.0;
+        }
+        case 7: {   // North America, Australia
+            st.pitch = 0.36; st.flat = 0.1;
+            st.wall_a = vec3<f32>(0.84, 0.83, 0.80); st.wall_b = vec3<f32>(0.78, 0.72, 0.62); st.wall_c = vec3<f32>(0.58, 0.40, 0.34);
+            st.roof_a = vec3<f32>(0.31, 0.31, 0.33); st.roof_b = vec3<f32>(0.38, 0.32, 0.28); st.roof_c = vec3<f32>(0.44, 0.45, 0.46);
+            st.towers = 1.5; st.tower_h = 1.7; st.tower_wall = vec3<f32>(0.56, 0.62, 0.68);
+        }
+        case 8: {   // Latin America
+            st.pitch = 0.30; st.flat = 0.5;
+            st.wall_a = vec3<f32>(0.86, 0.82, 0.70); st.wall_b = vec3<f32>(0.84, 0.68, 0.60); st.wall_c = vec3<f32>(0.66, 0.76, 0.82);
+            st.roof_a = vec3<f32>(0.52, 0.33, 0.26); st.roof_b = vec3<f32>(0.46, 0.34, 0.28); st.roof_c = vec3<f32>(0.56, 0.55, 0.53);
+            st.flat_roof = vec3<f32>(0.66, 0.64, 0.60);
+            st.towers = 1.0; st.tower_h = 1.1; st.tower_wall = vec3<f32>(0.78, 0.76, 0.72);
+        }
+        default: {}
+    }
+    return st;
+}
+
+// A tree is two six-sided cones, 12 triangles, 36 vertices, put together in one of four shapes:
+//   BROADLEAF  a lumpy crown: a cone on top of an upside-down cone sharing one uneven ring
+//   CONIFER    two stacked pointed tiers (`slim` makes it a narrow spruce or a cypress)
+//   UMBRELLA   a thin trunk under a wide flat crown (acacia, stone pine)
+//   PALM       a tall thin trunk under a star of fronds
+const BROADLEAF: i32 = 0;
+const CONIFER: i32 = 1;
+const UMBRELLA: i32 = 2;
+const PALM: i32 = 3;
+
 struct Crown {
     p: vec3<f32>,        // position relative to the foot of the tree
     normal: vec3<f32>,
     top: f32,            // height of the tree
+    trunk: bool,         // this vertex belongs to a trunk
 };
 
-fn crown(vi: u32, c: vec2<i32>, size: f32, conifer: bool, jungle: f32) -> Crown {
+fn crown(vi: u32, c: vec2<i32>, size: f32, shape: i32, tall: f32, slim: f32) -> Crown {
     let face = vi / 3u;
     let corner = vi % 3u;
     let tier = face / 6u;     // 0: upper cone, 1: lower cone
@@ -263,26 +413,41 @@ fn crown(vi: u32, c: vec2<i32>, size: f32, conifer: bool, jungle: f32) -> Crown 
     var ring_z: f32;
     var rad: f32;
     var top: f32;
-    if (conifer) {
-        top = size * 1.45;
-        if (tier == 0u) { apex = vec3<f32>(0.0, 0.0, top); ring_z = size * 0.62; rad = size * 0.27; }
-        else { apex = vec3<f32>(0.0, 0.0, size * 0.98); ring_z = size * 0.10; rad = size * 0.40; }
-    } else {
-        top = size * (0.95 + 0.25 * jungle);
-        let lean = (vec2<f32>(hash2(c + vec2<i32>(31, 7)), hash2(c + vec2<i32>(5, 41))) - 0.5) * size * 0.25;
-        ring_z = top * 0.50;
-        rad = size * 0.56;
-        if (tier == 0u) { apex = vec3<f32>(lean, top); } else { apex = vec3<f32>(0.0, 0.0, top * 0.10); }
+    var uneven = 0.0;         // how lumpy the ring is
+    var star = 1.0;           // radius of every second ring corner (palm fronds)
+    var trunk = false;
+    switch shape {
+        case 1: {
+            top = size * 1.45 * tall;
+            if (tier == 0u) { apex = vec3<f32>(0.0, 0.0, top); ring_z = top * 0.43; rad = size * 0.27 * slim; }
+            else { apex = vec3<f32>(0.0, 0.0, top * 0.68); ring_z = top * 0.07; rad = size * 0.40 * slim; }
+        }
+        case 2: {
+            top = size * 0.95 * tall;
+            if (tier == 0u) { apex = vec3<f32>(0.0, 0.0, top); ring_z = top * 0.70; rad = size * 0.66; uneven = 0.4; }
+            else { apex = vec3<f32>(0.0); ring_z = top * 0.74; rad = size * 0.07; trunk = true; }
+        }
+        case 3: {
+            top = size * 1.30 * tall;
+            if (tier == 0u) { apex = vec3<f32>(0.0, 0.0, top); ring_z = top * 0.80; rad = size * 0.60; star = 0.28; }
+            else { apex = vec3<f32>(0.0); ring_z = top * 0.90; rad = size * 0.055; trunk = true; }
+        }
+        default: {
+            top = size * 0.95 * tall;
+            let lean = (vec2<f32>(hash2(c + vec2<i32>(31, 7)), hash2(c + vec2<i32>(5, 41))) - 0.5) * size * 0.25;
+            ring_z = top * 0.50;
+            rad = size * 0.56;
+            uneven = 0.5;
+            if (tier == 0u) { apex = vec3<f32>(lean, top); } else { apex = vec3<f32>(0.0, 0.0, top * 0.10); }
+        }
     }
-    // the two ring corners of this face; a broadleaf ring is uneven so crowns look lumpy
+    // the two ring corners of this face
     let k0 = i32(j);
     let k1 = i32((j + 1u) % 6u);
-    var r0 = rad;
-    var r1 = rad;
-    if (!conifer) {
-        r0 = rad * (0.72 + 0.5 * hash2(c + vec2<i32>(k0 * 3, 19)));
-        r1 = rad * (0.72 + 0.5 * hash2(c + vec2<i32>(k1 * 3, 19)));
-    }
+    var r0 = rad * (1.0 - uneven * 0.56 + uneven * hash2(c + vec2<i32>(k0 * 3, 19)));
+    var r1 = rad * (1.0 - uneven * 0.56 + uneven * hash2(c + vec2<i32>(k1 * 3, 19)));
+    if ((k0 & 1) == 1) { r0 *= star; }
+    if ((k1 & 1) == 1) { r1 *= star; }
     let a0 = f32(k0) / 6.0 * tau + turn;
     let a1 = f32(k1) / 6.0 * tau + turn;
     let p0 = vec3<f32>(cos(a0) * r0, sin(a0) * r0, ring_z);
@@ -295,42 +460,92 @@ fn crown(vi: u32, c: vec2<i32>, size: f32, conifer: bool, jungle: f32) -> Crown 
     let outward = vec3<f32>(cos((a0 + a1) * 0.5), sin((a0 + a1) * 0.5), 0.0);
     if (dot(out.normal, outward) < 0.0) { out.normal = -out.normal; }
     out.top = top;
+    out.trunk = trunk;
     return out;
 }
 
-/// Muted greens: blue-dark conifers, olive broadleaf, deeper green rainforest; darker toward the
-/// bottom of the crown, where neighbours shade it.
-fn crown_color(k: Crown, c: vec2<i32>, conifer: bool, jungle: f32) -> vec3<f32> {
-    var green = mix(vec3<f32>(0.27, 0.39, 0.19), vec3<f32>(0.17, 0.34, 0.16), jungle);
-    if (conifer) { green = vec3<f32>(0.19, 0.32, 0.22); }
-    green *= 0.82 + 0.36 * hash2(c + vec2<i32>(17, 1));
-    return lit(green, k.normal) * mix(0.62, 1.0, smoothstep(0.0, k.top * 0.8, k.p.z));
+/// Shade a tree of leaf colour `green`: a little variety from tree to tree, darker toward the
+/// bottom of the crown where neighbours shade it, brown trunks.
+fn crown_color(k: Crown, c: vec2<i32>, green: vec3<f32>) -> vec3<f32> {
+    if (k.trunk) {
+        return lit(vec3<f32>(0.36, 0.29, 0.22), k.normal) * 0.9;
+    }
+    let leaf = green * (0.82 + 0.36 * hash2(c + vec2<i32>(17, 1)));
+    return lit(leaf, k.normal) * mix(0.62, 1.0, smoothstep(0.0, k.top * 0.8, k.p.z));
 }
 
+// Forests by climate, from latitude, height and how green or dry the ground colour is:
+//   far north and high mountains: dark, narrow spruce, thinning out toward the tree line
+//   temperate: rounded broadleaf trees with some conifers among them
+//   Mediterranean and other dry warm country: scattered stone pines, cypresses and olive-grey trees
+//   savanna: scattered flat-topped acacias, some palms
+//   rainforest: a tall, dense, deep green canopy with a few giants standing above it
 @vertex
 fn vs_tree(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> MOut {
     let cb = cell_base(g3.trees, ii);
     let c = cb.xy;
     let s = f32(cb.z);
     let base = vec2<f32>(c * cb.z - g3.center.xy) + vec2<f32>(hash2(c), hash2(c + vec2<i32>(7, 13))) * s;
-    let world_xy = vec2<f32>(g3.center.xy) + base;
-    // woods have clearings and ragged edges: thin the trees out with slow noise
-    let cover = forest_at(base) * smoothstep(0.22, 0.5, vnoise(world_xy / 9000.0) + forest_at(base) * 0.6);
     let ground_h = height_raw(base);
-    if (g3.sizes.x <= 0.0 || hash2(c + vec2<i32>(11, 2)) >= cover * 1.35 || ground_h <= 0.0 || urban_at(base) > 0.3) {
+    if (g3.sizes.x <= 0.0 || ground_h <= 0.0) {
         return hidden();
     }
-    // which kind: conifers toward the poles and up the mountains, rainforest near the equator
-    let lat = abs(latitude_deg(world_xy.y));
-    let cold = smoothstep(49.0, 60.0, lat + ground_h / 60.0 + (vnoise(world_xy / 40000.0) - 0.5) * 12.0);
-    let conifer = hash2(c + vec2<i32>(23, 4)) < cold;
-    let jungle = 1.0 - smoothstep(14.0, 24.0, lat);
-    let size = g3.sizes.x * (0.75 + 0.5 * hash2(c + vec2<i32>(3, 5)));
-    let k = crown(vi, c, size, conifer, jungle);
+    let world_xy = vec2<f32>(g3.center.xy) + base;
+    let lat = abs(lat_lon(world_xy).x);
+    let ground = textureSampleLevel(land, samp, h_uv(base), 0.0).rgb;
+    let lush = forest_at(base);
+    // dry open country with some green in it: a tree here and there (warm latitudes only)
+    let scrub = smoothstep(0.02, 0.07, ground.g - ground.r) * smoothstep(0.82, 0.70, ground.r) * (1.0 - smoothstep(40.0, 46.0, lat));
+    // woods have clearings and ragged edges: thin the trees out with slow noise
+    let tree_line = 1.0 - 0.6 * smoothstep(62.0, 69.0, lat + ground_h / 80.0);
+    let wooded = lush * smoothstep(0.22, 0.5, vnoise(world_xy / 9000.0) + lush * 0.6) * 1.35 * tree_line;
+    let cover = max(wooded, scrub * 0.13);
+    if (hash2(c + vec2<i32>(11, 2)) >= cover || urban_at(base) > 0.3) {
+        return hidden();
+    }
+    let open = wooded < scrub * 0.13 || lush < 0.5;      // scattered trees, not a wood
+    let pick = hash2(c + vec2<i32>(23, 4));
+    let cold = smoothstep(52.0, 62.0, lat + ground_h / 60.0 + (vnoise(world_xy / 40000.0) - 0.5) * 12.0);
+    let tropic = 1.0 - smoothstep(14.0, 24.0, lat);
+    var size = g3.sizes.x * (0.75 + 0.5 * hash2(c + vec2<i32>(3, 5)));
+    var shape = BROADLEAF;
+    var tall = 1.0;
+    var slim = 1.0;
+    var green = vec3<f32>(0.27, 0.39, 0.19);                 // temperate broadleaf
+    if (pick < max(cold, 0.10 * (1.0 - tropic))) {
+        // spruce and fir: narrower, taller and bluer the farther north
+        let north = smoothstep(54.0, 66.0, lat + ground_h / 60.0);
+        shape = CONIFER;
+        tall = 1.0 + 0.18 * north;
+        slim = 1.0 - 0.28 * north;
+        green = mix(vec3<f32>(0.19, 0.32, 0.22), vec3<f32>(0.15, 0.27, 0.23), north);
+        size *= 1.0 - 0.25 * smoothstep(62.0, 69.0, lat + ground_h / 80.0);
+    } else if (tropic > 0.5 && !open) {
+        // rainforest: tall crowns, and now and then a giant above the canopy
+        tall = 1.25;
+        green = mix(vec3<f32>(0.14, 0.33, 0.15), vec3<f32>(0.21, 0.40, 0.15), hash2(c + vec2<i32>(44, 6)));
+        if (hash2(c + vec2<i32>(9, 61)) < 0.10) { size *= 1.45; tall = 1.45; }
+    } else if (open && lat < 30.0) {
+        // savanna: acacias, with palms toward the equator
+        shape = select(UMBRELLA, PALM, pick > 1.0 - 0.3 * tropic);
+        green = select(vec3<f32>(0.40, 0.43, 0.22), vec3<f32>(0.27, 0.41, 0.19), shape == PALM);
+        size *= 1.15;
+    } else if (open) {
+        // Mediterranean: stone pines, cypresses, olive-grey trees
+        green = vec3<f32>(0.37, 0.41, 0.27);
+        if (pick > 0.75) { shape = CONIFER; slim = 0.5; tall = 1.15; green = vec3<f32>(0.16, 0.27, 0.19); }
+        else if (pick > 0.35) { shape = UMBRELLA; green = vec3<f32>(0.24, 0.36, 0.20); }
+        size *= 1.1;
+    } else {
+        // temperate: lighter and yellower in some woods than in others
+        green = mix(green, vec3<f32>(0.33, 0.42, 0.18), vnoise(world_xy / 30000.0) * (1.0 - tropic));
+        green = mix(green, vec3<f32>(0.17, 0.34, 0.16), tropic);
+    }
+    let k = crown(vi, c, size, shape, tall, slim);
     let world = vec3<f32>(base, ground_z(base)) + k.p;
     var o: MOut;
     o.clip = g3.view_proj * vec4<f32>(world, 1.0);
-    o.color = crown_color(k, c, conifer, jungle);
+    o.color = crown_color(k, c, green);
     o.pos = world;
     return o;
 }
@@ -384,11 +599,12 @@ fn vs_building(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32)
     if (is_park(q)) {
         if (vi >= 36u) { return hidden(); }
         let foot2 = origin + (0.3 + 0.4 * vec2<f32>(h1, h2)) * s;
-        let k = crown(vi, c, unit * (0.50 + 0.25 * h3), false, 0.0);
+        let hot = abs(lat_lon(vec2<f32>(g3.center.xy) + centre).x) < 32.0;
+        let k = crown(vi, c, unit * (0.50 + 0.25 * h3), select(BROADLEAF, PALM, hot && h1 > 0.4), 1.0, 1.0);
         let world = vec3<f32>(foot2, ground_z(foot2)) + k.p;
         var o: MOut;
         o.clip = g3.view_proj * vec4<f32>(world, 1.0);
-        o.color = crown_color(k, c, false, 0.0);
+        o.color = crown_color(k, c, vec3<f32>(0.27, 0.40, 0.19));
         o.pos = world;
         return o;
     }
@@ -404,8 +620,9 @@ fn vs_building(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32)
     let hi = select(0.0, street_half(q.x + 1) + 0.045, cross_street(q.x + 1));
     let avail = 1.0 - lo - hi;
 
+    let st = house_style(culture_at(vec2<f32>(g3.center.xy) + centre));
     let core = smoothstep(0.93, 1.0, inside);
-    let tower = hash2(c + vec2<i32>(9, 3)) < core * 0.32;
+    let tower = hash2(c + vec2<i32>(9, 3)) < core * 0.32 * st.towers;
     let terrace = !tower && hash2(block + vec2<i32>(71, 5)) < 0.40;
     let bh = hash2(block + vec2<i32>(15, 44));       // shared by the houses of one block
     // sizes in plots: w along the street, d across, setback from the pavement
@@ -413,19 +630,21 @@ fn vs_building(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32)
     var d = 0.40 + 0.14 * h2;
     var setback = 0.02 + 0.07 * h3;
     var wall = 0.17 + 0.11 * h3;
-    var ridge = d * 0.44;
+    var flat_roof = hash2(c + vec2<i32>(27, 14)) < st.flat;
     if (terrace) {
         w = avail + 0.002;
         d = 0.42 + 0.10 * bh;
         setback = 0.025;
         wall = 0.21 + 0.10 * bh;
-        ridge = d * 0.44;
+        flat_roof = hash2(block + vec2<i32>(27, 14)) < st.flat;
     }
+    var ridge = d * st.pitch;
+    if (flat_roof) { ridge = 0.0; wall *= 1.15; }
     if (tower) {
         w = avail * (0.66 + 0.2 * h1);
         d = 0.50 + 0.18 * h2;
         setback = 0.04;
-        wall = 0.45 + 0.85 * h3 * hash2(c + vec2<i32>(12, 5));
+        wall = (0.45 + 0.85 * h3 * hash2(c + vec2<i32>(12, 5))) * st.tower_h;
         ridge = 0.0;
     }
     let along = lo + avail * 0.5 + (h2 - 0.5) * (avail - w) * 0.8;
@@ -472,23 +691,21 @@ fn vs_building(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32)
     let local = vec3<f32>(select(p.xy, p.yx, swap), p.z);
     let n = vec3<f32>(select(normal.xy, normal.yx, swap), normal.z);
 
-    // muted palette. Walls: cream plaster, light grey, warm stone. Roofs: each district leans to
-    // terracotta or to slate, with some brown tile; the houses of a terrace share one roof.
+    // muted palette, in the colours of this part of the world. Each district leans to one of two
+    // roof colours, with some of a third; the houses of a terrace share one roof.
     let district = vec2<i32>(c.x >> 4u, c.y >> 4u);
     var tone = hash2(c + vec2<i32>(8, 8));
     var pick = hash2(c + vec2<i32>(2, 2));
     if (terrace) { tone = bh; pick = hash2(block + vec2<i32>(2, 2)); }
-    var color = mix(vec3<f32>(0.70, 0.69, 0.66), vec3<f32>(0.82, 0.78, 0.69), tone);
-    if (pick > 0.7) { color = mix(color, vec3<f32>(0.74, 0.67, 0.56), 0.6); }
-    if (tower) { color = mix(vec3<f32>(0.64, 0.63, 0.61), vec3<f32>(0.80, 0.77, 0.70), tone); }
+    var color = mix(st.wall_a, st.wall_b, tone);
+    if (pick > 0.7) { color = mix(color, st.wall_c, 0.6); }
+    if (tower) { color = st.tower_wall * (0.88 + 0.2 * tone); }
     if (is_roof) {
-        let slate_town = hash2(district + vec2<i32>(3, 57)) < 0.35;
-        let terracotta = vec3<f32>(0.49, 0.33, 0.27);
-        let slate = vec3<f32>(0.32, 0.33, 0.37);
-        let brown = vec3<f32>(0.40, 0.32, 0.27);
-        color = select(terracotta, slate, slate_town);
-        if (pick > 0.62) { color = brown; }
-        if (pick > 0.86) { color = select(slate, terracotta, slate_town); }
+        let lean_b = hash2(district + vec2<i32>(3, 57)) < 0.35;
+        color = select(st.roof_a, st.roof_b, lean_b);
+        if (pick > 0.62) { color = st.roof_c; }
+        if (pick > 0.86) { color = select(st.roof_b, st.roof_a, lean_b); }
+        if (flat_roof) { color = st.flat_roof; }
         color *= 0.90 + 0.2 * tone;
         if (tower) { color = vec3<f32>(0.38, 0.38, 0.40) * (0.9 + 0.2 * tone); }
     } else {
@@ -499,6 +716,214 @@ fn vs_building(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32)
     var o: MOut;
     o.clip = g3.view_proj * vec4<f32>(world, 1.0);
     o.color = lit(color, n);
+    o.pos = world;
+    return o;
+}
+
+// ---------------------------------------------------------------- city landmarks
+//
+// One per city, on its square (see `vs_plaza` in shader.wgsl), in the style of its part of the
+// world. The square is four plots by four. A landmark is up to six parts; a part is a block with eight side faces and a top, whose
+// bottom and top outlines are rectangles (4 sides) or octagons (8 sides) of any size. Equal
+// outlines give a box or a drum, a top of zero width a roof wedge, of zero size a spire or cone.
+// Sizes are in plots: x east, y north, z up.
+
+/// Landmarks are drawn larger than their size in plots says, so they stand out among the houses.
+const LANDMARK_SCALE: f32 = 1.7;
+
+fn floor_div(a: i32, b: i32) -> i32 {
+    let m = a % b;
+    return (a - select(m, m + b, m < 0)) / b;
+}
+fn landmark_at(pos: vec2<i32>, plot: i32) -> vec2<i32> {
+    return vec2<i32>(floor_div(pos.x + plot / 2, plot), floor_div(pos.y + plot / 2, plot)) * plot;
+}
+
+struct Part {
+    at: vec3<f32>,       // centre of the bottom outline
+    hb: vec2<f32>,       // half size of the bottom outline
+    ht: vec2<f32>,       // half size of the top outline
+    h: f32,              // height
+    sides: u32,          // 4 or 8; 0 = no part
+    color: vec3<f32>,
+};
+
+fn block(x: f32, y: f32, z: f32, hx: f32, hy: f32, h: f32, color: vec3<f32>) -> Part {
+    return Part(vec3<f32>(x, y, z), vec2<f32>(hx, hy), vec2<f32>(hx, hy), h, 4u, color);
+}
+fn taper(x: f32, y: f32, z: f32, hb: vec2<f32>, ht: vec2<f32>, h: f32, sides: u32, color: vec3<f32>) -> Part {
+    return Part(vec3<f32>(x, y, z), hb, ht, h, sides, color);
+}
+fn round_part(x: f32, y: f32, z: f32, rb: f32, rt: f32, h: f32, color: vec3<f32>) -> Part {
+    return Part(vec3<f32>(x, y, z), vec2<f32>(rb), vec2<f32>(rt), h, 8u, color);
+}
+fn no_part() -> Part {
+    return Part(vec3<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), 0.0, 0u, vec3<f32>(0.0));
+}
+
+fn landmark_part(kind: i32, i: u32, seed: u32) -> Part {
+    let pick = hash2(vec2<i32>(i32(seed), 5));
+    let gold = vec3<f32>(0.80, 0.65, 0.28);
+    switch kind {
+        case 1: {   // Russia: a white church with an onion dome, gold or blue
+            let white = vec3<f32>(0.88, 0.87, 0.84);
+            let dome = select(gold, vec3<f32>(0.26, 0.40, 0.62), pick > 0.55);
+            switch i {
+                case 0u: { return block(0.0, 0.0, 0.0, 0.52, 0.52, 0.60, white); }
+                case 1u: { return round_part(0.0, 0.0, 0.60, 0.25, 0.25, 0.30, white); }
+                case 2u: { return round_part(0.0, 0.0, 0.90, 0.25, 0.40, 0.16, dome); }
+                case 3u: { return round_part(0.0, 0.0, 1.06, 0.40, 0.05, 0.44, dome); }
+                case 4u: { return round_part(0.0, 0.0, 1.50, 0.04, 0.0, 0.26, gold); }
+                default: { return block(0.70, 0.0, 0.0, 0.20, 0.28, 0.36, white); }
+            }
+        }
+        case 2: {   // Middle East: a mosque, with a dome and a minaret
+            let wall = select(vec3<f32>(0.84, 0.78, 0.64), vec3<f32>(0.90, 0.88, 0.82), pick > 0.5);
+            let dome = select(vec3<f32>(0.48, 0.64, 0.62), vec3<f32>(0.80, 0.74, 0.60), pick > 0.7);
+            switch i {
+                case 0u: { return block(0.12, 0.0, 0.0, 0.60, 0.60, 0.42, wall); }
+                case 1u: { return round_part(0.12, 0.0, 0.42, 0.44, 0.36, 0.20, dome); }
+                case 2u: { return round_part(0.12, 0.0, 0.62, 0.36, 0.03, 0.26, dome); }
+                case 3u: { return round_part(-0.78, 0.50, 0.0, 0.13, 0.11, 1.50, wall); }
+                case 4u: { return round_part(-0.78, 0.50, 1.50, 0.15, 0.0, 0.32, dome); }
+                default: { return block(-0.62, -0.25, 0.0, 0.16, 0.35, 0.30, wall); }
+            }
+        }
+        case 4: {   // South Asia: a stone temple, a hall and a tall curved tower
+            let stone = vec3<f32>(0.80, 0.71, 0.56);
+            switch i {
+                case 0u: { return block(0.45, 0.0, 0.0, 0.42, 0.38, 0.38, stone); }
+                case 1u: { return taper(0.45, 0.0, 0.38, vec2<f32>(0.42, 0.38), vec2<f32>(0.18, 0.16), 0.16, 4u, stone * 0.92); }
+                case 2u: { return block(-0.35, 0.0, 0.0, 0.36, 0.36, 0.50, stone); }
+                case 3u: { return taper(-0.35, 0.0, 0.50, vec2<f32>(0.36), vec2<f32>(0.25), 0.55, 4u, stone * 0.95); }
+                case 4u: { return taper(-0.35, 0.0, 1.05, vec2<f32>(0.25), vec2<f32>(0.08), 0.45, 4u, stone * 0.90); }
+                default: { return round_part(-0.35, 0.0, 1.50, 0.10, 0.0, 0.20, gold); }
+            }
+        }
+        case 5: {   // East Asia: a pagoda, three storeys each under a wide dark roof
+            let body = select(vec3<f32>(0.58, 0.26, 0.20), vec3<f32>(0.82, 0.80, 0.74), pick > 0.6);
+            let roof = vec3<f32>(0.23, 0.24, 0.26);
+            switch i {
+                case 0u: { return block(0.0, 0.0, 0.0, 0.42, 0.42, 0.32, body); }
+                case 1u: { return taper(0.0, 0.0, 0.32, vec2<f32>(0.64), vec2<f32>(0.34), 0.14, 4u, roof); }
+                case 2u: { return block(0.0, 0.0, 0.46, 0.32, 0.32, 0.30, body); }
+                case 3u: { return taper(0.0, 0.0, 0.76, vec2<f32>(0.52), vec2<f32>(0.24), 0.14, 4u, roof); }
+                case 4u: { return block(0.0, 0.0, 0.90, 0.22, 0.22, 0.28, body); }
+                default: { return taper(0.0, 0.0, 1.18, vec2<f32>(0.40), vec2<f32>(0.0), 0.34, 4u, roof); }
+            }
+        }
+        case 6: {   // South-East Asia: a gilded stupa on a white base
+            let white = vec3<f32>(0.90, 0.88, 0.82);
+            switch i {
+                case 0u: { return block(0.0, 0.0, 0.0, 0.60, 0.60, 0.18, white); }
+                case 1u: { return block(0.0, 0.0, 0.18, 0.45, 0.45, 0.14, white); }
+                case 2u: { return round_part(0.0, 0.0, 0.32, 0.38, 0.27, 0.30, gold); }
+                case 3u: { return round_part(0.0, 0.0, 0.62, 0.27, 0.07, 0.26, gold); }
+                case 4u: { return round_part(0.0, 0.0, 0.88, 0.07, 0.0, 0.62, gold * 1.05); }
+                default: { return no_part(); }
+            }
+        }
+        case 7: {   // North America, Australia: a cluster of office towers
+            let glass = select(vec3<f32>(0.42, 0.52, 0.62), vec3<f32>(0.50, 0.56, 0.60), pick > 0.5);
+            let concrete = vec3<f32>(0.72, 0.71, 0.68);
+            switch i {
+                case 0u: { return block(0.0, 0.0, 0.0, 0.72, 0.56, 0.24, concrete); }
+                case 1u: { return block(-0.26, 0.06, 0.24, 0.26, 0.26, 1.80 + 0.5 * pick, glass); }
+                case 2u: { return block(-0.26, 0.06, 2.04 + 0.5 * pick, 0.17, 0.17, 0.45, glass * 0.92); }
+                case 3u: { return round_part(-0.26, 0.06, 2.49 + 0.5 * pick, 0.03, 0.0, 0.45, vec3<f32>(0.30)); }
+                case 4u: { return block(0.36, -0.10, 0.24, 0.22, 0.28, 1.25, glass * 1.12); }
+                default: { return block(0.36, -0.10, 1.49, 0.14, 0.20, 0.14, concrete); }
+            }
+        }
+        case 8: {   // Latin America: a colonial church with two towers at the front
+            let wall = select(vec3<f32>(0.88, 0.82, 0.62), vec3<f32>(0.90, 0.88, 0.82), pick > 0.5);
+            let tile = vec3<f32>(0.52, 0.33, 0.26);
+            switch i {
+                case 0u: { return block(0.20, 0.0, 0.0, 0.70, 0.34, 0.60, wall); }
+                case 1u: { return taper(0.20, 0.0, 0.60, vec2<f32>(0.73, 0.37), vec2<f32>(0.73, 0.0), 0.26, 4u, tile); }
+                case 2u: { return block(-0.62, 0.36, 0.0, 0.20, 0.20, 1.05, wall); }
+                case 3u: { return block(-0.62, -0.36, 0.0, 0.20, 0.20, 1.05, wall); }
+                case 4u: { return round_part(-0.62, 0.36, 1.05, 0.20, 0.03, 0.28, tile); }
+                default: { return round_part(-0.62, -0.36, 1.05, 0.20, 0.03, 0.28, tile); }
+            }
+        }
+        default: {   // Europe, and (smaller, whitewashed, tin roof) Africa: a church with a spire
+            var stone = select(vec3<f32>(0.74, 0.71, 0.64), vec3<f32>(0.80, 0.74, 0.62), pick > 0.6);
+            var roof = select(vec3<f32>(0.30, 0.31, 0.36), vec3<f32>(0.49, 0.33, 0.27), pick > 0.5);
+            var k = 1.0;
+            if (kind == 3) { stone = vec3<f32>(0.88, 0.86, 0.80); roof = vec3<f32>(0.50, 0.35, 0.27); k = 0.8; }
+            var q: Part;
+            switch i {
+                case 0u: { q = block(0.15, 0.0, 0.0, 0.75, 0.32, 0.55, stone); }
+                case 1u: { q = taper(0.15, 0.0, 0.55, vec2<f32>(0.78, 0.35), vec2<f32>(0.78, 0.0), 0.32, 4u, roof); }
+                case 2u: { q = block(-0.80, 0.0, 0.0, 0.23, 0.23, 1.15, stone); }
+                case 3u: { q = taper(-0.80, 0.0, 1.15, vec2<f32>(0.26), vec2<f32>(0.0), select(0.85, 0.40, kind == 3), 4u, roof * 0.9); }
+                case 4u: { q = round_part(0.95, 0.0, 0.0, 0.26, 0.26, 0.42, stone); }
+                default: { q = round_part(0.95, 0.0, 0.42, 0.28, 0.0, 0.22, roof); }
+            }
+            q.at *= k; q.hb *= k; q.ht *= k; q.h *= k;
+            return q;
+        }
+    }
+}
+
+/// Corner `k` (0..7) of an outline of half size `half`: a rectangle (corners and edge middles) or
+/// an octagon.
+fn outline(k: u32, half: vec2<f32>, sides: u32) -> vec2<f32> {
+    var dirs = array<vec2<f32>, 8>(vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0), vec2<f32>(0.0, 1.0), vec2<f32>(-1.0, 1.0), vec2<f32>(-1.0, 0.0), vec2<f32>(-1.0, -1.0), vec2<f32>(0.0, -1.0), vec2<f32>(1.0, -1.0));
+    var d = dirs[k % 8u];
+    if (sides == 8u && (k % 2u) == 1u) { d = d * 0.7071; }
+    return d * half;
+}
+
+@vertex
+fn vs_landmark(@builtin(vertex_index) vi: u32, @location(0) pos: vec2<i32>, @location(1) radius: f32, @location(2) seed: u32) -> MOut {
+    let plot = g3.blds.w;
+    let unit = g3.sizes.y;
+    if (unit <= 0.0 || radius < 4.0 * f32(plot)) {
+        return hidden();
+    }
+    let at = landmark_at(pos, plot);
+    let foot = vec2<f32>(at - g3.center.xy);
+    if (height_raw(foot) <= 0.0) {
+        return hidden();
+    }
+    let kind = culture(lat_lon(vec2<f32>(at)));
+    let q = landmark_part(kind, vi / 72u, seed);
+    if (q.sides == 0u) {
+        return hidden();
+    }
+    let v = vi % 72u;
+    var p: vec3<f32>;
+    var normal = vec3<f32>(0.0, 0.0, 1.0);
+    if (v < 48u) {
+        // side faces: two triangles between corner k and k + 1 of the bottom and top outlines
+        let k = v / 6u;
+        var e6 = array<u32, 6>(0u, 1u, 1u, 0u, 1u, 0u);
+        var t6 = array<f32, 6>(0.0, 0.0, 1.0, 0.0, 1.0, 1.0);
+        let b0 = vec3<f32>(outline(k, q.hb, q.sides), 0.0);
+        let b1 = vec3<f32>(outline(k + 1u, q.hb, q.sides), 0.0);
+        let t0 = vec3<f32>(outline(k, q.ht, q.sides), q.h);
+        let t1 = vec3<f32>(outline(k + 1u, q.ht, q.sides), q.h);
+        let kk = k + e6[v % 6u];
+        p = vec3<f32>(outline(kk, mix(q.hb, q.ht, t6[v % 6u]), q.sides), q.h * t6[v % 6u]);
+        normal = cross(b1 - b0, t0 - b0) + cross(t1 - b1, t0 - b1);
+        let outward = vec3<f32>(outline(k, vec2<f32>(1.0), 8u) + outline(k + 1u, vec2<f32>(1.0), 8u), 0.0);
+        if (dot(normal, outward) < 0.0) { normal = -normal; }
+        if (dot(normal, normal) < 1e-12) { normal = outward; }
+    } else {
+        // the top: a fan around its centre
+        let k = (v - 48u) / 3u;
+        let corner = (v - 48u) % 3u;
+        p = vec3<f32>(0.0, 0.0, q.h);
+        if (corner == 1u) { p = vec3<f32>(outline(k, q.ht, q.sides), q.h); }
+        if (corner == 2u) { p = vec3<f32>(outline(k + 1u, q.ht, q.sides), q.h); }
+    }
+    let world = vec3<f32>(foot, ground_z(foot)) + (q.at + p) * unit * LANDMARK_SCALE;
+    var o: MOut;
+    o.clip = g3.view_proj * vec4<f32>(world, 1.0);
+    // a little darker toward the ground, like the houses around
+    o.color = lit(q.color, normal) * mix(0.82, 1.0, smoothstep(0.0, 0.5, q.at.z + p.z));
     o.pos = world;
     return o;
 }

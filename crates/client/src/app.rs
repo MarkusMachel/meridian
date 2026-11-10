@@ -150,7 +150,8 @@ impl App {
         surface.configure(&device, &config);
 
         let inputs = self.inputs.take().expect("inputs are used once");
-        let map_renderer = Renderer::new(&device, &queue, format, &inputs.render, self.map.province_count() as usize);
+        let mut map_renderer = Renderer::new(&device, &queue, format, &inputs.render, self.map.province_count() as usize);
+        map_renderer.set_cities(&device, &client::labels::city_positions(&self.map, &inputs.render));
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(egui_ctx.clone(), egui::ViewportId::ROOT, &*window, Some(window.scale_factor() as f32), window.theme(), Some(device.limits().max_texture_dimension_2d as usize));
         let egui_renderer = egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
