@@ -18,7 +18,9 @@ $PY $B/build_states.py $NE "$INTER"
 $PY $B/build_regions.py $NE "$INTER"
 $PY $B/build_provinces.py "$INTER"
 $PY $B/validate_provinces.py "$INTER"
-$PY $B/build_cells.py "$INTER"
+# Map rewrite M1: the cells are H3 level-6 hexagons on the globe (build_cells.py made the old
+# irregular cells and is kept only for the helpers the other steps import from it).
+$PY $B/build_hex_cells.py "$INTER" $NE
 $PY $B/validate_cells.py "$INTER"
 $PY $B/build_sea.py "$INTER" $NE
 $PY $B/validate_graph.py "$INTER"
@@ -26,5 +28,9 @@ $PY $B/build_terrain.py "$INTER" $NE data/source/etopo/ETOPO_2022_v1_60s_N90W180
 $PY $B/build_sites.py "$INTER" $NE
 $PY $B/build_population.py "$INTER" $NE data/source/worldbank
 $PY $B/bake_map.py "$INTER" "$BAKED"
-$PY $B/build_render.py "$INTER" "$RENDER" --ne $NE
-$PY $B/validate_render.py "$INTER" "$RENDER"
+# The render file is for the flat client, which cannot show the hexagon world; the globe client
+# (map rewrite M3) replaces it. Set RENDER_OLD=1 to try the old step anyway.
+if [ "${RENDER_OLD:-0}" = 1 ]; then
+  $PY $B/build_render.py "$INTER" "$RENDER" --ne $NE
+  $PY $B/validate_render.py "$INTER" "$RENDER"
+fi

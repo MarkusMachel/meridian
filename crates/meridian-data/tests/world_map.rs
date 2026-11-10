@@ -25,7 +25,8 @@ fn world_map_loads_and_validates_with_zero_errors() {
     let problems = m.validate_world();
     assert!(problems.is_empty(), "{} problems, first: {:?}", problems.len(), &problems[..problems.len().min(5)]);
     assert!((2_500..=4_500).contains(&m.province_count()), "provinces: {}", m.province_count());
-    assert!((550_000..=650_000).contains(&m.cell_count()), "cells: {}", m.cell_count());
+    assert!((3_500_000..=3_900_000).contains(&m.cell_count()), "hexagons: {}", m.cell_count());
+    assert!(m.is_globe(), "the baked map is hexagons on the globe");
     assert_eq!(m.state_count(), 173);
 }
 
@@ -55,6 +56,56 @@ fn known_chokepoints_exist_as_named_strait_edges() {
     }
     for want in ["Strait of Gibraltar", "Turkish Straits", "Suez Canal", "Strait of Hormuz", "Strait of Malacca", "Panama Canal"] {
         assert!(named.contains(want), "{want} missing; have {named:?}");
+    }
+}
+
+/// A place from latitude and longitude in degrees (floats are fine in a test).
+fn place(lat: f64, lon: f64) -> meridian_core::sphere::Place {
+    let (la, lo) = (lat.to_radians(), lon.to_radians());
+    let r = meridian_core::sphere::EARTH_RADIUS_M as f64;
+    [(r * la.cos() * lo.cos()).round() as i32, (r * la.cos() * lo.sin()).round() as i32, (r * la.sin()).round() as i32]
+}
+
+/// Map rewrite M1: known cities sit on a hexagon of the right country, and the distance
+/// between their hexagons is the real distance to within 1 % (plus one hexagon each end,
+/// because a city is somewhere inside its hexagon, not at the centre).
+#[test]
+fn cities_are_where_they_should_be_on_the_globe() {
+    let Some(m) = load() else { return };
+    let cities = [
+        ("Hannover", 52.37, 9.73, "BRD"),
+        ("Leipzig", 51.34, 12.37, "DDR"),
+        ("Baghdad", 33.31, 44.37, "IRQ"),
+        ("Kuwait City", 29.38, 47.98, "KWT"),
+        ("Moscow", 55.75, 37.62, "SUN"),
+        ("Washington", 38.90, -77.04, "USA"),
+        ("Singapore", 1.35, 103.82, "SGP"),
+        ("Tromso", 69.65, 18.96, "NOR"),
+        ("Wellington", -41.29, 174.78, "NZL"),
+        ("Suva", -18.14, 178.44, "FJI"),
+        ("Anadyr", 64.73, 177.51, "SUN"),
+    ];
+    let cells: Vec<CellId> = cities
+        .iter()
+        .map(|&(name, lat, lon, tag)| {
+            let (cell, away) = m.nearest_cell_to_place(place(lat, lon)).unwrap();
+            assert!(away < 7_000, "{name}: the nearest hexagon centre is {away} m away");
+            assert_eq!(m.state_tags[m.cell_state[cell.index()] as usize], tag, "{name}");
+            cell
+        })
+        .collect();
+    for (i, a) in cities.iter().enumerate() {
+        for (j, b) in cities.iter().enumerate() {
+            let real = meridian_core::sphere::ground_m(place(a.1, a.2), place(b.1, b.2)) as f64;
+            let got = m.cell_distance_m(cells[i], cells[j]) as f64;
+            assert!((got - real).abs() <= real * 0.01 + 8_000.0, "{} to {}: {got} m, really {real} m", a.0, b.0);
+        }
+    }
+    // every edge is about one hexagon long (level 6: 4.4 to 7.2 km between centres)
+    for a in 0..m.cell_count() {
+        for e in m.cell_edges(CellId(a)) {
+            assert!((4_300..=7_300).contains(&m.c_dist_m[e]), "edge from cell {a}: {} m", m.c_dist_m[e]);
+        }
     }
 }
 

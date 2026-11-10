@@ -263,16 +263,17 @@ fn cmd_map_bench(args: &[String]) -> i32 {
     println!("10,000 local cell queries ({cell_found} found, {cell_exp:.0} expanded avg): mean {:.1} us, p50 {:.1}, p99 {:.1}, max {:.1}", cell_stats.0, cell_stats.1, cell_stats.2, cell_stats.3);
     println!("100 long cell queries (up to 3,000 km): mean {:.0} us, p50 {:.0}, p99 {:.0}, max {:.0}", long_stats.0, long_stats.1, long_stats.2, long_stats.3);
     println!("path fingerprint (must match on every platform): {:016x}", fingerprint.finish());
-    // Budgets from docs/budgets.md (about 3x the M4 Pro measurements). MERIDIAN_BUDGET_SCALE
-    // loosens them on slower machines, e.g. 3 for emulated Linux.
+    // Budgets from docs/budgets.md. For the hexagon world they are provisional: about 3x what
+    // a 2-core Linux container measured on 2026-11-10, to be set again from a run on the
+    // M4 Pro. MERIDIAN_BUDGET_SCALE loosens them on slower machines, e.g. 3 for emulated Linux.
     let scale: f64 = std::env::var("MERIDIAN_BUDGET_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let budgets = [
-        ("load ms", load_ms, 120.0),
+        ("load ms", load_ms, 4_500.0),
         ("strategic mean us", node_stats.0, 700.0),
         ("strategic p99 us", node_stats.2, 3_000.0),
-        ("local cell mean us", cell_stats.0, 200.0),
-        ("local cell p99 us", cell_stats.2, 1_000.0),
-        ("long cell mean us", long_stats.0, 10_000.0),
+        ("local cell mean us", cell_stats.0, 1_100.0),
+        ("local cell p99 us", cell_stats.2, 6_000.0),
+        ("long cell mean us", long_stats.0, 70_000.0),
     ];
     let mut over = false;
     for (name, got, limit) in budgets {

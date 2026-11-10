@@ -3,14 +3,17 @@
 //! Container (little-endian): magic "MRMP" | format_version u32 | kind u32 (2) |
 //! payload_len u64 | checksum u64 (CRC-32 of the payload, zero-extended).
 //! Payload: u32 array count, then per array: name_len u8 | name | dtype u8 | count u64 | data.
-//! dtype: 1 u8, 2 u16, 3 u32, 4 i16, 5 i32.
+//! dtype: 1 u8, 2 u16, 3 u32, 4 i16, 5 i32, 6 u64.
+//!
+//! Version 2 (map rewrite, phase M1): the cells are hexagons on the globe. Adds `cell_h3`,
+//! `cell_xyz` and `node_xyz`; distances are over the ground of the sphere.
 
 use crate::error::{DataError, ErrorKind};
 use meridian_core::{Map, RawMap};
 use std::collections::HashMap;
 use std::path::Path;
 
-pub const MAP_FORMAT_VERSION: u32 = 1;
+pub const MAP_FORMAT_VERSION: u32 = 2;
 const KIND_MAP: u32 = 2;
 const HEADER_LEN: usize = 28;
 
@@ -45,6 +48,9 @@ impl<'a> Arrays<'a> {
     }
     fn i32s(&self, name: &str) -> Result<Vec<i32>, DataError> {
         Ok(self.raw(name, 5, 4)?.1.chunks_exact(4).map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+    }
+    fn u64s(&self, name: &str) -> Result<Vec<u64>, DataError> {
+        Ok(self.raw(name, 6, 8)?.1.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect())
     }
     /// A string table stored as `<base>_blob` (u8) and `<base>_off` (u32).
     fn strings(&self, base: &str) -> Result<Vec<String>, DataError> {
@@ -106,6 +112,7 @@ pub fn parse_map(file: &str, bytes: &[u8]) -> Result<Map, Vec<DataError>> {
             1 => 1,
             2 | 4 => 2,
             3 | 5 => 4,
+            6 => 8,
             other => return Err(bad(format!("array {name}: unknown dtype {other}"))),
         };
         let nbytes = n.checked_mul(width).ok_or_else(|| bad(format!("array {name}: size overflows")))?;
@@ -169,6 +176,9 @@ pub fn parse_map(file: &str, bytes: &[u8]) -> Result<Map, Vec<DataError>> {
             site_built: a.i16s("site_built")?,
             site_destroyed: a.i16s("site_destroyed")?,
             site_verified: a.u8s("site_verified")?,
+            cell_h3: a.u64s("cell_h3")?,
+            cell_xyz: a.i32s("cell_xyz")?,
+            node_xyz: a.i32s("node_xyz")?,
         })
     })()
     .map_err(one)?;

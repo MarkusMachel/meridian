@@ -337,3 +337,142 @@ fn nearest_cell_finds_the_cell_under_a_point() {
         assert_eq!((near, away), (CellId(c), 5));
     }
 }
+
+// ---- the globe (map rewrite, phase M1) ----
+
+/// A place from latitude and longitude in degrees (floats are fine in a test).
+fn place(lat: f64, lon: f64) -> Place {
+    let (la, lo) = (lat.to_radians(), lon.to_radians());
+    let r = crate::sphere::EARTH_RADIUS_M as f64;
+    [(r * la.cos() * lo.cos()).round() as i32, (r * la.cos() * lo.sin()).round() as i32, (r * la.sin()).round() as i32]
+}
+
+/// The flat test map laid on the globe: the same cells and graphs, but each cell sits at a
+/// latitude and longitude (0.09 degrees apart, about 10 km) starting at (`lat0`, `lon0`), and
+/// every distance is over the ground. Starting near 180 degrees east puts the map across the
+/// line where longitude jumps from +180 to -180.
+pub fn globe_test_map(w: usize, h: usize, lat0: f64, lon0: f64) -> RawMap {
+    let mut r = test_map(w, h);
+    let at = |x: f64, y: f64| place(lat0 + y * 0.09, (lon0 + x * 0.09 + 180.0).rem_euclid(360.0) - 180.0);
+    for y in 0..h {
+        for x in 0..w {
+            r.cell_xyz.extend(at(x as f64, y as f64));
+            r.cell_h3.push(0x0860_0000_0000_0000 + (y * w + x) as u64);
+        }
+    }
+    for a in 0..w * h {
+        for e in r.c_off[a] as usize..r.c_off[a + 1] as usize {
+            r.c_dist_m[e] = ground_m(place_of(&r.cell_xyz, a as u32), place_of(&r.cell_xyz, r.c_dst[e])) + 2;
+        }
+    }
+    // provinces are 4x4 blocks: their middle is 1.5 cells in; the one sea zone lies to the west
+    for py in 0..h / 4 {
+        for px in 0..w / 4 {
+            r.node_xyz.extend(at(px as f64 * 4.0 + 1.5, py as f64 * 4.0 + 1.5));
+        }
+    }
+    r.node_xyz.extend(at(-2.0, 1.5));
+    for a in 0..r.g_off.len() - 1 {
+        for e in r.g_off[a] as usize..r.g_off[a + 1] as usize {
+            r.g_cost_m[e] = ground_m(place_of(&r.node_xyz, a as u32), place_of(&r.node_xyz, r.g_dst[e])) + 2;
+        }
+    }
+    r
+}
+
+/// The three places the globe tests use: on the equator, far north (where a degree of
+/// longitude is short), and across the 180 degree line.
+const GLOBE_CORNERS: [(f64, f64); 3] = [(-1.0, 20.0), (68.0, 15.0), (-18.0, 178.8)];
+
+#[test]
+fn on_the_globe_distances_are_over_the_ground() {
+    for (lat0, lon0) in GLOBE_CORNERS {
+        let m = Map::from_raw(globe_test_map(32, 32, lat0, lon0)).unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(m.is_globe());
+        // a step north is 0.09 degrees of latitude anywhere: 10,007.5 km / 90 * 0.09
+        assert!(m.cell_distance_m(CellId(0), CellId(32)).abs_diff(10_008) <= 2);
+        // a step east shrinks with the cosine of the latitude
+        let east = m.cell_distance_m(CellId(0), CellId(1)) as f64;
+        assert!((east - 10_007.5 * lat0.to_radians().cos()).abs() < 3.0, "{east} at latitude {lat0}");
+        // across the whole map, and the same both ways
+        let far = m.cell_distance_m(CellId(0), CellId(31));
+        assert!(far.abs_diff((31.0 * east) as u32) < 400, "{far}: the map does not tear at the 180 degree line");
+        assert_eq!(far, m.cell_distance_m(CellId(31), CellId(0)));
+        assert_eq!(m.cell_place(CellId(5)), Some(place_of(&m.cell_xyz, 5)));
+    }
+    assert!(!Map::from_raw(test_map(8, 8)).unwrap().is_globe());
+}
+
+#[test]
+fn on_the_globe_range_queries_match_brute_force() {
+    for (lat0, lon0) in GLOBE_CORNERS {
+        let m = Map::from_raw(globe_test_map(32, 32, lat0, lon0)).unwrap();
+        for center in [0u32, 5, 100, 517, 1023] {
+            for radius in [0u32, 3_000, 10_010, 25_000, 90_000, 700_000] {
+                let got = m.cells_within(CellId(center), radius);
+                let want: Vec<CellId> = (0..m.cell_count()).map(CellId).filter(|&c| m.cell_distance_m(CellId(center), c) <= radius).collect();
+                assert_eq!(got, want, "centre {center} radius {radius} at {lat0},{lon0}");
+            }
+        }
+    }
+}
+
+#[test]
+fn on_the_globe_the_pathfinder_still_finds_the_cheapest_route() {
+    for (lat0, lon0) in GLOBE_CORNERS {
+        let m = Map::from_raw(globe_test_map(16, 16, lat0, lon0)).unwrap();
+        let costs = CellCosts { terrain_percent: [100, 130, 180, 250, 150, 400, 100, 100], road_percent: 60, rail_percent: 80, river_extra_m: 4_000, bridge_extra_m: 500 };
+        let mut scratch = PathScratch::new(m.cell_count() as usize);
+        for (from, to) in [(0u32, 255u32), (15, 240), (37, 201), (255, 0)] {
+            let path = m.find_cell_path(CellId(from), CellId(to), &costs, &mut scratch).unwrap();
+            // the cheapest cost by plain search with no guide at all
+            let mut best = vec![u64::MAX; 256];
+            let mut heap = BinaryHeap::new();
+            best[from as usize] = 0;
+            heap.push(std::cmp::Reverse((0u64, from)));
+            while let Some(std::cmp::Reverse((d, a))) = heap.pop() {
+                if d > best[a as usize] {
+                    continue;
+                }
+                for e in m.cell_edges(CellId(a)) {
+                    let b = m.c_dst[e];
+                    let nd = d + m.cell_step_cost(CellId(a), CellId(b), &costs, false).unwrap() as u64;
+                    if nd < best[b as usize] {
+                        best[b as usize] = nd;
+                        heap.push(std::cmp::Reverse((nd, b)));
+                    }
+                }
+            }
+            assert_eq!(path.cost as u64, best[to as usize], "{from} to {to} at {lat0},{lon0}");
+        }
+        // the strategic graph too: a route exists and costs at least the distance over the ground
+        let nodes = NodeCosts { percent: [100, 100, 100, 100] };
+        let mut s = PathScratch::new(m.node_count() as usize);
+        let p = m.find_node_path(0, m.province_count() - 1, &nodes, &mut s).unwrap();
+        assert!(p.cost >= ground_m(place_of(&m.node_xyz, 0), place_of(&m.node_xyz, m.province_count() - 1)));
+    }
+}
+
+#[test]
+fn on_the_globe_the_nearest_cell_is_found_and_bad_places_are_caught() {
+    let m = Map::from_raw(globe_test_map(8, 8, 52.0, 9.0)).unwrap();
+    let at = place_of(&m.cell_xyz, 27);
+    assert_eq!(m.nearest_cell_to_place(at), Some((CellId(27), 0)));
+    assert_eq!(m.nearest_cell_to_place(place(52.0 + 3.0 * 0.09 + 0.01, 9.0 + 3.0 * 0.09 + 0.01)).unwrap().0, CellId(27));
+    assert_eq!(Map::from_raw(test_map(8, 8)).unwrap().nearest_cell_to_place(at), None);
+
+    let good = globe_test_map(8, 8, 52.0, 9.0);
+    type Corrupt = Box<dyn Fn(&mut RawMap)>;
+    let cases: Vec<(&str, Corrupt)> = vec![
+        ("a place off the globe", Box::new(|r| r.cell_xyz[4] += 50_000)),
+        ("a hexagon number used twice", Box::new(|r| r.cell_h3[9] = r.cell_h3[3])),
+        ("an edge shorter than the straight line", Box::new(|r| r.c_dist_m[5] = 100)),
+        ("places missing for the nodes", Box::new(|r| r.node_xyz.clear())),
+        ("a short list of places", Box::new(|r| { r.cell_xyz.pop(); })),
+    ];
+    for (name, f) in cases {
+        let mut bad = good.clone();
+        f(&mut bad);
+        assert!(Map::from_raw(bad).is_err(), "not caught: {name}");
+    }
+}

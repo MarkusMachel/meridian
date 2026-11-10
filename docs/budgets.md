@@ -110,3 +110,20 @@ Filling a whole continent with hexagons in one piece did not finish in 16 minute
 | Stub state (five byte arrays and one 24-byte population group per cell) | 18.0 MB | 110.6 MB |
 
 So seven times the cells costs about six to nine times as much, as expected: a full daily sweep is still far inside a tick, and the state hash (already not taken every tick) takes about a tenth of a second. Population is planned per province, not per hexagon, which would take most of the 110 MB away.
+
+**The whole map as hexagons (M1, 2026-11-10).** 4,008 provinces, 862 sea zones, 3,685,130 hexagons, 10,953,797 neighbour pairs, 2,492 sites. File 525 MB. Elevation was a stand-in (all zero: the elevation source cannot be downloaded on that machine), so terrain was plains, desert and ice only and path costs will change with real terrain. `runner map-bench`, same 2-core container:
+
+| What | Measured there | Provisional budget |
+| --- | --- | --- |
+| Load from disk, checksum, parse, validate structure, build indices (median of 5) | 1.3 to 1.4 s | 4.5 s |
+| `validate_world()` | 5 ms | not budgeted |
+| Memory, peak resident set during load | 1.1 GB | not set |
+| Strategic path query, mean over 10,000 (522 nodes expanded) | 102 us | 700 us (unchanged) |
+| Strategic path query, 99th percentile | 0.54 ms | 3 ms (unchanged) |
+| Local cell path query (within 400 km), mean over 10,000 (1,512 expanded; 360 on the old cells) | 332 to 364 us | 1.1 ms |
+| Local cell path query, 99th percentile | 1.7 to 1.9 ms | 6 ms |
+| Long cell path query (up to 3,000 km), mean over 100 | 21 to 23 ms (worst 0.54 to 0.62 s) | 70 ms |
+
+The budgets in `runner map-bench` are these provisional ones (about 3 times the container's measurement). **Set them again from a run on the M4 Pro.** A route of 400 km now crosses about 60 hexagons instead of 25, so a local query costs about six times what it did; long routes belong on the strategic graph, as before. Range queries (`cells_within`) on the globe: 10,000 queries of 400 km radius plus 100 of 3,000 km took about 15 s before and under 1 s after comparing straight-line distances first (measured as the whole benchmark going from 113 s to 21 s).
+
+Builder, same container, single-threaded, from the provinces onward: hexagons and provinces 400 s, cell checks 165 s, sea 6 s, terrain 103 s, sites 8 s, population 8 s, bake 7 s: about 12 minutes, peak memory about 3.5 GB (the terrain step works 200,000 cells at a time; in one piece it ran out of 7 GB). Two builds gave the same file (SHA-256 `b4688f9f...199d`). Hexagons cover 134.966 million km2 against 134.465 of real land (+0.37 %); recorded areas add up to the real land (every state within 0.02 % except the Vatican, which is 1 hectare).

@@ -240,6 +240,8 @@ def main(inter, ne_dir):
     for c in np.where(~has_coast)[0]:
         members = np.where(cl == c)[0]
         mcells = np.where(np.isin(cprov, members))[0]
+        if not len(mcells):
+            continue        # provinces of states left out of a test subset have no cells
         dd, ii = wtree.query(np.column_stack([cx[mcells], cy[mcells]]), distance_upper_bound=200_000.0)
         k = int(np.argmin(dd))
         if np.isfinite(dd[k]):

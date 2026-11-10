@@ -24,7 +24,6 @@ from shapely.geometry import shape
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_provinces as bp  # noqa: E402
-from validate_cells import read_wkb  # noqa: E402
 
 INV = pyproj.Transformer.from_crs("EPSG:8857", "EPSG:4326", always_xy=True)
 PLAIN, HILLS, MOUNTAINS, HIGH, DESERT, ICE = range(6)
@@ -33,7 +32,24 @@ ROAD, RAIL, RIVER, COAST = 1, 2, 4, 8
 EDGE_RIVER, EDGE_ROAD, EDGE_RAIL = 1, 2, 4
 
 
-def edges_passed(edges, polys, lines, line_idx, cell_idx):
+CHUNK = 200_000   # cells handled at a time; keeps the memory flat however many cells there are
+
+
+def read_blobs(path):
+    """The cell outlines as raw WKB, one entry per cell; decoded a part at a time with outlines()."""
+    data = Path(path).read_bytes()
+    out, pos = [], 0
+    while pos < len(data):
+        n = int.from_bytes(data[pos:pos + 4], "little")
+        out.append(data[pos + 4:pos + 4 + n]); pos += 4 + n
+    return np.array(out, dtype=object)
+
+
+def outlines(blobs, idx):
+    return shapely.from_wkb(blobs[idx])
+
+
+def edges_passed(edges, blobs, lines, line_idx, cell_idx):
     """Which cell edges does one of `lines` pass? An edge counts when the same line touches both
     of its cells and also the strip where the two cells meet (their shared border, 5 m wide).
     `line_idx`, `cell_idx` are the (line, cell) pairs that intersect. Returns a boolean array,
@@ -43,17 +59,18 @@ def edges_passed(edges, polys, lines, line_idx, cell_idx):
     for l, cc in zip(np.asarray(line_idx).tolist(), np.asarray(cell_idx).tolist()):
         by_cell.setdefault(cc, set()).add(l)
     hit_a, hit_b, hit_l, hit_e = [], [], [], []
-    for e in range(len(edges)):
-        a, b = int(edges[e, 0]), int(edges[e, 1])
+    for e, (a, b) in enumerate(edges[:, :2].tolist()):
         la, lb = by_cell.get(a), by_cell.get(b)
         if not la or not lb:
             continue
         for l in sorted(la & lb):
             hit_a.append(a); hit_b.append(b); hit_l.append(l); hit_e.append(e)
-    if hit_a:
-        sliver = shapely.intersection(shapely.buffer(polys[hit_a], 5.0), shapely.buffer(polys[hit_b], 5.0))
-        crosses = shapely.intersects(sliver, lines[hit_l])
-        out[np.asarray(hit_e)[crosses]] = True
+    hit_a, hit_b, hit_l, hit_e = (np.asarray(v, dtype=np.int64) for v in (hit_a, hit_b, hit_l, hit_e))
+    for lo in range(0, len(hit_e), CHUNK):
+        k = slice(lo, lo + CHUNK)
+        sliver = shapely.intersection(shapely.buffer(outlines(blobs, hit_a[k]), 5.0), shapely.buffer(outlines(blobs, hit_b[k]), 5.0))
+        crosses = shapely.intersects(sliver, lines[hit_l[k]])
+        out[hit_e[k][crosses]] = True
     return out
 
 
@@ -76,81 +93,90 @@ def project_all(geoms):
     return [bp.project(g) for g in geoms]
 
 
-def overlap_fraction(polys, area, tree, layer):
-    """Share (0-1) of each cell covered by the layer's polygons."""
-    layer = np.array(layer, dtype=object)
+def overlap_area(polys, tree, layer):
+    """Area of each cell (of this part) covered by the layer's polygons. A cell wholly inside
+    one polygon counts in full without cutting it out, which is most cells of a big desert."""
+    cov = np.zeros(len(polys))
+    whole_l, whole_c = tree.query(layer, predicate="contains_properly")
+    cov[whole_c] = shapely.area(polys[whole_c])
     li, ci = tree.query(layer, predicate="intersects")
-    inter = shapely.area(shapely.intersection(polys[ci], layer[li]))
-    cov = np.bincount(ci, weights=inter, minlength=len(polys))
-    return np.clip(cov / np.maximum(area, 1.0), 0.0, 1.0)
+    part = ~np.isin(ci, whole_c)
+    li, ci = li[part], ci[part]
+    np.add.at(cov, ci, shapely.area(shapely.intersection(polys[ci], layer[li])))
+    return cov
 
 
 def main(inter, ne_dir, tif):
     inter, ne_dir = Path(inter), Path(ne_dir)
     c = inter / "cells"
-    polys = read_wkb(c / "cells.wkb")
-    n = len(polys)
-    area = shapely.area(polys)
+    blobs = read_blobs(c / "cells.wkb")
+    n = len(blobs)
     cx = np.load(c / "cell_x.npy").astype(np.float64); cy = np.load(c / "cell_y.npy").astype(np.float64)
     edges = np.load(c / "cell_edges.npy")
     cz = np.load(inter / "sea" / "cell_zone.npy")
 
-    # ---- elevation: 9 samples per cell ----
     cache = inter / "elev_60s_int16.npy"
     if not cache.exists():  # decode the compressed GeoTIFF once per intermediate directory
         np.save(cache, np.rint(tifffile.imread(tif)).astype(np.int16))
     elev = np.load(cache, mmap_mode="r")
-    r = np.minimum(0.5 * np.sqrt(area / np.pi), 8000.0)
+
+    def layer(name, keep=None):
+        return np.array(project_all(load_layer(ne_dir / name / name, keep=keep)), dtype=object)
+    ice_l = layer("ne_10m_glaciated_areas")
+    desert_l = layer("ne_10m_geography_regions_polys", keep=lambda rec: rec["FEATURECLA"] == "Desert")
+    urban_l = layer("ne_10m_urban_areas")
+    roads = layer("ne_10m_roads", keep=lambda rec: str(rec.get("type", "")) != "Ferry")
+    rails = layer("ne_10m_railroads")
+    rivers = layer("ne_10m_rivers_lake_centerlines", keep=lambda rec: rec["featurecla"] in ("River", "Canal"))
+
+    area = np.zeros(n); mean = np.zeros(n); relief = np.zeros(n)
+    ice = np.zeros(n); desert = np.zeros(n); urban = np.zeros(n)
+    hits = {"road": [], "rail": [], "river": []}     # (line, cell) pairs that intersect
     ang = np.arange(8) * (np.pi / 4)
-    sx = np.concatenate([cx[:, None], cx[:, None] + r[:, None] * np.cos(ang)], axis=1)
-    sy = np.concatenate([cy[:, None], cy[:, None] + r[:, None] * np.sin(ang)], axis=1)
-    inside = shapely.contains_xy(polys[:, None], sx, sy)
-    inside[:, 0] |= ~inside.any(axis=1)       # always keep the centroid as a fallback
-    lon, lat = INV.transform(sx.ravel(), sy.ravel())
-    lon = np.asarray(lon).reshape(sx.shape); lat = np.asarray(lat).reshape(sx.shape)
-    row = np.clip(np.floor((90.0 - lat) * 60.0).astype(np.int64), 0, 10799)
-    col = np.clip(np.floor((lon + 180.0) * 60.0).astype(np.int64), 0, 21599)
-    v = np.maximum(np.asarray(elev)[row, col].astype(np.float64), 0.0)   # land cells: no negative heights
-    cnt = inside.sum(axis=1)
-    mean = (v * inside).sum(axis=1) / cnt
-    vmax = np.where(inside, v, -1).max(axis=1); vmin = np.where(inside, v, 1e9).min(axis=1)
-    relief = vmax - vmin
+    for lo in range(0, n, CHUNK):
+        k = np.arange(lo, min(lo + CHUNK, n))
+        polys = outlines(blobs, k)
+        a = shapely.area(polys); area[k] = a
+        # ---- elevation: 9 samples per cell ----
+        r = np.minimum(0.5 * np.sqrt(a / np.pi), 8000.0)
+        sx = np.concatenate([cx[k, None], cx[k, None] + r[:, None] * np.cos(ang)], axis=1)
+        sy = np.concatenate([cy[k, None], cy[k, None] + r[:, None] * np.sin(ang)], axis=1)
+        inside = shapely.contains_xy(polys[:, None], sx, sy)
+        inside[:, 0] |= ~inside.any(axis=1)       # always keep the centroid as a fallback
+        lon, lat = INV.transform(sx.ravel(), sy.ravel())
+        lon = np.asarray(lon).reshape(sx.shape); lat = np.asarray(lat).reshape(sx.shape)
+        row = np.clip(np.floor((90.0 - lat) * 60.0).astype(np.int64), 0, 10799)
+        col = np.clip(np.floor((lon + 180.0) * 60.0).astype(np.int64), 0, 21599)
+        v = np.maximum(elev[row, col].astype(np.float64), 0.0)   # land cells: no negative heights
+        mean[k] = (v * inside).sum(axis=1) / inside.sum(axis=1)
+        relief[k] = np.where(inside, v, -1).max(axis=1) - np.where(inside, v, 1e9).min(axis=1)
+        # ---- ice, desert, built-up area; roads, railways and rivers that touch the cell ----
+        tree = shapely.STRtree(polys)
+        for cover, lay in [(ice, ice_l), (desert, desert_l), (urban, urban_l)]:
+            cover[k] = np.clip(overlap_area(polys, tree, lay) / np.maximum(a, 1.0), 0.0, 1.0)
+        for name, lines in [("road", roads), ("rail", rails), ("river", rivers)]:
+            li, ci = tree.query(lines, predicate="intersects")
+            hits[name].append(np.stack([li, ci + lo]))
+    hits = {name: np.concatenate(parts, axis=1) for name, parts in hits.items()}
     cell_elev = np.rint(mean).astype(np.int16); cell_relief = np.minimum(np.rint(relief), 65535).astype(np.uint16)
 
     terrain = np.full(n, PLAIN, dtype=np.uint8)
     terrain[(relief >= 100) | (mean >= 1000)] = HILLS
     terrain[(relief >= 300) | (mean >= 2000)] = MOUNTAINS
     terrain[(relief >= 700) | (mean >= 3500)] = HIGH
-
-    tree = shapely.STRtree(polys)
-    # ---- ice, desert ----
-    ice = overlap_fraction(polys, area, tree, project_all(load_layer(ne_dir / "ne_10m_glaciated_areas" / "ne_10m_glaciated_areas")))
-    desert = overlap_fraction(polys, area, tree, project_all(load_layer(
-        ne_dir / "ne_10m_geography_regions_polys" / "ne_10m_geography_regions_polys", keep=lambda rec: rec["FEATURECLA"] == "Desert")))
     plainish = terrain <= HILLS
     terrain[(desert >= 0.5) & plainish] = DESERT
     terrain[ice >= 0.5] = ICE
-
-    # ---- urban density ----
-    urban = overlap_fraction(polys, area, tree, project_all(load_layer(ne_dir / "ne_10m_urban_areas" / "ne_10m_urban_areas")))
     cell_urban = np.rint(urban * 255).astype(np.uint8)
 
     # ---- roads, rails, rivers ----
     flags = np.zeros(n, dtype=np.uint8)
     edge_flags = np.zeros(len(edges), dtype=np.uint8)
-    for name, bit, edge_bit, keep in [("ne_10m_roads", ROAD, EDGE_ROAD, lambda rec: str(rec.get("type", "")) != "Ferry"),
-                                      ("ne_10m_railroads", RAIL, EDGE_RAIL, None)]:
-        lines = np.array(project_all(load_layer(ne_dir / name / name, keep=keep)), dtype=object)
-        li, ci = tree.query(lines, predicate="intersects")
+    for name, lines, bit, edge_bit in [("road", roads, ROAD, EDGE_ROAD), ("rail", rails, RAIL, EDGE_RAIL), ("river", rivers, RIVER, EDGE_RIVER)]:
+        li, ci = hits[name]
         flags[np.unique(ci)] |= bit
-        edge_flags[edges_passed(edges, polys, lines, li, ci)] |= edge_bit
-    rivers = np.array(project_all(load_layer(
-        ne_dir / "ne_10m_rivers_lake_centerlines" / "ne_10m_rivers_lake_centerlines",
-        keep=lambda rec: rec["featurecla"] in ("River", "Canal"))), dtype=object)
-    rl, rc = tree.query(rivers, predicate="intersects")
-    flags[np.unique(rc)] |= RIVER
+        edge_flags[edges_passed(edges, blobs, lines, li, ci)] |= edge_bit
     flags[cz != 0xFFFFFFFF] |= COAST
-    edge_flags[edges_passed(edges, polys, rivers, rl, rc)] |= EDGE_RIVER
     bridges = (edge_flags & EDGE_RIVER != 0) & (edge_flags & (EDGE_ROAD | EDGE_RAIL) != 0)
 
     np.save(c / "cell_elev_m.npy", cell_elev); np.save(c / "cell_relief_m.npy", cell_relief)

@@ -8,6 +8,7 @@
 //! Coordinates are Equal Earth metres (i32), areas are hectares, distances are metres.
 
 use crate::ids::{CellId, ProvinceId};
+use crate::sphere::{chord_m, chord_squared, ground_from_chord_squared, ground_m, Place};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::ops::Deref;
@@ -106,6 +107,16 @@ pub struct RawMap {
     pub site_built: Vec<i16>,
     pub site_destroyed: Vec<i16>,
     pub site_verified: Vec<u8>,
+
+    // The globe (map rewrite, phase M1). All three are empty on a flat map, which the small
+    // test maps still are; on a globe map distances come from these, not from x and y.
+    /// The H3 number of each hexagon (level 6). The engine never interprets it: it is the
+    /// cell's permanent name, so other data can be joined to it.
+    pub cell_h3: Vec<u64>,
+    /// Each cell's centre on the globe as a `sphere::Place`: three numbers per cell.
+    pub cell_xyz: Vec<i32>,
+    /// The same for every node of the strategic graph (provinces, then sea zones).
+    pub node_xyz: Vec<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -119,6 +130,8 @@ impl std::fmt::Display for MapError {
 /// Uniform grid over cell centres for range queries. Built deterministically at load.
 #[derive(Clone, Debug, Default)]
 struct Grid {
+    /// Set on a globe map: there the buckets are boxes in three dimensions.
+    globe: Option<Grid3>,
     bucket_m: i32,
     x0: i32,
     y0: i32,
@@ -154,7 +167,7 @@ impl Grid {
             items[fill[b] as usize] = i as u32;
             fill[b] += 1;
         }
-        Grid { bucket_m: BUCKET_M, x0, y0, cols, rows, off, items }
+        Grid { globe: None, bucket_m: BUCKET_M, x0, y0, cols, rows, off, items }
     }
 
     /// Indices within `radius` of (x, y), ascending by index.
@@ -206,6 +219,87 @@ fn dist_m(ax: i32, ay: i32, bx: i32, by: i32) -> u32 {
     isqrt(dx * dx + dy * dy) as u32
 }
 
+/// The same idea as `Grid` in three dimensions, for places on the globe. The boxes that hold
+/// at least one cell are kept in a sorted list and found by binary search (no hash map, so the
+/// order never depends on the machine).
+#[derive(Clone, Debug, Default)]
+struct Grid3 {
+    /// Box key (see `box_key`), ascending, with where its cells start in `items`.
+    boxes: Vec<(u64, u32)>,
+    items: Vec<u32>,
+}
+
+/// Which box a coordinate falls in along one axis (0 to about 200).
+fn box_index(v: i64) -> i64 {
+    (v + crate::sphere::EARTH_RADIUS_M + BUCKET_M as i64).div_euclid(BUCKET_M as i64)
+}
+fn box_key(ix: i64, iy: i64, iz: i64) -> u64 {
+    ((ix as u64) << 32) | ((iy as u64) << 16) | iz as u64
+}
+
+impl Grid3 {
+    fn build(xyz: &[i32]) -> Grid3 {
+        let key = |i: usize| box_key(box_index(xyz[3 * i] as i64), box_index(xyz[3 * i + 1] as i64), box_index(xyz[3 * i + 2] as i64));
+        let mut keyed: Vec<(u64, u32)> = (0..xyz.len() / 3).map(|i| (key(i), i as u32)).collect();
+        keyed.sort_unstable(); // by box, then by cell number: no ties
+        let mut g = Grid3::default();
+        for (i, &(k, cell)) in keyed.iter().enumerate() {
+            if g.boxes.last().is_none_or(|b| b.0 != k) {
+                g.boxes.push((k, i as u32));
+            }
+            g.items.push(cell);
+        }
+        g
+    }
+
+    /// Cells whose centre is within `radius` metres over the ground of `at`, ascending.
+    fn within(&self, xyz: &[i32], at: Place, radius: u32) -> Vec<u32> {
+        let mut out = Vec::new();
+        // the straight line to a place is never longer than the way over the ground, so every
+        // cell in range lies in the cube of boxes `radius` each way
+        let r = radius as i64;
+        // The straight line that spans an arc of `radius`, found by halving: `line` ends as
+        // the longest with an arc within the radius. Cells clearly nearer than it are in,
+        // cells clearly farther are out (8 m either side covers every rounding).
+        let (mut line, mut step) = (0u64, 1u64 << 24);
+        while step > 0 {
+            let longer = (line + step).min(2 * crate::sphere::EARTH_RADIUS_M as u64);
+            if ground_from_chord_squared(longer * longer) <= radius {
+                line = longer;
+            }
+            step /= 2;
+        }
+        let sure_in = line.saturating_sub(8).pow(2);
+        let maybe_in = (line + 8).pow(2);
+        let range = |v: i32| box_index((v as i64 - r).max(-crate::sphere::EARTH_RADIUS_M - 1))..=box_index((v as i64 + r).min(crate::sphere::EARTH_RADIUS_M + 1));
+        for ix in range(at[0]) {
+            for iy in range(at[1]) {
+                for iz in range(at[2]) {
+                    let key = box_key(ix, iy, iz);
+                    let Ok(b) = self.boxes.binary_search_by_key(&key, |b| b.0) else { continue };
+                    let end = self.boxes.get(b + 1).map_or(self.items.len(), |n| n.1 as usize);
+                    for &i in &self.items[self.boxes[b].1 as usize..end] {
+                        let c2 = chord_squared(place_of(xyz, i), at);
+                        // most cells are settled by the straight line alone; only those within
+                        // a few metres of the edge of the range need the exact arc
+                        if c2 <= sure_in || (c2 <= maybe_in && ground_from_chord_squared(c2) <= radius) {
+                            out.push(i);
+                        }
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+        out
+    }
+}
+
+/// The place stored at position `i` of a list of three numbers per entry.
+fn place_of(xyz: &[i32], i: u32) -> Place {
+    let k = 3 * i as usize;
+    [xyz[k], xyz[k + 1], xyz[k + 2]]
+}
+
 #[derive(Debug)]
 pub struct Map {
     raw: RawMap,
@@ -229,7 +323,10 @@ impl Map {
         if !errors.is_empty() {
             return Err(errors);
         }
-        let cell_grid = Grid::build(&raw.cell_x, &raw.cell_y);
+        let mut cell_grid = Grid::build(&raw.cell_x, &raw.cell_y);
+        if !raw.cell_xyz.is_empty() {
+            cell_grid.globe = Some(Grid3::build(&raw.cell_xyz));
+        }
         let n = raw.cell_x.len();
         let mut off = vec![0u32; n + 1];
         for &c in &raw.site_cell {
@@ -283,13 +380,30 @@ impl Map {
         &self.site_by_cell[self.site_by_cell_off[c.index()] as usize..self.site_by_cell_off[c.index() + 1] as usize]
     }
 
-    /// Distance between two cell centres in metres (floor).
+    /// Is this map on the globe (hexagons with places in three dimensions)? The small test
+    /// maps are flat; a baked map is on the globe.
+    pub fn is_globe(&self) -> bool {
+        !self.raw.cell_xyz.is_empty()
+    }
+
+    /// Where a cell's centre is on the globe; `None` on a flat map.
+    pub fn cell_place(&self, c: CellId) -> Option<Place> {
+        self.is_globe().then(|| place_of(&self.raw.cell_xyz, c.0))
+    }
+
+    /// Distance between two cell centres in metres (floor): over the ground on the globe.
     pub fn cell_distance_m(&self, a: CellId, b: CellId) -> u32 {
+        if self.is_globe() {
+            return ground_m(place_of(&self.raw.cell_xyz, a.0), place_of(&self.raw.cell_xyz, b.0));
+        }
         dist_m(self.raw.cell_x[a.index()], self.raw.cell_y[a.index()], self.raw.cell_x[b.index()], self.raw.cell_y[b.index()])
     }
 
     /// All cells whose centre is within `radius_m` of the centre of `center`, ascending by ID.
     pub fn cells_within(&self, center: CellId, radius_m: u32) -> Vec<CellId> {
+        if let Some(g) = &self.cell_grid.globe {
+            return g.within(&self.raw.cell_xyz, place_of(&self.raw.cell_xyz, center.0), radius_m).into_iter().map(CellId).collect();
+        }
         let (x, y) = (self.raw.cell_x[center.index()], self.raw.cell_y[center.index()]);
         self.cell_grid.within(&self.raw.cell_x, &self.raw.cell_y, x, y, radius_m).into_iter().map(CellId).collect()
     }
@@ -311,6 +425,8 @@ impl Map {
         let r = &self.raw;
         let (gx, gy) = self.node_xy(to);
         let min_pct = costs.percent.iter().copied().min().unwrap().max(1);
+        let globe = !r.node_xyz.is_empty();
+        let goal = if globe { place_of(&r.node_xyz, to) } else { [0; 3] };
         astar(
             &r.g_off,
             &r.g_dst,
@@ -318,6 +434,11 @@ impl Map {
             to,
             |_a, e| scaled(r.g_cost_m[e], costs.percent[(r.g_kind[e] & 3) as usize]),
             |n| {
+                // never more than the real cost: on the globe the straight line through the
+                // Earth, which is shorter than any way over the ground
+                if globe {
+                    return scaled_floor(chord_m(place_of(&r.node_xyz, n), goal), min_pct);
+                }
                 let (x, y) = self.node_xy(n);
                 scaled_floor(dist_m(x, y, gx, gy), min_pct)
             },
@@ -377,6 +498,22 @@ impl Map {
         (0..self.cell_count()).map(|c| (dist_m(r.cell_x[c as usize], r.cell_y[c as usize], x, y), c)).min().map(|(d, c)| (CellId(c), d))
     }
 
+    /// The cell whose centre is nearest to a place on the globe, and how far away it is over
+    /// the ground (ties go to the lower cell number); `None` on a flat map. Looks at every
+    /// cell, like `nearest_cell`.
+    pub fn nearest_cell_to_place(&self, at: Place) -> Option<(CellId, u32)> {
+        if !self.is_globe() {
+            return None;
+        }
+        // nearest by the straight line is nearest over the ground too, and cheaper to compare
+        let d2 = |c: u32| -> u64 {
+            let p = place_of(&self.raw.cell_xyz, c);
+            (0..3).map(|k| (p[k] as i64 - at[k] as i64).pow(2) as u64).sum()
+        };
+        let c = (0..self.cell_count()).map(|c| (d2(c), c)).min()?.1;
+        Some((CellId(c), ground_m(place_of(&self.raw.cell_xyz, c), at)))
+    }
+
     /// Does a river run across the shared border of these two neighbouring cells?
     pub fn river_between(&self, a: CellId, b: CellId) -> bool {
         self.cell_edges(a).any(|e| self.raw.c_dst[e] == b.0 && self.raw.c_flags[e] & cell_edge_flag::RIVER != 0)
@@ -407,13 +544,20 @@ impl Map {
         let r = &self.raw;
         let (gx, gy) = (r.cell_x[to.index()], r.cell_y[to.index()]);
         let min_pct = costs.min_percent();
+        let globe = self.is_globe();
+        let goal = if globe { place_of(&r.cell_xyz, to.0) } else { [0; 3] };
         astar(
             &r.c_off,
             &r.c_dst,
             from.0,
             to.0,
             |a, e| self.edge_cost(a, e, costs, bridged),
-            |n| scaled_floor(dist_m(r.cell_x[n as usize], r.cell_y[n as usize], gx, gy), min_pct),
+            |n| {
+                if globe {
+                    return scaled_floor(chord_m(place_of(&r.cell_xyz, n), goal), min_pct);
+                }
+                scaled_floor(dist_m(r.cell_x[n as usize], r.cell_y[n as usize], gx, gy), min_pct)
+            },
             scratch,
         )
     }
@@ -668,6 +812,11 @@ fn check_structure(r: &RawMap) -> Vec<MapError> {
             err(format!("array {name} has {l} entries, expected {}", r.c_dst.len()));
         }
     }
+    if !r.cell_xyz.is_empty() || !r.cell_h3.is_empty() || !r.node_xyz.is_empty() {
+        len!("cell_h3", r.cell_h3, n);
+        len!("cell_xyz", r.cell_xyz, 3 * n);
+        len!("node_xyz", r.node_xyz, 3 * (p + z));
+    }
     len!("site_cell", r.site_cell, s);
     len!("site_province", r.site_province, s);
     len!("site_size", r.site_size, s);
@@ -743,7 +892,41 @@ fn check_structure(r: &RawMap) -> Vec<MapError> {
     // graphs: offsets, ranges, sorted, symmetric
     check_graph("strategic graph", &r.g_off, &r.g_dst, p + z, Some(&r.g_kind), &mut e);
     check_graph("cell graph", &r.c_off, &r.c_dst, n, None, &mut e);
+    if e.is_empty() && !r.cell_xyz.is_empty() {
+        check_globe(r, &mut e);
+    }
     e
+}
+
+/// Globe maps: every place is on the sphere, every hexagon number is used once, and no edge
+/// is recorded as shorter than the straight line between its ends (the pathfinder relies on
+/// that to find the cheapest route).
+fn check_globe(r: &RawMap, e: &mut Vec<MapError>) {
+    for (name, xyz) in [("cell", &r.cell_xyz), ("node", &r.node_xyz)] {
+        for i in 0..(xyz.len() / 3) as u32 {
+            let from_centre = chord_m(place_of(xyz, i), [0, 0, 0]) as i64;
+            if (from_centre - crate::sphere::EARTH_RADIUS_M).abs() > 3 {
+                e.push(MapError(format!("{name} {i}: its place is {from_centre} m from the Earth's centre, not on the globe")));
+                return;
+            }
+        }
+    }
+    let mut numbers = r.cell_h3.clone();
+    numbers.sort_unstable();
+    if numbers.windows(2).any(|w| w[0] == w[1]) {
+        e.push(MapError("two cells have the same hexagon number".into()));
+    }
+    for (name, off, dst, cost, xyz) in [("cell graph", &r.c_off, &r.c_dst, &r.c_dist_m, &r.cell_xyz), ("strategic graph", &r.g_off, &r.g_dst, &r.g_cost_m, &r.node_xyz)] {
+        for a in 0..off.len() - 1 {
+            for ed in off[a] as usize..off[a + 1] as usize {
+                let line = chord_m(place_of(xyz, a as u32), place_of(xyz, dst[ed]));
+                if cost[ed] < line {
+                    e.push(MapError(format!("{name}: edge {a}->{} is recorded as {} m, shorter than the straight line ({line} m)", dst[ed], cost[ed])));
+                    return;
+                }
+            }
+        }
+    }
 }
 
 fn check_graph(name: &str, off: &[u32], dst: &[u32], nodes: usize, kind: Option<&[u8]>, e: &mut Vec<MapError>) {

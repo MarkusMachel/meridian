@@ -68,17 +68,23 @@ def main(inter):
     sprawl = diag > 150_000.0
     if sprawl.any():
         errors.append(f"{sprawl.sum()} cells span more than 150 km (widest {diag.max()/1000:.0f} km), e.g. {np.where(sprawl)[0][:5].tolist()}")
-    # 4. state areas: sum of cells vs outline
+    # 4. state areas: sum of cells vs outline. A cell's recorded area is its share of its
+    # region's true land (hexagons do not follow the coast), stored in whole hectares.
     fc = {f["properties"]["tag"]: f for f in json.loads((inter / "states_1990.geojson").read_text(encoding="utf-8"))["features"]}
     cell_area = shapely.area(polys)
-    worst = 0
+    worst, true_total = 0, 0.0
     for si, tag in enumerate(tags):
         true = bp.project(shape(fc[tag]["geometry"])).area
-        got = cell_area[state == si].sum()
+        true_total += true
+        mine = state == si
+        got = area_ha[mine].sum() * 1e4
         rel = abs(got - true) / true
         worst = max(worst, rel)
-        if rel > 0.002:
-            errors.append(f"state {tag}: cells cover {got/true:.4%} of the outline")
+        if abs(got - true) > 0.002 * true + 5_000.0 * mine.sum():   # half a hectare of rounding per cell
+            errors.append(f"state {tag}: cells stand for {got/true:.4%} of the outline")
+    # 4b. the hexagons themselves cover the world's land to within 1 %
+    if abs(cell_area.sum() - true_total) > 0.01 * true_total:
+        errors.append(f"the cells cover {cell_area.sum()/true_total:.2%} of the land")
     # 5. no overlaps between cells (sampled: total pairwise overlap among neighbours)
     tree = shapely.STRtree(polys)
     qa, qb = tree.query(polys, predicate="intersects")

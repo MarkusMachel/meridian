@@ -6,7 +6,8 @@ Container (little-endian), same header shape as scenario files:
   The checksum is CRC-32 (IEEE) of the payload, zero-extended to 64 bits.
 Payload: u32 array_count, then per array:
   name_len u8 | name | dtype u8 | count u64 | raw little-endian elements
-  dtype: 1 u8, 2 u16, 3 u32, 4 i16, 5 i32
+  dtype: 1 u8, 2 u16, 3 u32, 4 i16, 5 i32, 6 u64
+Version 2: hexagon cells on the globe (cell_h3, cell_xyz, node_xyz; distances over the ground).
 Names of arrays and their meaning are listed in docs/data-formats.md.
 """
 import csv
@@ -17,11 +18,27 @@ import zlib
 from pathlib import Path
 
 import numpy as np
+import pyproj
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # -I leaves the script's folder off the path
+import build_hexes as bh  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 KIND_MAP = 2
-DTYPES = {np.dtype("u1"): 1, np.dtype("<u2"): 2, np.dtype("<u4"): 3, np.dtype("<i2"): 4, np.dtype("<i4"): 5}
+DTYPES = {np.dtype("u1"): 1, np.dtype("<u2"): 2, np.dtype("<u4"): 3, np.dtype("<i2"): 4, np.dtype("<i4"): 5, np.dtype("<u8"): 6}
+FWD = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:8857", always_xy=True)
+INV = pyproj.Transformer.from_crs("EPSG:8857", "EPSG:4326", always_xy=True)
+# Added to every baked distance. The engine guides its route search by the straight line
+# through the Earth, which must never be more than a recorded distance; the whole-metre
+# rounding of places and of the arc can be a metre each way.
+DIST_MARGIN_M = 2
+
+
+def on_globe(v):
+    """Scale vectors (n x 3, any length) to whole-metre places on the sphere."""
+    v = np.asarray(v, dtype=np.float64)
+    return np.rint(v / np.linalg.norm(v, axis=1)[:, None] * bh.EARTH_RADIUS_M).astype(np.int64)
 
 
 def csr(n, src, dst, cols):
@@ -67,6 +84,8 @@ def main(inter, out_file):
     N = len(cell_state)
     put("cell_state", cell_state, "<u2"); put("cell_province", cell_prov, "<u4")
     put("cell_x", cx, "<i4"); put("cell_y", cy, "<i4"); put("cell_area_ha", carea, "<u4")
+    cxyz = np.load(c / "cell_xyz.npy").astype(np.int64)
+    put("cell_h3", np.load(c / "cell_h3.npy"), "<u8"); put("cell_xyz", cxyz.reshape(-1), "<i4")
     put("cell_landmass", np.load(c / "cell_landmass.npy"), "<u4")
     put("cell_elev_m", np.load(c / "cell_elev_m.npy"), "<i2"); put("cell_relief_m", np.load(c / "cell_relief_m.npy"), "<u2")
     put("cell_terrain", np.load(c / "cell_terrain.npy"), "u1"); put("cell_urban", np.load(c / "cell_urban.npy"), "u1")
@@ -78,12 +97,17 @@ def main(inter, out_file):
     w = carea.astype(np.float64)
     px = np.rint(np.bincount(cell_prov, weights=cx * w, minlength=P) / np.maximum(np.bincount(cell_prov, weights=w, minlength=P), 1)).astype(np.int64)
     py = np.rint(np.bincount(cell_prov, weights=cy * w, minlength=P) / np.maximum(np.bincount(cell_prov, weights=w, minlength=P), 1)).astype(np.int64)
-    put("province_state", prov_state, "<u2"); put("province_x", px, "<i4"); put("province_y", py, "<i4")
+    put("province_state", prov_state, "<u2")
     put("province_area_ha", np.bincount(cell_prov, weights=w, minlength=P), "<u4")
     put("province_pop", np.load(inter / "population" / "province_pop.npy"), "<u4")
     order = np.argsort(cell_prov, kind="stable")
     off = np.zeros(P + 1, dtype=np.uint32); np.cumsum(np.bincount(cell_prov, minlength=P), out=off[1:])
     put("province_cell_off", off, "<u4"); put("province_cells", order, "<u4")
+    # a province's place on the globe: the area-weighted middle of its hexagons, put back on the surface
+    pxyz = on_globe(np.stack([np.bincount(cell_prov, weights=cxyz[:, k] * w, minlength=P) for k in range(3)], axis=1))
+    plon = np.degrees(np.arctan2(pxyz[:, 1], pxyz[:, 0])); plat = np.degrees(np.arcsin(pxyz[:, 2] / bh.EARTH_RADIUS_M))
+    px, py = (np.rint(v).astype(np.int64) for v in FWD.transform(plon, plat))   # the flat position is that place drawn on the flat map
+    put("province_x", px, "<i4"); put("province_y", py, "<i4")
 
     # zones
     zr = list(csv.DictReader(open(inter / "sea" / "zones.csv")))
@@ -98,7 +122,12 @@ def main(inter, out_file):
     nx = np.concatenate([px, np.rint(zx)]); ny = np.concatenate([py, np.rint(zy)])
     a, b, kind, wt = e[:, 0], e[:, 1], e[:, 2], e[:, 3]
     strait = np.where(kind == 2, wt, 0); weight = np.where(kind == 2, 0, wt)
-    cost = np.ceil(np.hypot(nx[a].astype(np.float64) - nx[b], ny[a].astype(np.float64) - ny[b])).astype(np.int64)  # rounded UP: keeps the A* heuristic admissible
+    zlon, zlat = INV.transform(zx, zy)
+    zxyz = np.array([bh.place(la, lo) for lo, la in zip(zlon, zlat)], dtype=np.int64).reshape(-1, 3)
+    nxyz = np.concatenate([pxyz, zxyz])
+    put("node_xyz", nxyz.reshape(-1), "<i4")
+    places = nxyz.tolist()
+    cost = np.array([bh.ground_m(places[i], places[j]) + DIST_MARGIN_M for i, j in zip(a.tolist(), b.tolist())], dtype=np.int64)
     goff, gdst, (gk, gw, gs, gc) = csr(P + Z, a, b, [kind, weight, strait, cost])
     put("g_off", goff, "<u4"); put("g_dst", gdst, "<u4"); put("g_kind", gk, "u1"); put("g_weight", gw, "<u4")
     put("g_strait", gs, "<u2"); put("g_cost_m", gc, "<u4")
@@ -109,10 +138,10 @@ def main(inter, out_file):
 
     # cell graph
     ce = np.load(c / "cell_edges.npy"); cf = np.load(c / "cell_edge_flags.npy")
-    cdist = np.ceil(np.hypot(cx[ce[:, 0]].astype(np.float64) - cx[ce[:, 1]], cy[ce[:, 0]].astype(np.float64) - cy[ce[:, 1]])).astype(np.int64)
+    cdist = np.load(c / "cell_edge_dist_m.npy").astype(np.int64) + DIST_MARGIN_M
     coff, cdst, (clen, cfl, cdi) = csr(N, ce[:, 0], ce[:, 1], [ce[:, 2], cf, cdist])
     put("c_off", coff, "<u4"); put("c_dst", cdst, "<u4"); put("c_len_m", clen, "<u4"); put("c_flags", cfl, "u1")
-    put("c_dist_m", cdi, "<u4")  # distance between cell centres, rounded up
+    put("c_dist_m", cdi, "<u4")  # ground distance between cell centres, plus the margin
 
     # sites
     s = inter / "sites"

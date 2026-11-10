@@ -61,7 +61,8 @@ docs/
 
 ## Map pipeline (Phase 3)
 
-- Python 3.15 venv at `crates/map-builder/.venv` (`pip install -r crates/map-builder/requirements.txt`). Run `crates/map-builder/build_map.sh` to fetch pinned sources and build `data/baked/meridian-map.bin` (about 4 minutes; not committed). `check_determinism.sh <scratch-dir>` builds twice and compares.
+- Python 3.15 venv at `crates/map-builder/.venv` (`pip install -r crates/map-builder/requirements.txt`). Run `crates/map-builder/build_map.sh` to fetch pinned sources and build `data/baked/meridian-map.bin` (about 525 MB, roughly 15 minutes on a 2-core Linux machine, not yet timed on the Mac; not committed). `check_determinism.sh <scratch-dir>` builds twice and compares.
+- Cells are H3 level-6 hexagons on the globe, one level everywhere (`build_hex_cells.py`; decisions.md, "Map rewrite M1"). The engine has no hexagon library: it sees cells, neighbours and places (`meridian_core::sphere`), with distances over the ground in integers. A cell's area is its share of its region's true area.
 - `scripts/check.sh` runs the map tests, `runner map-validate` and `runner map-bench` when the baked file exists. Budgets are in `docs/budgets.md`.
 - Hand-written data lives in `crates/map-builder/config/` (1990 states, chokepoints, strategic sites). Sources and licenses: `docs/attributions.md`.
 - Provinces follow real admin-1 lines: `build_regions.py` cuts each state into regions (Natural Earth admin-1), and a province is a region (a real division), or a part of one if the region is over 120,000 km2; cells never cross a region edge (decisions.md, "Province rebuild" and "Provinces are the real divisions").
@@ -69,7 +70,7 @@ docs/
 ## Client (Phase 7)
 
 - Needs Rust 1.95 or newer (egui 0.37). Stack: wgpu, winit 0.30, egui; decisions in `docs/decisions.md`.
-- `crates/map-builder/build_map.sh` also writes `data/baked/meridian-render.bin` (render-only, client reads it, the engine never does).
+- `crates/map-builder/build_map.sh` also writes `data/baked/meridian-render.bin` (render-only, client reads it, the engine never does). On the `map-rewrite` branch this step is off: the flat client cannot show the hexagon map, and the globe client (map rewrite M3) replaces it.
 - Run from the repo root: `cargo run --release -p client` (window: drag to pan, wheel to zoom, click to select, right-click orders the selected unit, space pause, 1-5 speed, `.` step). `client [--view CX,CY,M_PER_PX (Equal Earth metres, also the window's starting camera)] --screenshot out.png [--mode political|value|terrain] [--ticks N] [--bench N]` renders without a window.
 - The `inspect` feature (default on) lets the debug panel read raw values; leave it off for a player build.
 

@@ -461,3 +461,23 @@ On the branch `map-rewrite`. Not the whole of M1: the hexagons are not yet joine
 - **`meridian-core/src/sphere.rs`**: ground distance between two whole-metre places on the sphere, by integer arithmetic only (halve the angle five times with integer square roots, then a short series). Tested against the haversine formula: within a few metres up to 5,000 km, and correct across the 180th meridian. The builder computes its distances the same way, so file and engine agree.
 - **`runner probe`** takes a cell count; the stub world at 3,686,556 cells is measured in `docs/budgets.md`.
 - **Next in M1:** provinces and countries by hexagon centre (with the rule that every state keeps a hexagon), terrain and population per hexagon, sea zones, the new map file and loader, and the engine's map tests on hexagons.
+
+## Map rewrite M1: the world as hexagons, end to end (2026-11-10)
+
+**Done.** The builder now makes the whole world as H3 level-6 hexagons and the engine loads and uses it: `build_hex_cells.py` replaces `build_cells.py` in `build_map.sh`, the map file is version 2 (data-formats.md), and `meridian-core` measures distance over the globe.
+
+- **Whose hexagon.** A hexagon belongs to the region its centre is in; a coastal hexagon whose centre is in the sea goes by the land under its sample points, then by the nearest region. Every region keeps at least one hexagon. Provinces inside a region are assigned as before. Hexagons are numbered by state, region, then H3 number.
+- **Area.** A hexagon does not follow the coast or a border, so its recorded area is its share of its region's true area. Countries and provinces keep their real areas (the Vatican is not 36 km2).
+- **Distance.** On a globe map all cell and strategic-graph distances are great-circle distances in integers (`sphere.rs`). The route search is guided by the straight line through the Earth, which can never overestimate; baked distances carry a 2 m margin so rounding cannot break that. The small flat test maps still work the old way (a map is a globe map when it has places).
+- **Range queries** on the globe use boxes in three dimensions, kept in a sorted list (no hash map). There is no seam at the 180 degree line or the poles.
+- **The engine has no hexagon library.** It sees cells, neighbours and places; the H3 number is only a name.
+- **Terrain step** rewritten to work 200,000 cells at a time (same results on a test region as before the rewrite).
+
+**Done test.** Same file from two builds: yes. Hexagons cover the land within 1 %: +0.37 %. Eleven cities land in the right country and their distances are within 1 % (test `cities_are_where_they_should_be_on_the_globe`, including across the 180 degree line and north of the Arctic circle). Path queries within the (provisional) budgets: yes. **Not done here: the same hash on macOS and Linux.** The path fingerprint on Linux with stand-in elevation was `8a14cae6b1244950`; it has to be compared on the Mac with a real build on both.
+
+**Known gaps.**
+- Elevation here was a stand-in (zero everywhere) because the ETOPO file cannot be downloaded on the machine this was written on. The real terrain step has only been run on the Mac before the rewrite. First real build: on the Mac.
+- Budgets for the hexagon world are provisional (budgets.md).
+- The flat client cannot show this map: `build_map.sh` no longer writes the render file (3.7 million outlines are too much for it). The globe client is M3. Until then the map is headless on this branch; `main` still has the old map and client.
+- Population and economy per hexagon are not there (planned per province).
+- `sim::tests::the_threaded_run_matches...` still fails now and then on a busy machine (timing in the test, not the map).

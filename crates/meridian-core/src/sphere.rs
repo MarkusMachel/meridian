@@ -15,8 +15,19 @@ pub type Place = [i32; 3];
 
 /// Straight-line distance through the Earth between two places, in metres (rounded down).
 pub fn chord_m(a: Place, b: Place) -> u32 {
+    crate::map::isqrt(chord_squared(a, b)) as u32
+}
+
+/// The square of the straight-line distance between two places (at most (2 R)², which fits).
+pub fn chord_squared(a: Place, b: Place) -> u64 {
     let d = |k: usize| (a[k] as i64 - b[k] as i64).pow(2) as u64;
-    isqrt_u128((d(0) + d(1) + d(2)) as u128) as u32
+    d(0) + d(1) + d(2)
+}
+
+/// The arc over the ground for a chord given by its square: `ground_m` for callers that
+/// already hold the squared chord.
+pub fn ground_from_chord_squared(chord2: u64) -> u32 {
+    arc_from_chord_squared(chord2)
 }
 
 /// Distance over the ground between two places, in metres: the great-circle arc. It is as
@@ -24,8 +35,7 @@ pub fn chord_m(a: Place, b: Place) -> u32 {
 /// of the Earth can be a few metres out (there a metre of position is several metres of arc);
 /// at ordinary ranges the answer is good to the metre.
 pub fn ground_m(a: Place, b: Place) -> u32 {
-    let d = |k: usize| (a[k] as i64 - b[k] as i64).pow(2) as u64;
-    arc_from_chord_squared(d(0) + d(1) + d(2))
+    arc_from_chord_squared(chord_squared(a, b))
 }
 
 /// The arc over the ground that spans a straight chord of `chord` metres.
