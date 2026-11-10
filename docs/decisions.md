@@ -430,3 +430,7 @@ A design decision, not built. The owner is starting a second big rewrite of the 
 ## OpenStreetMap for the fine map scales (2026-11-10)
 
 Decided by the owner: OpenStreetMap is the source for the map scales from 1:100,000 to 1:25,000. Data derived from it stays in files of its own, offered under its licence (ODbL), with "© OpenStreetMap contributors" on screen; the game's code and other data are not affected. It shows the world of the 2020s, not 1990. Recorded in `docs/design-notes.md` section 25 and `docs/data-sources.md`. This settles the question left open on 2026-11-09.
+
+## Map coverage: world base to 1:250,000, fine scales as regional packs (2026-11-10)
+
+Decided by the owner after seeing the sizes: the base is the whole world at 1:1,000,000 and 1:250,000 with level-5 and level-7 hexagon terrain (5 to 20 GB, most likely about 10 GB; estimates). The scales from 1:100,000 to 1:25,000 and level-8 terrain come later as regional packs, the Persian Gulf first; everything is built in regional pieces from the start. The whole world at every scale was estimated at 50 to 180 GB with a build that needs about 46 GB of memory and up to 1 TB of disk, and was set aside. Sizes and reasoning are in `docs/design-notes.md` section 25.

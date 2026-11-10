@@ -1158,6 +1158,22 @@ Sources checked on 2026-11-10 are in `docs/data-sources.md`. In short:
 - **1:250,000:** VMAP1 where it was released (only partly public; parts of Iraq are), GRIP4 roads (CC0, modern), built-up areas from GHSL (a 1990 layer exists), contours from open elevation data.
 - **1:100,000 to 1:25,000:** OpenStreetMap (or Overture Maps, whose roads and buildings come from it), the only worldwide data with that detail. **Decided 2026-11-10: use it.** It is modern, not 1990, and its licence is share-alike on the data: map data we ship that is derived from it is kept in files of its own, offered under the same open licence (ODbL), with credit on screen. The game's code and other data are not affected, and map images need only the credit.
 
+### How much of the world, and how big
+
+Decided 2026-11-10: **the base covers the whole world down to 1:250,000, with level-7 hexagon terrain; the three fine scales and level-8 terrain come later as regional packs**, the Persian Gulf first. The owner first chose the whole world at every scale, then this, after seeing the sizes. Everything is built and stored in regional pieces from the start, so a pack adds to the base without redoing it.
+
+Rough sizes (estimates, except where a source is named):
+
+| What | Size |
+| --- | --- |
+| Base: the world at 1:1,000,000 and 1:250,000, level-5 and level-7 terrain | 5 to 20 GB, most likely about 10 GB: 2 to 6 GB of roads, railways, rivers, town shapes and names; elevation about 10 GB at 90 m or 1 to 1.5 GB at 250 m; land cover at about 100 m about 1 GB; hexagon terrain about 0.2 GB |
+| The whole world at every scale, for comparison | 100 to 180 GB at full detail, 50 to 70 GB trimmed. Whole-planet street tiles alone are about 81 GB from a 92 GB OpenStreetMap file (planetiler's published figures), and building them wants about 46 GB of memory and 0.5 to 1 TB of disk |
+
+- **What the base shows.** At 1:250,000 one centimetre is 2.5 km (about 66 m to a pixel at 96 pixels to the inch): towns as shapes, main and secondary roads, railways, rivers, forests, airfields, contours every 50 to 100 m; no single streets or buildings. A level-7 hexagon is about 2.4 km across, about one centimetre at that scale. A brigade front of 10 to 15 km is 4 to 6 hexagons, a battalion 1 to 2, a company less than one (that is what level 8 is for).
+- **Until a region has its pack,** the simulation there runs on levels 5 and 7, and zooming stops at 1:250,000 (or shows the fine scales generated plainly from the base; not decided).
+- **The base need not use OpenStreetMap:** its roads can come from GRIP4 (CC0) and VMAP0 and VMAP1, which avoids the 92 GB planet file. OpenStreetMap is then needed only for the packs, from regional extracts.
+- **Building on the owner's machine** (Apple M4 Pro, 500 GB disk): the base should be buildable there if the builder works through the world piece by piece (download a tile of elevation or land cover, reduce it, delete it) and never holds the full sources at once. The full-resolution sources are large (land cover at 10 m is on the order of 100 GB, from memory). Expect on the order of 100 GB free disk needed at the peak and some hours of downloading and processing; none of this is measured.
+
 ### Engine and builder work this implies
 
 - A new map builder: H3 level-5 hexagons for the land, their neighbours, distances, terrain, province and country by centre, rivers and roads snapped to hexagon edges, population per hexagon; sea zones again.
@@ -1174,7 +1190,7 @@ Sources checked on 2026-11-10 are in `docs/data-sources.md`. In short:
 - What levels 7 and 8 simulate that level 5 does not (the tactical rules), and when they open and close.
 - How the brigade and division model, combat width and frontage (section 12) read on hexagons of 10 km, 1.4 km and 530 m.
 - The H3 library: `h3o` is a pure-Rust version; its licence and upkeep could not be checked on 2026-11-10 (its page did not load). The engine may need only numbers baked by the builder, plus the integer parent and child steps.
-- How map tiles are cut on the globe, and how much of the world ships at each scale (the whole world at 1:25,000 is tens of gigabytes of source data).
+- How map tiles and regional pieces are cut on the globe, and what the regions of the packs are.
 - 1990 accuracy at the fine scales: the worldwide data is modern, so roads and suburbs built after 1990 show unless they are corrected by hand where it matters.
 - The order of work, and which parts of the current engine phases (3 and 7 above all) are redone.
 
