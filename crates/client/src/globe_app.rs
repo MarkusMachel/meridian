@@ -43,6 +43,7 @@ struct App {
     show_lines: bool,
     show_relief: bool,
     show_cover: bool,
+    show_grid: bool,
     map: Arc<Map>,
     index: HexIndex,
     session: Session,
@@ -97,10 +98,11 @@ pub fn run(inputs: Inputs) {
     let mut app = App {
         view: inputs.view,
         // with the real lines, the diagram of roads between hexagon centres starts switched off
-        show_roads: inputs.assets.lines.is_none(),
+        show_roads: inputs.assets.lines.is_none() && inputs.assets.packs.is_empty(),
         show_lines: true,
         show_relief: true,
         show_cover: true,
+        show_grid: true,
         status: inputs.assets.notes.iter().filter(|n| !n.starts_with("loaded")).cloned().collect::<Vec<_>>().join("; "),
         assets: Some(inputs.assets),
         index: HexIndex::new(&map),
@@ -175,6 +177,7 @@ impl App {
                 g.map_renderer.show_lines = self.show_lines;
                 g.map_renderer.show_relief = self.show_relief;
                 g.map_renderer.show_cover = self.show_cover;
+                g.map_renderer.show_grid = self.show_grid;
             }
             self.shown_tick = Some(snap.tick);
             self.colors_dirty = false;
@@ -467,8 +470,11 @@ impl App {
             if ui.checkbox(&mut self.show_cover, "Woods, towns and water (regional packs)").changed() {
                 self.colors_dirty = true;
             }
+            if ui.checkbox(&mut self.show_grid, "Hexagon grid (close up)").changed() {
+                self.colors_dirty = true;
+            }
             ui.label("Regional packs: (c) OpenStreetMap contributors, ODbL.");
-            if ui.checkbox(&mut self.show_roads, "Movement network (roads, railways and bridges between hexagons)").changed() {
+            if ui.checkbox(&mut self.show_roads, "Movement network (roads, railways, bridges and river crossings on the hexagons)").changed() {
                 self.colors_dirty = true;
             }
             ui.add(egui::Slider::new(&mut self.ui_scale, 0.75..=2.0).text("Interface scale"));

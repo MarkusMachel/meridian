@@ -181,7 +181,7 @@ fn globe_main(args: &Args, map: Arc<meridian_core::Map>) {
     };
     renderer.set_colors(&gpu.queue, &colors);
     renderer.coloring = globe_app::coloring_for(args.mode);
-    renderer.show_roads = assets.lines.is_none();
+    renderer.show_roads = assets.lines.is_none() && assets.packs.is_empty();
     renderer.set_assets(&gpu.device, &gpu.queue, &assets);
     let (w, h) = args.size;
     let camera = match args.at {

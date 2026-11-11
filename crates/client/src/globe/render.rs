@@ -107,6 +107,8 @@ pub struct GlobeRenderer {
     /// Shade the relief in, and draw a pack's woods, towns and water (when the files were given).
     pub show_relief: bool,
     pub show_cover: bool,
+    /// Draw the hexagon outlines close up.
+    pub show_grid: bool,
     offsets: wgpu::Buffer,
     tiles: HashMap<u32, GpuTile>,
     frame: u64,
@@ -294,11 +296,11 @@ impl GlobeRenderer {
             cache: None,
         });
         let offsets = device.create_buffer(&wgpu::BufferDescriptor { label: Some("tile offsets"), size: (TILES_KEPT * 12) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        GlobeRenderer { globals, bind, palette, palette_rows, far_pipeline, tile_pipeline, line_pipeline, layout, views, lines: Vec::new(), has_relief: false, pack: ([0.0; 4], [0; 4]), show_lines: true, show_relief: true, show_cover: true, offsets, tiles: HashMap::new(), frame: 0, drawn: (0, 0), coloring: Coloring::PaletteShaded, show_roads: true }
+        GlobeRenderer { globals, bind, palette, palette_rows, far_pipeline, tile_pipeline, line_pipeline, layout, views, lines: Vec::new(), has_relief: false, pack: ([0.0; 4], [0; 4]), show_lines: true, show_relief: true, show_cover: true, show_grid: true, offsets, tiles: HashMap::new(), frame: 0, drawn: (0, 0), coloring: Coloring::PaletteShaded, show_roads: true }
     }
 
     /// Give the renderer the real lines to draw over the hexagons: the world's, then each
-    /// regional pack's. Inside a pack's coverage the world's roads, railways and small rivers
+    /// regional pack's. Inside a pack's coverage the world's coast, rivers, roads and railways
     /// are hidden, because the pack has the same ones in finer detail.
     pub fn set_lines(&mut self, device: &wgpu::Device, world: Option<&meridian_data::GlobeLines>, packs: &[meridian_data::GlobeLines]) {
         self.lines.clear();
@@ -308,7 +310,8 @@ impl GlobeRenderer {
                 .map(|i| {
                     let (a, b) = ([data.seg_a[3 * i], data.seg_a[3 * i + 1], data.seg_a[3 * i + 2]], [data.seg_b[3 * i], data.seg_b[3 * i + 1], data.seg_b[3 * i + 2]]);
                     let mut style = data.seg_style[i] as u32;
-                    if is_world && style >= 3 && !packs.is_empty() {
+                    // (the borders of 1990, style 1, are the only world lines kept inside a pack)
+                    if is_world && style != 1 && !packs.is_empty() {
                         let (lat, lon) = super::lat_lon_of([(a[0] + b[0]) as f64, (a[1] + b[1]) as f64, (a[2] + b[2]) as f64]);
                         if covered(lon.to_degrees(), lat.to_degrees()) {
                             style = 255;
@@ -378,7 +381,7 @@ impl GlobeRenderer {
         let near = m_per_px < TILES_BELOW_M_PER_PX;
         // the far land fades out as the hexagons take over, and the grid fades in once a hexagon is some pixels wide
         let far_land = ((m_per_px - 0.4 * TILES_BELOW_M_PER_PX) / (0.6 * TILES_BELOW_M_PER_PX)).clamp(0.0, 1.0);
-        let grid = ((250.0 - m_per_px) / 150.0).clamp(0.0, 1.0);
+        let grid = if self.show_grid { ((250.0 - m_per_px) / 150.0).clamp(0.0, 1.0) } else { 0.0 };
         // roads and railways come in once a hexagon is about 15 pixels wide
         let roads = if self.show_roads { ((450.0 - m_per_px) / 150.0).clamp(0.0, 1.0) } else { 0.0 };
         let real_lines = self.show_lines && !self.lines.is_empty();

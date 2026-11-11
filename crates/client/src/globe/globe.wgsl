@@ -81,16 +81,16 @@ fn relief_at(lon: f32, lat: f32) -> f32 {
     return mix(top, bottom, f.y);
 }
 
-// A regional pack's ground cover at a longitude and latitude (radians): 0 nothing, 1 water,
-// 2 woods, 3 built-up, 4 industry.
+// A regional pack's ground cover at a longitude and latitude (radians): 0 sea, 1 inland
+// water, 2 woods, 3 built-up, 4 industry, 6 other land; NO_COVER outside the pack's picture.
 fn cover_at(lon: f32, lat: f32) -> u32 {
     if g.pack_b.x == 0u {
-        return 0u;
+        return 255u;
     }
     let x = (degrees(lon) - g.pack_a.x) / g.pack_a.z;
     let y = (g.pack_a.y - degrees(lat)) / g.pack_a.w;
     if x < 0.0 || y < 0.0 || x >= f32(g.pack_b.x) || y >= f32(g.pack_b.y) {
-        return 0u;
+        return 255u;
     }
     let px = vec2u(u32(x), u32(y));
     let tile = px / g.pack_b.z;
@@ -98,22 +98,47 @@ fn cover_at(lon: f32, lat: f32) -> u32 {
     if layer == NO_CELL {
         return 0u;
     }
-    return textureLoad(cover_tiles, px % g.pack_b.z, layer, 0).r;
+    let kind = textureLoad(cover_tiles, px % g.pack_b.z, layer, 0).r;
+    if kind == 7u {
+        return 255u;   // land the pack has no detail for (a neighbouring country): as without a pack
+    }
+    return kind;
 }
 
-// The ground as a map shows it: relief shaded in, then woods, towns and water from a pack.
-// The pack's cover fades in from a country down (from farther away it is only noise).
-fn ground(color: vec3f, lon: f32, lat: f32) -> vec3f {
-    var c = color * mix(1.0, 0.45 + 1.1 * relief_at(lon, lat), g.screen.z);
-    let strength = clamp((2500.0 - g.eye_part.w) / 1000.0, 0.0, 1.0);
-    if strength > 0.0 {
-        switch cover_at(lon, lat) {
-            case 1u { c = mix(c, SEA, strength); }
-            case 2u { c = mix(c, vec3f(0.30, 0.50, 0.27), 0.75 * strength); }
-            case 3u { c = mix(c, vec3f(0.74, 0.68, 0.63), 0.65 * strength); }
-            case 4u { c = mix(c, vec3f(0.60, 0.58, 0.64), 0.65 * strength); }
+// The colour of bare ground on a printed map.
+const PAPER: vec3f = vec3f(0.91, 0.89, 0.80);
+const NO_COVER: u32 = 255u;
+
+// How strongly a regional pack's ground cover shows: it fades in from a country down (from
+// farther away it is only noise).
+fn cover_strength() -> f32 {
+    return clamp((2500.0 - g.eye_part.w) / 1000.0, 0.0, 1.0);
+}
+
+// The ground as a map shows it. `political` is the country's (or map mode's) colour and
+// `cover` what a regional pack has at the place (NO_COVER outside any pack).
+// Far away the country colour is the ground. Close up, where a pack has detail, the map turns
+// into a printed map: paper-coloured ground, green woods, pale towns, with only a tint of the
+// country left. Relief is shaded in either way. Sea and inland water come out as water.
+fn ground(political: vec3f, lon: f32, lat: f32, cover: u32) -> vec3f {
+    let strength = cover_strength();
+    var tint = 1.0;                       // how much of the country colour is left
+    if cover != NO_COVER {
+        tint = clamp((g.eye_part.w - 60.0) / 340.0, 0.12, 1.0);
+    }
+    var c = mix(PAPER, political, tint);
+    if cover != NO_COVER && strength > 0.0 {
+        // each kind of ground: its colour on the printed map close up, a stronger tint from farther off
+        switch cover {
+            case 2u { c = mix(c, mix(vec3f(0.70, 0.82, 0.60), vec3f(0.30, 0.50, 0.27), tint), mix(0.9, 0.75, tint) * strength); }
+            case 3u { c = mix(c, mix(vec3f(0.88, 0.76, 0.72), vec3f(0.74, 0.68, 0.63), tint), mix(0.9, 0.65, tint) * strength); }
+            case 4u { c = mix(c, mix(vec3f(0.78, 0.74, 0.82), vec3f(0.60, 0.58, 0.64), tint), mix(0.9, 0.65, tint) * strength); }
             default {}
         }
+    }
+    c = c * mix(1.0, 0.45 + 1.1 * relief_at(lon, lat), g.screen.z);
+    if cover == 0u || cover == 1u {
+        c = mix(c, SEA, strength);        // the sea by the real coastline, lakes and wide rivers
     }
     return c;
 }
@@ -165,9 +190,14 @@ fn fs_far(in: FarOut) -> @location(0) vec4f {
     let shade = 0.80 + 0.20 * smoothstep(0.0, 0.5, facing);
     var color = SEA;
     let cell = picture_cell(lon, lat, 0, 0);
+    let cover = cover_at(lon, lat);
+    if cell == NO_CELL && cover != NO_COVER && cover != 0u {
+        // real land where no hexagon is land (a hexagon belongs wholly to land or to sea)
+        color = mix(SEA, ground(PAPER, lon, lat, cover), cover_strength());
+    }
     if cell != NO_CELL {
         let info = cell_info(cell);
-        var land = ground(land_color(info), lon, lat);
+        var land = ground(land_color(info), lon, lat, cover);
         // country borders and coasts: a neighbouring pixel of the picture belongs to someone else
         let right = picture_cell(lon, lat, 1, 0);
         let below = picture_cell(lon, lat, 0, 1);
@@ -231,9 +261,14 @@ fn line(px: f32, half_width: f32) -> f32 {
 fn fs_tile(in: TileOut) -> @location(0) vec4f {
     let info = cell_info(in.cell);
     let d = normalize(in.from_centre);
-    var color = ground(land_color(info), atan2(d.y, d.x), asin(clamp(d.z, -1.0, 1.0)));
-    // built-up ground is greyer
-    color = mix(color, vec3f(0.60, 0.57, 0.55), f32(info.a) / 255.0 * 0.7 * g.more.w);
+    let lon = atan2(d.y, d.x);
+    let lat = asin(clamp(d.z, -1.0, 1.0));
+    let cover = cover_at(lon, lat);
+    var color = ground(land_color(info), lon, lat, cover);
+    // built-up ground is greyer (where a pack does not show the towns themselves)
+    if cover == NO_COVER {
+        color = mix(color, vec3f(0.60, 0.57, 0.55), f32(info.a) / 255.0 * 0.7 * g.more.w);
+    }
     if in.cell == g.ids.x {
         color = mix(color, vec3f(1.0), 0.4);
     }
@@ -244,11 +279,12 @@ fn fs_tile(in: TileOut) -> @location(0) vec4f {
     color = mix(color, color * 0.80, line(px, 0.5) * g.misc.z);                                  // the hexagon grid
     if (in.side & 1u) != 0u { color = mix(color, color * 0.55, line(px, 0.6) * 0.8); }           // province border
     // With the real lines drawn, the hexagon-side versions step back: borders and coasts go
-    // faint, and the river sides (where a unit really has to cross) show only close up.
+    // faint, and the river sides (where a unit really has to cross) show only with the
+    // movement network switched on.
     let own = 1.0 - g.more.z;
     if (in.side & 2u) != 0u { color = mix(color, vec3f(0.12, 0.10, 0.10), line(px, 1.2) * max(own, 0.25)); }      // country border
     if (in.side & 8u) != 0u { color = mix(color, vec3f(0.20, 0.28, 0.36), line(px, 1.0) * own); }                 // coast
-    if (in.side & 4u) != 0u { color = mix(color, vec3f(0.22, 0.42, 0.68), line(px, 1.6) * max(own, g.misc.z)); }  // river
+    if (in.side & 4u) != 0u { color = mix(color, vec3f(0.22, 0.42, 0.68), line(px, 1.6) * max(own, g.more.x)); }  // river
     if (in.side & 16u) != 0u { color = mix(color, vec3f(0.36, 0.24, 0.16), line(lane, 0.7) * g.more.x); }                       // road
     if (in.side & 32u) != 0u {                                                                                                  // railway: a dashed dark line
         let dash = step(0.5, fract(in.inward * 7.0));
@@ -259,6 +295,10 @@ fn fs_tile(in: TileOut) -> @location(0) vec4f {
         let on_deck = line(lane, 2.2) * line(px, 4.0) * g.more.x;
         color = mix(color, vec3f(0.10, 0.09, 0.08), on_deck);
         color = mix(color, vec3f(0.93, 0.90, 0.82), line(lane, 1.2) * line(px, 4.0) * g.more.x);
+    }
+    if cover == 0u || cover == 1u {
+        // water by the real outline: no hexagon lines on it, and no land colour past the coast
+        color = mix(color, SEA, cover_strength());
     }
     return vec4f(color, 1.0);
 }

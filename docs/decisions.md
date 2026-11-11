@@ -558,3 +558,16 @@ The owner chose to have the detail builder written without my being able to run 
 - **Licence.** ODbL: packs stay in their own files and the credit is shown in Settings and in attributions.md.
 
 **Tested here only on made-up data** (an invented extract around Rome in the format `osmium export` writes, and invented elevation): the builders run, the client loads and draws everything. **Not tested:** the `osmium` commands themselves, real Italy's size and build time (the numbers in the script's comments are estimates), memory on the real extract, and how the result looks. The first real run is the owner's.
+
+## First real Italy pack: what the owner saw and what changed (2026-11-11)
+
+The owner built the map and the Italy pack on the Mac. Real numbers: Italy extract 2.1 GB; pack lines 117 MB (4.68 million pieces), ground cover 143 MB (34 of 56 tiles); 16.6 ms a frame at the closest zoom (the display's refresh rate, so the real cost is lower).
+
+Faults found and fixed:
+- **`build_globe_lines.py` failed on the Mac**: it reads `ne_10m_land`, which `fetch_sources.sh` never downloaded (the file was only on the machine this was written on). Now fetched and checksummed. Because the build stopped there, the Mac had no world lines and no relief, and the client fell back to the hexagon diagram of roads.
+- **Land colour ran into the sea** (whole hexagons past the coast, the Venetian lagoon). The pack's ground cover now knows land from sea, from OpenStreetMap's coastline (land polygons from osmdata.openstreetmap.de, 0.9 GB, downloaded once), and the client paints sea wherever the real map has sea. Real land with no land hexagon under it is drawn as bare ground.
+- **The country colour covered the map close up.** Where a pack has detail, the ground now turns into a printed map as you zoom in: paper-coloured ground, green woods, pale towns, shaded relief, and only a faint tint of the country (full colour from 400 m a pixel outward, 12 % at 60 m a pixel and closer).
+- **Rivers and roads still followed hexagon sides.** The river sides and the diagram are now shown only with "Movement network" switched on; it is off whenever real lines or a pack are loaded.
+- Inside a pack the world's coarse coastline is hidden too; only the 1990 borders are kept from the world file.
+
+Not tested on real data: the land-polygon download and its reading (the link and the file layout are from memory).

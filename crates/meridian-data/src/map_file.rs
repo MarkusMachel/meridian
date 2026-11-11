@@ -240,8 +240,9 @@ pub struct GlobeRelief {
     pub shade: Vec<u8>,
 }
 
-/// The ground cover of a regional pack: a fine picture cut in square tiles, each pixel 0
-/// nothing, 1 water, 2 woods, 3 built-up, 4 industry.
+/// The ground cover of a regional pack: a fine picture cut in square tiles, each pixel 0 sea,
+/// 1 inland water, 2 woods, 3 built-up, 4 industry, 6 other land. A tile that is not stored is
+/// all sea.
 #[derive(Clone, Debug, Default)]
 pub struct PackCover {
     /// West and north edge in millionths of a degree.
@@ -287,7 +288,7 @@ pub fn load_globe_relief_file(path: &Path) -> Result<GlobeRelief, Vec<DataError>
 
 pub fn load_pack_cover_file(path: &Path) -> Result<PackCover, Vec<DataError>> {
     let (name, bytes) = read_file(path)?;
-    let (a, _) = open_container(&name, &bytes, KIND_PACK_COVER, 1, "pack ground cover file")?;
+    let (a, _) = open_container(&name, &bytes, KIND_PACK_COVER, 2, "pack ground cover file")?;
     let read = || -> Result<PackCover, DataError> {
         let g = a.i32s("grid")?;
         if g.len() != 9 || g[2..].iter().any(|&v| v <= 0) {

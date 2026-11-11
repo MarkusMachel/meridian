@@ -2,7 +2,7 @@
 and waterways at close zoom, and the ground cover (water, woods, built-up areas) as a fine
 picture. Drawing only; the engine never reads a pack.
 
-Usage: python -I build_pack.py <name> <features.geojsonseq> <coverage.poly> <out-dir>
+Usage: python -I build_pack.py <name> <features.geojsonseq> <coverage.poly> <out-dir> [<land_polygons.shp>]
 
 `fetch_pack.sh` makes the inputs: it downloads a Geofabrik extract and its coverage outline and
 runs the `osmium` tool to keep and export the features used here.
@@ -14,15 +14,18 @@ Writes two files:
                                latitude in millionths of a degree) with `cover_off` (u32, where
                                each ring starts, rings + 1 entries). Inside the outline the
                                client hides the coarse world roads, railways and small rivers.
-  <out-dir>/<name>.cover.bin   container kind 6, version 1: the ground cover picture, cut in
+  <out-dir>/<name>.cover.bin   container kind 6, version 2: the ground cover picture, cut in
                                square tiles. Arrays: `grid` (i32: west edge and north edge in
                                millionths of a degree, pixel width and height in billionths of a
                                degree, picture width and height in pixels, tile size in pixels,
                                tiles across, tiles down), `tile_layer` (u32 per tile, row by row
                                from the north-west: which stored tile it is, or 0xFFFFFFFF for an
-                               empty one), `tiles` (u8, stored tiles one after another, each
+                               all-sea one), `tiles` (u8, stored tiles one after another, each
                                tile * tile bytes, rows north to south).
-                               Classes: 0 nothing, 1 water, 2 woods, 3 built-up, 4 industry.
+                               Classes: 0 sea, 1 inland water, 2 woods, 3 built-up, 4 industry,
+                               6 other land, 7 land outside the pack's coverage. Land and sea come from the land polygons made from
+                               OpenStreetMap's coastline (osmdata.openstreetmap.de); without that
+                               file everything is taken for land.
 
 OpenStreetMap is (c) OpenStreetMap contributors, Open Database License. The data is today's
 world, not 1990's: motorways and suburbs built since then are in it.
@@ -55,7 +58,7 @@ BUCKET_REACH_MICRORAD = 6_500
 # the ground cover picture: pixel size in degrees (about 79 m by 83 m at 45 N) and tile size
 PIXEL_LON, PIXEL_LAT = 0.001, 0.00075
 TILE = 2048
-WATER, WOODS, BUILT, INDUSTRY = 1, 2, 3, 4
+SEA, WATER, WOODS, BUILT, INDUSTRY, LAND, OUTSIDE = 0, 1, 2, 3, 4, 6, 7
 MIN_AREA_DEG2 = 4e-7            # areas under about 0.4 hectare are left out
 
 
@@ -102,7 +105,26 @@ def polygons(geom):
     return []
 
 
-def main(name, features_file, poly_file, out_dir):
+def draw_land(land_file, pen, to_px, box):
+    """Draw the land polygons that touch the box (west, south, east, north) onto a sheet."""
+    import shapefile
+    r = shapefile.Reader(str(land_file))
+    n = 0
+    for s in r.iterShapes():
+        if s.shapeType == 0:
+            continue
+        w, so, e, no = s.bbox
+        if e < box[0] or w > box[2] or no < box[1] or so > box[3]:
+            continue
+        for poly in polygons(shape(s.__geo_interface__)):
+            pen.polygon(to_px(poly.exterior.coords), fill=255)
+            for hole in poly.interiors:
+                pen.polygon(to_px(hole.coords), fill=0)
+            n += 1
+    return n
+
+
+def main(name, features_file, poly_file, out_dir, land_file=None):
     out_dir = Path(out_dir)
     rings = read_poly(poly_file)
     west = min(r[:, 0].min() for r in rings); east = max(r[:, 0].max() for r in rings)
@@ -116,6 +138,16 @@ def main(name, features_file, poly_file, out_dir):
     def to_px(coords):
         xy = np.asarray(coords)[:, :2]
         return list(zip(((xy[:, 0] - west) / PIXEL_LON).tolist(), ((north - xy[:, 1]) / PIXEL_LAT).tolist()))
+
+    if land_file:
+        land_sheet = Image.new("L", (width, height), 0)
+        n_land = draw_land(land_file, ImageDraw.Draw(land_sheet), to_px, (west, south, east, north))
+        print(f"land polygons drawn: {n_land:,}")
+        if n_land == 0:
+            sys.exit(f"{land_file}: no land polygon touches the region")
+    else:
+        land_sheet = None
+        print("no land polygons given: everything inside the picture is taken for land")
 
     lines, counts, areas, bad = [], {}, {}, 0
     with open(features_file, encoding="utf-8") as f:
@@ -188,10 +220,23 @@ def main(name, features_file, poly_file, out_dir):
     print(f"{out_dir / (name + '.lines.bin')}: {size:,} bytes; {len(style):,} pieces in {len(starts):,} buckets")
 
     # ---- the ground cover file ----
-    grid = np.zeros((height, width), dtype=np.uint8)
+    grid = np.full((height, width), LAND, dtype=np.uint8)
+    if land_sheet is not None:
+        grid[np.asarray(land_sheet) == 0] = SEA
+        land_sheet.close()
+    sea = grid == SEA
     for c in (WOODS, BUILT, INDUSTRY, WATER):
         grid[np.asarray(sheets[c]) > 0] = c
         sheets[c].close()
+    grid[sea] = SEA                        # nothing grows or is built past the coastline
+    # land inside the picture but outside the pack's coverage (a neighbouring country) has no
+    # detail here: marked so the client draws it as it would without a pack
+    inside = Image.new("L", (width, height), 0)
+    pen = ImageDraw.Draw(inside)
+    for ring in rings:
+        pen.polygon(to_px(ring), fill=255)
+    grid[(np.asarray(inside) == 0) & ~sea] = OUTSIDE
+    inside.close()
     across, down = -(-width // TILE), -(-height // TILE)
     tile_layer = np.full(across * down, 0xFFFFFFFF, dtype=np.uint32)
     stored = []
@@ -205,19 +250,19 @@ def main(name, features_file, poly_file, out_dir):
             tile_layer[ty * across + tx] = len(stored)
             stored.append(full)
     if not stored:
-        sys.exit("no water, woods or built-up areas were found")
+        sys.exit("the picture is all sea")
     info = [round(west * 1e6), round(north * 1e6), round(PIXEL_LON * 1e9), round(PIXEL_LAT * 1e9), width, height, TILE, across, down]
-    size = container.write(out_dir / f"{name}.cover.bin", 6, 1, {
+    size = container.write(out_dir / f"{name}.cover.bin", 6, 2, {
         "grid": (np.array(info), "<i4"),
         "tile_layer": (tile_layer, "<u4"),
         "tiles": (np.stack(stored).reshape(-1), "u1"),
     })
-    share = np.bincount(grid.reshape(-1), minlength=5) / grid.size
+    share = np.bincount(grid.reshape(-1), minlength=7) / grid.size
     print(f"{out_dir / (name + '.cover.bin')}: {size:,} bytes; {len(stored)} of {across * down} tiles stored; "
-          f"of the picture: water {share[1]:.1%}, woods {share[2]:.1%}, built-up {share[3]:.1%}, industry {share[4]:.1%}")
+          f"of the picture: sea {share[0]:.1%}, water {share[1]:.1%}, woods {share[2]:.1%}, built-up {share[3]:.1%}, industry {share[4]:.1%}")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5:
+    if len(sys.argv) not in (5, 6):
         sys.exit(__doc__)
     main(*sys.argv[1:])
