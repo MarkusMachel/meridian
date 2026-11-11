@@ -231,13 +231,16 @@ pub struct GlobeLines {
     pub cover_off: Vec<u32>,
 }
 
-/// Shaded relief for the globe: a picture of the world (longitude by latitude, left edge
-/// 180° W, top edge 90° N), 128 for flat ground, lighter facing the light.
+/// The ground of the globe: two pictures of the world (longitude by latitude, left edge
+/// 180° W, top edge 90° N), the height of the land for the lighting and its painted colour.
 #[derive(Clone, Debug, Default)]
-pub struct GlobeRelief {
+pub struct GlobeGround {
     pub width: u32,
     pub height: u32,
-    pub shade: Vec<u8>,
+    /// Metres above the sea, one per pixel.
+    pub heights: Vec<u16>,
+    /// Red, green, blue, 255: four bytes per pixel.
+    pub color: Vec<u8>,
 }
 
 /// The ground cover of a regional pack: a fine picture cut in square tiles, each pixel 0 sea,
@@ -263,7 +266,7 @@ pub struct PackCover {
     pub tiles: Vec<u8>,
 }
 
-const KIND_GLOBE_RELIEF: u32 = 5;
+const KIND_GLOBE_GROUND: u32 = 5;
 const KIND_PACK_COVER: u32 = 6;
 
 fn read_file(path: &Path) -> Result<(String, Vec<u8>), Vec<DataError>> {
@@ -272,16 +275,17 @@ fn read_file(path: &Path) -> Result<(String, Vec<u8>), Vec<DataError>> {
     Ok((name, bytes))
 }
 
-pub fn load_globe_relief_file(path: &Path) -> Result<GlobeRelief, Vec<DataError>> {
+pub fn load_globe_ground_file(path: &Path) -> Result<GlobeGround, Vec<DataError>> {
     let (name, bytes) = read_file(path)?;
-    let (a, _) = open_container(&name, &bytes, KIND_GLOBE_RELIEF, 1, "globe relief file")?;
-    let read = || -> Result<GlobeRelief, DataError> {
+    let (a, _) = open_container(&name, &bytes, KIND_GLOBE_GROUND, 2, "globe ground file")?;
+    let read = || -> Result<GlobeGround, DataError> {
         let size = a.u32s("size")?;
-        let shade = a.u8s("shade")?;
-        if size.len() != 2 || size[0] == 0 || shade.len() as u64 != size[0] as u64 * size[1] as u64 {
-            return Err(a.bad("-", "the picture is not the size the file says".into()));
+        let (heights, color) = (a.u16s("height")?, a.u8s("color")?);
+        let pixels = if size.len() == 2 { size[0] as u64 * size[1] as u64 } else { 0 };
+        if pixels == 0 || heights.len() as u64 != pixels || color.len() as u64 != 4 * pixels {
+            return Err(a.bad("-", "the pictures are not the size the file says".into()));
         }
-        Ok(GlobeRelief { width: size[0], height: size[1], shade })
+        Ok(GlobeGround { width: size[0], height: size[1], heights, color })
     };
     read().map_err(|e| vec![e])
 }

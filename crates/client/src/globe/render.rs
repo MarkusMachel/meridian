@@ -62,14 +62,19 @@ struct Views {
     picture: wgpu::TextureView,
     table: wgpu::TextureView,
     palette: wgpu::TextureView,
-    relief: wgpu::TextureView,
+    heights: wgpu::TextureView,
+    paint: wgpu::TextureView,
+    sampler: wgpu::Sampler,
     cover_tiles: wgpu::TextureView,
     cover_table: wgpu::TextureView,
 }
 
 /// Detail tiers come in below these metres per pixel: 0 always, 1 from a continent, 2 from a
-/// country, 3 from a region, 4 close up (regional packs only).
-const TIER_BELOW_M_PER_PX: [f64; 5] = [f64::MAX, 5_000.0, 1_400.0, 600.0, 250.0];
+/// country, 3 from a region, 4 close up (regional packs only). A map should show few lines:
+/// what is not needed at a zoom is left out.
+const TIER_BELOW_M_PER_PX: [f64; 5] = [f64::MAX, 5_000.0, 1_400.0, 600.0, 150.0];
+/// Tier 5 is the small roads and canals of a pack: drawn only when asked for, and close up.
+const MINOR_BELOW_M_PER_PX: f64 = 80.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Coloring {
@@ -98,17 +103,22 @@ pub struct GlobeRenderer {
     views: Views,
     /// The world's lines first, then each regional pack's.
     lines: Vec<Lines>,
-    has_relief: bool,
+    has_ground: bool,
+    /// For every cell, hexagons to the nearest country border (see `hexagons_from_border`).
+    from_border: Vec<u8>,
     /// A pack's ground cover as the shader needs it: (west, north, pixel width, pixel height) in
     /// degrees and (width, height, tile size, tiles across) in pixels.
     pack: ([f32; 4], [u32; 4]),
     /// Draw the real lines (when a lines file was given).
     pub show_lines: bool,
-    /// Shade the relief in, and draw a pack's woods, towns and water (when the files were given).
+    /// Light the terrain and paint the land (when the ground file was given), and draw a
+    /// pack's woods, towns and water.
     pub show_relief: bool,
     pub show_cover: bool,
     /// Draw the hexagon outlines close up.
     pub show_grid: bool,
+    /// Draw a pack's small roads and canals at the closest zoom.
+    pub show_minor_roads: bool,
     offsets: wgpu::Buffer,
     tiles: HashMap<u32, GpuTile>,
     frame: u64,
@@ -170,7 +180,7 @@ fn bind_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, globals: &w
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("globe"),
         layout,
-        entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }, view(1, &v.picture), view(2, &v.table), view(3, &v.palette), view(4, &v.relief), view(5, &v.cover_tiles), view(6, &v.cover_table)],
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }, view(1, &v.picture), view(2, &v.table), view(3, &v.palette), view(4, &v.heights), view(5, &v.cover_tiles), view(6, &v.cover_table), view(7, &v.paint), wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::Sampler(&v.sampler) }],
     })
 }
 
@@ -194,6 +204,34 @@ pub fn inside_rings(points: &[i32], ring_off: &[u32], lon: f64, lat: f64) -> boo
     })
 }
 
+/// For every cell, how many hexagons it is from the nearest cell of another country (0 for a
+/// cell on the border itself), counted outward from the borders and capped at 15.
+fn hexagons_from_border(map: &Map) -> Vec<u8> {
+    let n = map.cell_count() as usize;
+    let mut from = vec![15u8; n];
+    let mut ring: Vec<u32> = Vec::new();
+    for c in 0..n {
+        if map.cell_edges(meridian_core::CellId(c as u32)).any(|e| map.cell_state[map.c_dst[e] as usize] != map.cell_state[c]) {
+            from[c] = 0;
+            ring.push(c as u32);
+        }
+    }
+    for step in 1..15u8 {
+        let mut next = Vec::new();
+        for &c in &ring {
+            for e in map.cell_edges(meridian_core::CellId(c)) {
+                let other = map.c_dst[e] as usize;
+                if from[other] > step {
+                    from[other] = step;
+                    next.push(other as u32);
+                }
+            }
+        }
+        ring = next;
+    }
+    from
+}
+
 impl GlobeRenderer {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, map: &Map, index: &HexIndex) -> GlobeRenderer {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("globe"), source: wgpu::ShaderSource::Wgsl(include_str!("globe.wgsl").into()) });
@@ -202,12 +240,14 @@ impl GlobeRenderer {
         let picture = index.world_picture(PICTURE.0, PICTURE.1);
         let picture_view = texture_u32(device, queue, "world picture", PICTURE.0, PICTURE.1, wgpu::TextureFormat::R32Uint, bytemuck::cast_slice(&picture));
         drop(picture);
-        // per cell: province, country, terrain and how built-up it is
+        // per cell: province, country, terrain, how built-up it is, and how many hexagons it is
+        // from the nearest country border (for the wash of country colour, strongest at the border)
+        let from_border = hexagons_from_border(map);
         let cells = map.cell_count();
         let table_rows = cells.div_ceil(TABLE_WIDTH).max(1);
         let mut table = vec![[0u32; 4]; (TABLE_WIDTH * table_rows) as usize];
         for (c, entry) in table.iter_mut().enumerate().take(cells as usize) {
-            *entry = [map.cell_province[c], map.cell_state[c] as u32, map.cell_terrain[c] as u32, map.cell_urban[c] as u32];
+            *entry = [map.cell_province[c], map.cell_state[c] as u32, map.cell_terrain[c] as u32, map.cell_urban[c] as u32 | (from_border[c] as u32) << 8];
         }
         let table_view = texture_u32(device, queue, "cell table", TABLE_WIDTH, table_rows, wgpu::TextureFormat::Rgba32Uint, bytemuck::cast_slice(&table));
         let palette_rows = map.province_count().div_ceil(4096).max(1);
@@ -231,15 +271,20 @@ impl GlobeRenderer {
                 uint(1),
                 uint(2),
                 wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                uint(4),
                 wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false }, count: None },
                 uint(6),
+                wgpu::BindGroupLayoutEntry { binding: 7, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 8, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
             ],
         });
-        // until the real ones are given: flat relief and an empty ground cover
-        let relief_view = texture_u32(device, queue, "relief", 1, 1, wgpu::TextureFormat::R8Unorm, &[128]);
+        // until the real ones are given: flat ground of one colour and an empty ground cover
+        let heights_view = texture_u32(device, queue, "heights", 1, 1, wgpu::TextureFormat::R16Uint, &[0, 0]);
+        let paint_view = texture_u32(device, queue, "land paint", 1, 1, wgpu::TextureFormat::Rgba8Unorm, &[158, 178, 122, 255]);
+        // the painted colour is read smoothly between its pixels, and wraps round the world
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("smooth"), address_mode_u: wgpu::AddressMode::Repeat, mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let (cover_tiles, cover_table) = cover_textures(device, queue, 1, 1, 1, 1, &[0], &[NO_CELL]);
-        let views = Views { picture: picture_view, table: table_view, palette: palette_view, relief: relief_view, cover_tiles, cover_table };
+        let views = Views { picture: picture_view, table: table_view, palette: palette_view, heights: heights_view, paint: paint_view, sampler, cover_tiles, cover_table };
         let bind = bind_group(device, &layout, &globals, &views);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("globe"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let target = [Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })];
@@ -260,6 +305,7 @@ impl GlobeRenderer {
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 16, shader_location: 2 },
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32, offset: 20, shader_location: 3 },
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 24, shader_location: 5 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 28, shader_location: 6 },
         ];
         let offset_attrs = [wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 4 }];
         let buffers = [
@@ -296,7 +342,7 @@ impl GlobeRenderer {
             cache: None,
         });
         let offsets = device.create_buffer(&wgpu::BufferDescriptor { label: Some("tile offsets"), size: (TILES_KEPT * 12) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        GlobeRenderer { globals, bind, palette, palette_rows, far_pipeline, tile_pipeline, line_pipeline, layout, views, lines: Vec::new(), has_relief: false, pack: ([0.0; 4], [0; 4]), show_lines: true, show_relief: true, show_cover: true, show_grid: true, offsets, tiles: HashMap::new(), frame: 0, drawn: (0, 0), coloring: Coloring::PaletteShaded, show_roads: true }
+        GlobeRenderer { globals, bind, palette, palette_rows, far_pipeline, tile_pipeline, line_pipeline, layout, views, lines: Vec::new(), has_ground: false, from_border, pack: ([0.0; 4], [0; 4]), show_lines: true, show_relief: true, show_cover: true, show_grid: false, show_minor_roads: false, offsets, tiles: HashMap::new(), frame: 0, drawn: (0, 0), coloring: Coloring::PaletteShaded, show_roads: true }
     }
 
     /// Give the renderer the real lines to draw over the hexagons: the world's, then each
@@ -334,18 +380,19 @@ impl GlobeRenderer {
     /// Hand over everything that was found next to the map.
     pub fn set_assets(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, a: &super::assets::GlobeAssets) {
         self.set_lines(device, a.lines.as_ref(), &a.packs);
-        if let Some(relief) = &a.relief {
-            self.set_relief(device, queue, relief);
+        if let Some(ground) = &a.ground {
+            self.set_ground(device, queue, ground);
         }
         if let Some(cover) = &a.cover {
             self.set_cover(device, queue, cover);
         }
     }
 
-    /// Give the renderer the shaded relief of the world.
-    pub fn set_relief(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, relief: &meridian_data::GlobeRelief) {
-        self.views.relief = texture_u32(device, queue, "relief", relief.width, relief.height, wgpu::TextureFormat::R8Unorm, &relief.shade);
-        self.has_relief = true;
+    /// Give the renderer the ground of the world: heights for the lighting and the painted colour.
+    pub fn set_ground(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, ground: &meridian_data::GlobeGround) {
+        self.views.heights = texture_u32(device, queue, "heights", ground.width, ground.height, wgpu::TextureFormat::R16Uint, bytemuck::cast_slice(&ground.heights));
+        self.views.paint = texture_u32(device, queue, "land paint", ground.width, ground.height, wgpu::TextureFormat::Rgba8Unorm, &ground.color);
+        self.has_ground = true;
         self.bind = bind_group(device, &self.layout, &self.globals, &self.views);
     }
 
@@ -379,16 +426,13 @@ impl GlobeRenderer {
         let aspect = camera.width_px / camera.height_px;
         let m_per_px = camera.m_per_px();
         let near = m_per_px < TILES_BELOW_M_PER_PX;
-        // the far land fades out as the hexagons take over, and the grid fades in once a hexagon is some pixels wide
-        let far_land = ((m_per_px - 0.4 * TILES_BELOW_M_PER_PX) / (0.6 * TILES_BELOW_M_PER_PX)).clamp(0.0, 1.0);
+        // the grid fades in once a hexagon is some pixels wide
         let grid = if self.show_grid { ((250.0 - m_per_px) / 150.0).clamp(0.0, 1.0) } else { 0.0 };
         // roads and railways come in once a hexagon is about 15 pixels wide
         let roads = if self.show_roads { ((450.0 - m_per_px) / 150.0).clamp(0.0, 1.0) } else { 0.0 };
         let real_lines = self.show_lines && !self.lines.is_empty();
         let eye = camera.eye();
         let eye_whole = eye.map(f64::floor);
-        // built-up ground shows from a country down
-        let built_up = ((1_500.0 - m_per_px) / 700.0).clamp(0.0, 1.0);
         let v4 = |v: [f64; 3], w: f64| [v[0] as f32, v[1] as f32, v[2] as f32, w as f32];
         let k = |v: [f64; 3], by: f64| v.map(|x| x / by);
         let globals = Globals {
@@ -397,12 +441,12 @@ impl GlobeRenderer {
             toward: v4(f, EARTH_RADIUS_M + camera.altitude_m),
             east: v4(east, TAN_HALF_FOV * aspect),
             north: v4(north, TAN_HALF_FOV),
-            misc: [EARTH_RADIUS_M as f32, far_land as f32, grid as f32, 0.0],
+            misc: [EARTH_RADIUS_M as f32, 0.0, grid as f32, 0.0],
             ids: [selected.unwrap_or(NO_CELL), PICTURE.0, PICTURE.1, TABLE_WIDTH],
-            more: [roads as f32, self.coloring as u32 as f32, if real_lines { 1.0 } else { 0.0 }, built_up as f32],
+            more: [roads as f32, self.coloring as u32 as f32, if real_lines { 1.0 } else { 0.0 }, 0.0],
             eye_whole: [eye_whole[0] as i32, eye_whole[1] as i32, eye_whole[2] as i32, 0],
             eye_part: [(eye[0] - eye_whole[0]) as f32, (eye[1] - eye_whole[1]) as f32, (eye[2] - eye_whole[2]) as f32, m_per_px as f32],
-            screen: [camera.width_px as f32, camera.height_px as f32, if self.has_relief && self.show_relief { 1.0 } else { 0.0 }, 0.0],
+            screen: [camera.width_px as f32, camera.height_px as f32, if self.has_ground && self.show_relief { 1.0 } else { 0.0 }, 0.0],
             pack_a: self.pack.0,
             pack_b: if self.show_cover { self.pack.1 } else { [0; 4] },
         };
@@ -425,7 +469,7 @@ impl GlobeRenderer {
                             continue;
                         }
                         made += 1;
-                        let (anchor, vertices) = index.tile_mesh(map, t);
+                        let (anchor, vertices) = index.tile_mesh(map, t, &self.from_border);
                         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("tile"), contents: bytemuck::cast_slice(&vertices), usage: wgpu::BufferUsages::VERTEX });
                         e.insert(GpuTile { buffer, vertices: vertices.len() as u32, anchor, last_used: 0 })
                     }
@@ -472,7 +516,8 @@ impl GlobeRenderer {
             pass.set_vertex_buffer(0, lines.pieces.slice(..));
             let limit = (camera.view_radius() + lines.reach).min(std::f64::consts::PI).cos();
             for (tier, middle, range) in &lines.buckets {
-                if m_per_px < TIER_BELOW_M_PER_PX[(*tier as usize).min(4)] && super::dot(*middle, f) >= limit {
+                let below = if *tier >= 5 { if self.show_minor_roads { MINOR_BELOW_M_PER_PX } else { 0.0 } } else { TIER_BELOW_M_PER_PX[*tier as usize] };
+                if m_per_px < below && super::dot(*middle, f) >= limit {
                     pass.draw(0..6, range.clone());
                 }
             }

@@ -44,6 +44,7 @@ struct App {
     show_relief: bool,
     show_cover: bool,
     show_grid: bool,
+    show_minor_roads: bool,
     map: Arc<Map>,
     index: HexIndex,
     session: Session,
@@ -102,7 +103,8 @@ pub fn run(inputs: Inputs) {
         show_lines: true,
         show_relief: true,
         show_cover: true,
-        show_grid: true,
+        show_grid: false,
+        show_minor_roads: false,
         status: inputs.assets.notes.iter().filter(|n| !n.starts_with("loaded")).cloned().collect::<Vec<_>>().join("; "),
         assets: Some(inputs.assets),
         index: HexIndex::new(&map),
@@ -178,6 +180,7 @@ impl App {
                 g.map_renderer.show_relief = self.show_relief;
                 g.map_renderer.show_cover = self.show_cover;
                 g.map_renderer.show_grid = self.show_grid;
+                g.map_renderer.show_minor_roads = self.show_minor_roads;
             }
             self.shown_tick = Some(snap.tick);
             self.colors_dirty = false;
@@ -464,7 +467,10 @@ impl App {
             if ui.checkbox(&mut self.show_lines, "Real coasts, borders, rivers, roads and railways").changed() {
                 self.colors_dirty = true;
             }
-            if ui.checkbox(&mut self.show_relief, "Shaded relief").changed() {
+            if ui.checkbox(&mut self.show_minor_roads, "Small roads and canals (closest zoom, regional packs)").changed() {
+                self.colors_dirty = true;
+            }
+            if ui.checkbox(&mut self.show_relief, "Lit terrain and painted land").changed() {
                 self.colors_dirty = true;
             }
             if ui.checkbox(&mut self.show_cover, "Woods, towns and water (regional packs)").changed() {

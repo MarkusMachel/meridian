@@ -571,3 +571,18 @@ Faults found and fixed:
 - Inside a pack the world's coarse coastline is hidden too; only the 1990 borders are kept from the world file.
 
 Not tested on real data: the land-polygon download and its reading (the link and the file layout are from memory).
+
+## The globe's look: a stylised landscape, as Hearts of Iron IV does it (2026-11-11)
+
+The owner found the first Italy pack "still not good" and asked how Hearts of Iron IV does its map. It uses no survey data: a small hand-painted world, a lit surface from a height picture, tiled ground textures blended softly, a wash of country colour strongest at the borders, very few stylised lines, and towns as objects. Ours was the opposite: flat colour with every real road and land-use outline on top. The owner asked for those five things, somewhat stylised. This replaces the "printed military map" direction of section 25 for the globe.
+
+What changed, all in the pixel shader's `ground` function (one place for the far and the near drawing):
+1. **Lit terrain.** A height picture of the world; the shader works out the slope and lights it from the north-west, with heights exaggerated more from far away. Fine roughness is made up from noise, stronger where the real slope is steep, because the height picture (4.9 km a pixel) is too coarse close up.
+2. **Painted, textured ground.** The base colour is Natural Earth II's painted land picture. Where a pack knows the ground cover it is read smoothly between its pixels (curved edges instead of 80 m squares) and drawn as textures: mottled dark woods, a patchwork of fields on open ground, towns as blocks of roofs with streets, lighter water toward the shore. Rock on steep slopes and snow on the heights come from the heights.
+3. **Few lines.** World file: great rivers and coasts from the whole globe, highways and rivers from a country down, roads from a region down. Packs: motorways from far off, trunk and main roads and railways from a region down, secondary roads close up; tertiary and unclassified roads and canals only with a setting, at the closest zoom. Roads have a dark rim and get bolder close up.
+4. **Country colour as a wash.** Each cell knows how many hexagons it is from the nearest country border (counted once at start-up, smoothed between neighbours in the triangles). The wash is 55 % at a border and falls to 15 % inland; from 2.8 km a pixel outward it is a plain political map.
+5. **Towns as objects**, as far as a camera that looks straight down allows: roof blocks, not land-use outlines. Models that stand up need the tilting camera, which is not built.
+
+Also: hexagon outlines are off by default (a setting), province borders show faintly and only close up.
+
+**Honest limits.** All of this was tuned on made-up heights and a made-up pack; the real Alps, the real colour picture and real Italian towns have not been seen with it. The patterns are generated, not drawn by an artist. Outside a pack there is no ground cover, only the painted colour and the lighting.

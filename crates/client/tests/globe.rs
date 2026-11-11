@@ -56,9 +56,10 @@ fn hexagon_triangles_carry_the_right_sides() {
     let Some(map) = load() else { return };
     let index = HexIndex::new(&map);
     assert!(index.tiles.len() > 10_000);
+    let from_border = vec![15u8; map.cell_count() as usize];
     let (mut cells, mut rivers) = (0, 0);
     for tile in (0..index.tiles.len() as u32).step_by(97) {
-        let (_, vertices) = index.tile_mesh(&map, tile);
+        let (_, vertices) = index.tile_mesh(&map, tile, &from_border);
         assert_eq!(vertices.len() % 3, 0);
         let mut at = 0;
         while at < vertices.len() {

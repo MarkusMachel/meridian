@@ -134,9 +134,9 @@ Pieces are sorted by tier, then bucket hexagon, then style. No piece is longer t
 
 A regional pack's lines file (`data/baked/packs/<name>.lines.bin`) is the same format with three more arrays: `info` (u32: how far a bucket reaches from its middle, in millionths of a radian), and the coverage outline `cover` (i32 longitude, latitude pairs in millionths of a degree) with `cover_off` (u32, ring starts, rings + 1 entries). Style 8 is a local road; tier 4 shows only close up. Inside the outline the client hides every world line except the 1990 borders.
 
-## Globe relief file (version 1)
+## Globe ground file (version 2)
 
-`data/baked/meridian-globe-relief.bin`, written by `build_globe_relief.py`. Container kind 5. `size` (u32: width, height; 8192 by 4096) and `shade` (u8, width * height, rows north to south, left edge 180 W): 128 is flat ground, lighter faces the north-west light. 33.6 MB.
+`data/baked/meridian-globe-ground.bin`, written by `build_globe_ground.py`. Container kind 5. Two pictures of the world, 8192 by 4096, rows north to south, left edge 180 W: `size` (u32: width, height), `height` (u16 per pixel, metres above the sea, 0 for the sea, from ETOPO 2022) and `color` (u8, four per pixel: red, green, blue, 255, from Natural Earth II's land cover picture, public domain). 201 MB. Version 1 was a ready-made hillshade (`meridian-globe-relief.bin`), replaced because lighting in the shader can follow the zoom.
 
 ## Pack ground cover file (version 2)
 

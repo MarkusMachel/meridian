@@ -27,7 +27,7 @@ pub mod side {
     pub const RAIL: u32 = 32;
 }
 
-/// One corner of a triangle as the graphics card gets it: 28 bytes.
+/// One corner of a triangle as the graphics card gets it: 32 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Vertex {
@@ -41,6 +41,9 @@ pub struct Vertex {
     /// +1 at one end of the side, -1 at the other, 0 at the centre: zero along the line from
     /// the hexagon's centre to the middle of the side, where a road is drawn.
     pub across: f32,
+    /// How many hexagons from the nearest country border, smoothed between neighbours so the
+    /// wash of country colour fades evenly instead of hexagon by hexagon.
+    pub from_border: f32,
 }
 
 /// A group of hexagons drawn together: the cells under one level-3 hexagon.
@@ -140,7 +143,7 @@ impl HexIndex {
     /// The triangles of one tile: each hexagon is a fan of triangles from its centre, one per
     /// side, and each triangle knows what runs along its side. Positions are relative to the
     /// returned anchor (the tile's centre on the ground), which keeps them small and exact.
-    pub fn tile_mesh(&self, map: &Map, tile: u32) -> (V3, Vec<Vertex>) {
+    pub fn tile_mesh(&self, map: &Map, tile: u32, from_border: &[u8]) -> (V3, Vec<Vertex>) {
         let t = &self.tiles[tile as usize];
         let anchor = scale(t.center, EARTH_RADIUS_M);
         let mut out = Vec::with_capacity(t.cells.len() * 18);
@@ -151,6 +154,7 @@ impl HexIndex {
             let middle = unit(corners.iter().fold([0.0; 3], |a, &c| add(a, c)));
             // which side faces which neighbour: the side whose middle points most nearly at it
             let mut sides = vec![side::COAST; n];
+            let mut beyond = vec![cell; n];        // the cell across each side (itself where there is none)
             for e in map.cell_edges(CellId(cell)) {
                 let other = map.c_dst[e] as usize;
                 let to = map.cell_place(CellId(other as u32)).expect("a globe map").map(|v| v as f64);
@@ -171,13 +175,18 @@ impl HexIndex {
                         bits |= bit;
                     }
                 }
-                sides[facing.expect("a hexagon has sides")] = bits;
+                let facing = facing.expect("a hexagon has sides");
+                sides[facing] = bits;
+                beyond[facing] = other as u32;
             }
             let local = |d: V3| sub(scale(d, EARTH_RADIUS_M), anchor).map(|v| v as f32);
             for i in 0..n {
-                out.push(Vertex { pos: local(middle), cell, inward: 1.0, side: sides[i], across: 0.0 });
-                out.push(Vertex { pos: local(corners[i]), cell, inward: 0.0, side: sides[i], across: 1.0 });
-                out.push(Vertex { pos: local(corners[(i + 1) % n]), cell, inward: 0.0, side: sides[i], across: -1.0 });
+                // a corner is shared by this cell and the two across the sides that meet there
+                let own = from_border[cell as usize] as f32;
+                let at_corner = |k: usize| (own + from_border[beyond[(k + n - 1) % n] as usize] as f32 + from_border[beyond[k] as usize] as f32) / 3.0;
+                out.push(Vertex { pos: local(middle), cell, inward: 1.0, side: sides[i], across: 0.0, from_border: own });
+                out.push(Vertex { pos: local(corners[i]), cell, inward: 0.0, side: sides[i], across: 1.0, from_border: at_corner(i) });
+                out.push(Vertex { pos: local(corners[(i + 1) % n]), cell, inward: 0.0, side: sides[i], across: -1.0, from_border: at_corner((i + 1) % n) });
             }
         }
         (anchor, out)

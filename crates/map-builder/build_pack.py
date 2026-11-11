@@ -45,13 +45,15 @@ import build_globe_lines as gl  # noqa: E402
 import container  # noqa: E402
 
 # line styles (the client's colours and widths) and detail tiers, by OpenStreetMap tag
+# A map shows few lines: motorways from far off, main roads from a region down, secondary
+# roads close up. Tier 5 (small roads, canals) is only drawn when the player asks for it.
 ROADS = {
-    "motorway": (4, 1), "trunk": (4, 1), "motorway_link": (4, 2), "trunk_link": (4, 2),
-    "primary": (5, 2), "primary_link": (5, 3), "secondary": (5, 3),
-    "tertiary": (8, 4), "unclassified": (8, 4),
+    "motorway": (4, 1), "trunk": (4, 2), "motorway_link": (4, 4), "trunk_link": (4, 4),
+    "primary": (5, 3), "primary_link": (5, 4), "secondary": (6, 4),
+    "tertiary": (8, 5), "unclassified": (8, 5),
 }
 RAIL = (7, 3)
-WATERWAYS = {"river": (3, 2), "canal": (3, 3)}
+WATERWAYS = {"river": (3, 2), "canal": (3, 5)}
 SIMPLIFY_DEG = 0.00008          # about 8 m: under half a pixel at the closest zoom
 BUCKET_LEVEL = 4                # hexagons about 45 km across
 BUCKET_REACH_MICRORAD = 6_500

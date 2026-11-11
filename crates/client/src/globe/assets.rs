@@ -1,15 +1,15 @@
 //! The optional drawing files of the globe: real lines, shaded relief and regional packs.
 //! All are looked for next to the baked map; the globe runs without any of them.
 
-use meridian_data::{GlobeLines, GlobeRelief, PackCover};
+use meridian_data::{GlobeGround, GlobeLines, PackCover};
 use std::path::Path;
 
 #[derive(Default)]
 pub struct GlobeAssets {
     /// `meridian-globe-lines.bin`: the world's coasts, borders, rivers, roads and railways.
     pub lines: Option<GlobeLines>,
-    /// `meridian-globe-relief.bin`: shaded relief of the world.
-    pub relief: Option<GlobeRelief>,
+    /// `meridian-globe-ground.bin`: the heights and painted colour of the world's land.
+    pub ground: Option<GlobeGround>,
     /// `packs/<name>.lines.bin`: the fine lines of each regional pack, in name order.
     pub packs: Vec<GlobeLines>,
     /// `packs/<name>.cover.bin`: the ground cover of the first pack that has one.
@@ -37,7 +37,7 @@ pub fn load(dir: &Path) -> GlobeAssets {
         }
     }
     a.lines = get(&dir.join("meridian-globe-lines.bin"), &mut a.notes, meridian_data::load_globe_lines_file);
-    a.relief = get(&dir.join("meridian-globe-relief.bin"), &mut a.notes, meridian_data::load_globe_relief_file);
+    a.ground = get(&dir.join("meridian-globe-ground.bin"), &mut a.notes, meridian_data::load_globe_ground_file);
     let mut pack_files: Vec<std::path::PathBuf> = std::fs::read_dir(dir.join("packs")).into_iter().flatten().flatten().map(|e| e.path()).collect();
     pack_files.sort();
     for path in pack_files {

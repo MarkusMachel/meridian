@@ -30,8 +30,9 @@ $PY $B/build_population.py "$INTER" $NE data/source/worldbank
 $PY $B/bake_map.py "$INTER" "$BAKED"
 # The real coasts, borders, rivers, roads and railways for the globe view (drawing only).
 $PY $B/build_globe_lines.py "$INTER" $NE "$(dirname "$BAKED")/meridian-globe-lines.bin"
-# Shaded relief for the globe view, from the elevation grid the terrain step keeps.
-$PY $B/build_globe_relief.py "$INTER" "$(dirname "$BAKED")/meridian-globe-relief.bin"
+# The ground of the globe view: heights for the lighting (from the elevation grid the terrain
+# step keeps) and the painted land colour (Natural Earth II).
+$PY $B/build_globe_ground.py "$INTER" $NE "$(dirname "$BAKED")/meridian-globe-ground.bin"
 # The render file is for the flat client, which cannot show the hexagon world; the globe client
 # (map rewrite M3) replaces it. Set RENDER_OLD=1 to try the old step anyway.
 if [ "${RENDER_OLD:-0}" = 1 ]; then

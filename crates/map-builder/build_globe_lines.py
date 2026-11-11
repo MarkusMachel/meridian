@@ -40,10 +40,10 @@ STYLES = {
     0: ("coast", 0),
     1: ("border of 1990", 0),
     2: ("great river", 0),
-    3: ("river", 1),
-    4: ("major highway", 1),
-    5: ("highway or road", 2),
-    6: ("minor road", 3),
+    3: ("river", 2),
+    4: ("major highway", 2),
+    5: ("highway or road", 3),
+    6: ("minor road", 4),
     7: ("railway", 3),
 }
 MAX_PIECE_DEG = 0.25     # longer pieces are cut, so a long straight border still follows the globe
