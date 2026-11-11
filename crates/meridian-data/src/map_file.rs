@@ -69,18 +69,20 @@ impl<'a> Arrays<'a> {
 }
 
 /// Parse a baked map from bytes. `file` is only used to label errors.
-pub fn parse_map(file: &str, bytes: &[u8]) -> Result<Map, Vec<DataError>> {
+/// Check a container's header and checksum and list its arrays. `kind` and `version` are the
+/// ones the caller reads; `what` names the kind of file in error messages.
+fn open_container<'a>(file: &'a str, bytes: &'a [u8], kind: u32, version_wanted: u32, what: &str) -> Result<(Arrays<'a>, u32), Vec<DataError>> {
     let one = |e: DataError| vec![e];
     let bad = |msg: String| one(DataError::new(file, "-", ErrorKind::BadBinary, msg));
     if bytes.len() < HEADER_LEN || &bytes[0..4] != b"MRMP" {
         return Err(bad("not a Meridian map file (bad magic number)".into()));
     }
     let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-    if version != MAP_FORMAT_VERSION {
-        return Err(one(DataError::new(file, "-", ErrorKind::WrongVersion, format!("map format version {version}, this build reads {MAP_FORMAT_VERSION}"))));
+    if version != version_wanted {
+        return Err(one(DataError::new(file, "-", ErrorKind::WrongVersion, format!("{what} format version {version}, this build reads {version_wanted}"))));
     }
-    if u32::from_le_bytes(bytes[8..12].try_into().unwrap()) != KIND_MAP {
-        return Err(bad("file is not a map (wrong kind)".into()));
+    if u32::from_le_bytes(bytes[8..12].try_into().unwrap()) != kind {
+        return Err(bad(format!("file is not a {what} (wrong kind)")));
     }
     let len = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
     let sum = u64::from_le_bytes(bytes[20..28].try_into().unwrap());
@@ -125,7 +127,12 @@ pub fn parse_map(file: &str, bytes: &[u8]) -> Result<Map, Vec<DataError>> {
         return Err(bad("extra bytes after the last array".into()));
     }
 
-    let a = Arrays { file, by_name };
+    Ok((Arrays { file, by_name }, crc))
+}
+
+pub fn parse_map(file: &str, bytes: &[u8]) -> Result<Map, Vec<DataError>> {
+    let one = |e: DataError| vec![e];
+    let (a, crc) = open_container(file, bytes, KIND_MAP, MAP_FORMAT_VERSION, "map")?;
     let raw = (|| -> Result<RawMap, DataError> {
         Ok(RawMap {
             checksum: crc,
@@ -189,4 +196,43 @@ pub fn load_map_file(path: &Path) -> Result<Map, Vec<DataError>> {
     let name = path.display().to_string();
     let bytes = std::fs::read(path).map_err(|e| vec![DataError::new(&name, "-", ErrorKind::Io, e.to_string())])?;
     parse_map(&name, &bytes)
+}
+
+// ---- the globe's drawn lines (map rewrite M3) ----
+
+pub const GLOBE_LINES_VERSION: u32 = 1;
+const KIND_GLOBE_LINES: u32 = 4;
+
+/// Real coastlines, borders, rivers, roads and railways for the globe view, as short straight
+/// pieces between places on the sphere. Drawing only: the engine never reads this file.
+#[derive(Clone, Debug, Default)]
+pub struct GlobeLines {
+    /// Both ends of each piece: three whole metres from the Earth's centre each.
+    pub seg_a: Vec<i32>,
+    pub seg_b: Vec<i32>,
+    /// What each piece is (see `crates/map-builder/build_globe_lines.py`).
+    pub seg_style: Vec<u8>,
+    /// The pieces are grouped in buckets: bucket `k` is pieces `bucket_off[k]..bucket_off[k + 1]`,
+    /// all of one detail tier and around one place.
+    pub bucket_off: Vec<u32>,
+    /// 0 = shown from the whole globe down, 1 = from a continent, 2 = from a country, 3 = from a region.
+    pub bucket_tier: Vec<u8>,
+    /// The middle of each bucket's area on the sphere (three numbers each).
+    pub bucket_xyz: Vec<i32>,
+}
+
+pub fn load_globe_lines_file(path: &Path) -> Result<GlobeLines, Vec<DataError>> {
+    let name = path.display().to_string();
+    let bytes = std::fs::read(path).map_err(|e| vec![DataError::new(&name, "-", ErrorKind::Io, e.to_string())])?;
+    let (a, _) = open_container(&name, &bytes, KIND_GLOBE_LINES, GLOBE_LINES_VERSION, "globe lines file")?;
+    let read = || -> Result<GlobeLines, DataError> {
+        let g = GlobeLines { seg_a: a.i32s("seg_a")?, seg_b: a.i32s("seg_b")?, seg_style: a.u8s("seg_style")?, bucket_off: a.u32s("bucket_off")?, bucket_tier: a.u8s("bucket_tier")?, bucket_xyz: a.i32s("bucket_xyz")? };
+        let (n, b) = (g.seg_style.len(), g.bucket_tier.len());
+        let ok = g.seg_a.len() == 3 * n && g.seg_b.len() == 3 * n && g.bucket_xyz.len() == 3 * b && g.bucket_off.len() == b + 1 && g.bucket_off.windows(2).all(|w| w[0] <= w[1]) && g.bucket_off.last().is_some_and(|&e| e as usize == n);
+        if !ok {
+            return Err(a.bad("-", "the arrays do not fit together".into()));
+        }
+        Ok(g)
+    };
+    read().map_err(|e| vec![e])
 }

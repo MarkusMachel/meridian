@@ -32,7 +32,33 @@ struct Globals {
     misc: [f32; 4],
     ids: [u32; 4],
     more: [f32; 4],
+    eye_whole: [i32; 4],
+    eye_part: [f32; 4],
+    screen: [f32; 4],
 }
+
+/// One piece of a real line as the graphics card gets it: 28 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Piece {
+    a: [i32; 3],
+    b: [i32; 3],
+    style: u32,
+}
+
+/// The real lines on the graphics card: all pieces in one buffer, in buckets.
+struct Lines {
+    pieces: wgpu::Buffer,
+    /// (detail tier, direction to the bucket's middle, its pieces)
+    buckets: Vec<(u8, [f64; 3], std::ops::Range<u32>)>,
+}
+
+/// A bucket's pieces reach at most this far from its middle, as an angle (a level-2 hexagon
+/// is about 320 km across; pieces are filed by their middle and are short).
+const BUCKET_REACH: f64 = 0.04;
+/// Detail tiers come in below these metres per pixel: 0 always, 1 from a continent, 2 from a
+/// country, 3 from a region.
+const TIER_BELOW_M_PER_PX: [f64; 4] = [f64::MAX, 5_000.0, 1_400.0, 600.0];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Coloring {
@@ -56,6 +82,10 @@ pub struct GlobeRenderer {
     palette_rows: u32,
     far_pipeline: wgpu::RenderPipeline,
     tile_pipeline: wgpu::RenderPipeline,
+    line_pipeline: wgpu::RenderPipeline,
+    lines: Option<Lines>,
+    /// Draw the real lines (when a lines file was given).
+    pub show_lines: bool,
     offsets: wgpu::Buffer,
     tiles: HashMap<u32, GpuTile>,
     frame: u64,
@@ -173,8 +203,41 @@ impl GlobeRenderer {
             multiview_mask: None,
             cache: None,
         });
+        let piece_attrs = [
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Sint32x3, offset: 0, shader_location: 0 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Sint32x3, offset: 12, shader_location: 1 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32, offset: 24, shader_location: 2 },
+        ];
+        let piece_buffers = [Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Piece>() as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &piece_attrs })];
+        let blended = [Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })];
+        let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("lines"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_line"), compilation_options: Default::default(), buffers: &piece_buffers },
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_line"), compilation_options: Default::default(), targets: &blended }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
         let offsets = device.create_buffer(&wgpu::BufferDescriptor { label: Some("tile offsets"), size: (TILES_KEPT * 12) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        GlobeRenderer { globals, bind, palette, palette_rows, far_pipeline, tile_pipeline, offsets, tiles: HashMap::new(), frame: 0, drawn: (0, 0), coloring: Coloring::PaletteShaded, show_roads: true }
+        GlobeRenderer { globals, bind, palette, palette_rows, far_pipeline, tile_pipeline, line_pipeline, lines: None, show_lines: true, offsets, tiles: HashMap::new(), frame: 0, drawn: (0, 0), coloring: Coloring::PaletteShaded, show_roads: true }
+    }
+
+    /// Give the renderer the real lines to draw over the hexagons.
+    pub fn set_lines(&mut self, device: &wgpu::Device, data: &meridian_data::GlobeLines) {
+        let pieces: Vec<Piece> = (0..data.seg_style.len())
+            .map(|i| Piece { a: [data.seg_a[3 * i], data.seg_a[3 * i + 1], data.seg_a[3 * i + 2]], b: [data.seg_b[3 * i], data.seg_b[3 * i + 1], data.seg_b[3 * i + 2]], style: data.seg_style[i] as u32 })
+            .collect();
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("real lines"), contents: bytemuck::cast_slice(&pieces), usage: wgpu::BufferUsages::VERTEX });
+        let buckets = (0..data.bucket_tier.len())
+            .map(|k| {
+                let middle = super::unit([data.bucket_xyz[3 * k] as f64, data.bucket_xyz[3 * k + 1] as f64, data.bucket_xyz[3 * k + 2] as f64]);
+                (data.bucket_tier[k], middle, data.bucket_off[k]..data.bucket_off[k + 1])
+            })
+            .collect();
+        self.lines = Some(Lines { pieces: buffer, buckets });
     }
 
     /// One colour per province (from a map mode).
@@ -204,6 +267,11 @@ impl GlobeRenderer {
         let grid = ((250.0 - m_per_px) / 150.0).clamp(0.0, 1.0);
         // roads and railways come in once a hexagon is about 15 pixels wide
         let roads = if self.show_roads { ((450.0 - m_per_px) / 150.0).clamp(0.0, 1.0) } else { 0.0 };
+        let real_lines = self.show_lines && self.lines.is_some();
+        let eye = camera.eye();
+        let eye_whole = eye.map(f64::floor);
+        // built-up ground shows from a country down
+        let built_up = ((1_500.0 - m_per_px) / 700.0).clamp(0.0, 1.0);
         let v4 = |v: [f64; 3], w: f64| [v[0] as f32, v[1] as f32, v[2] as f32, w as f32];
         let k = |v: [f64; 3], by: f64| v.map(|x| x / by);
         let globals = Globals {
@@ -214,7 +282,10 @@ impl GlobeRenderer {
             north: v4(north, TAN_HALF_FOV),
             misc: [EARTH_RADIUS_M as f32, far_land as f32, grid as f32, 0.0],
             ids: [selected.unwrap_or(NO_CELL), PICTURE.0, PICTURE.1, TABLE_WIDTH],
-            more: [roads as f32, self.coloring as u32 as f32, 0.0, 0.0],
+            more: [roads as f32, self.coloring as u32 as f32, if real_lines { 1.0 } else { 0.0 }, built_up as f32],
+            eye_whole: [eye_whole[0] as i32, eye_whole[1] as i32, eye_whole[2] as i32, 0],
+            eye_part: [(eye[0] - eye_whole[0]) as f32, (eye[1] - eye_whole[1]) as f32, (eye[2] - eye_whole[2]) as f32, m_per_px as f32],
+            screen: [camera.width_px as f32, camera.height_px as f32, 0.0, 0.0],
         };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
 
@@ -252,7 +323,6 @@ impl GlobeRenderer {
             }
         }
         self.drawn = (show.len(), missing);
-        let eye = camera.eye();
         let offsets: Vec<[f32; 3]> = show.iter().map(|t| sub(self.tiles[t].anchor, eye).map(|v| v as f32)).collect();
         if !offsets.is_empty() {
             queue.write_buffer(&self.offsets, 0, bytemuck::cast_slice(&offsets));
@@ -276,6 +346,16 @@ impl GlobeRenderer {
                 let tile = &self.tiles[t];
                 pass.set_vertex_buffer(0, tile.buffer.slice(..));
                 pass.draw(0..tile.vertices, i as u32..i as u32 + 1);
+            }
+        }
+        if let Some(lines) = self.lines.as_ref().filter(|_| real_lines) {
+            pass.set_pipeline(&self.line_pipeline);
+            pass.set_vertex_buffer(0, lines.pieces.slice(..));
+            let limit = (camera.view_radius() + BUCKET_REACH).min(std::f64::consts::PI).cos();
+            for (tier, middle, range) in &lines.buckets {
+                if m_per_px < TIER_BELOW_M_PER_PX[(*tier as usize).min(3)] && super::dot(*middle, f) >= limit {
+                    pass.draw(0..6, range.clone());
+                }
             }
         }
     }

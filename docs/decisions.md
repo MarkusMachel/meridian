@@ -535,3 +535,12 @@ The owner built the hexagon map on the Mac and reported that everything works (t
 - **March routes** are drawn hexagon by hexagon. The read interface gained `CountryView::own_unit_route`.
 
 **Still not done in M3:** real border lines and shaded relief, a tilting camera, and retiring the flat client (the owner's call).
+
+## Real lines on the globe (2026-11-10)
+
+The owner asked why roads and railways were not curved and expected something closer to a real map. The hexagon diagram (roads from centre to centre) shows how units move, not what the ground looks like.
+
+- **A second layer of real lines** is drawn over the hexagons: coastline, the 1990 borders, rivers, roads and railways as they run on the ground (`build_globe_lines.py`, `meridian-globe-lines.bin`, data-formats.md). With it, the diagram of roads is off by default, hexagon-side coasts are hidden, hexagon-side borders go faint, and the river sides (where a unit really crosses) show only close up.
+- **Exact at any zoom.** A piece's ends are whole metres from the Earth's centre; the shader takes the camera's whole-metre place off in integers before turning anything into 32-bit floats.
+- **Source and limits.** Natural Earth at 1:10 million: the main roads and railways of about 2010, no streets, no buildings, no relief. Built-up ground is shown per hexagon from Natural Earth's urban areas.
+- **What "like a real map" still needs** (not built): shaded relief from elevation; land drawn from real outlines instead of whole hexagons; and OpenStreetMap for streets, buildings and land use at close zoom. OpenStreetMap cannot be downloaded on the machine this is written on, so that builder has to be run and checked on the owner's Mac. The earlier assumption that the OpenStreetMap packs were on hold is withdrawn: the owner expects them.

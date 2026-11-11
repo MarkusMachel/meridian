@@ -11,7 +11,10 @@ struct Globals {
     north: vec4f,    // xyz: north; w: tan
     misc: vec4f,     // x: Earth radius; y: how much of the far land to show (0..1); z: hexagon grid strength; w: unused
     ids: vec4u,      // x: selected cell; y, z: world picture width, height; w: cell table width
-    more: vec4f,     // x: road and railway strength; y: colouring (0 palette with terrain shaded in, 1 palette, 2 terrain)
+    more: vec4f,     // x: road and railway strength; y: colouring (0 palette with terrain shaded in, 1 palette, 2 terrain); z: 1 when the real lines are drawn; w: how strongly built-up ground shows
+    eye_whole: vec4i,  // the camera's place in whole metres from the Earth's centre
+    eye_part: vec4f,   // xyz: the rest of the camera's place (under a metre); w: metres per pixel
+    screen: vec4f,     // xy: the picture's size in pixels
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -113,7 +116,7 @@ fn fs_far(in: FarOut) -> @location(0) vec4f {
         let below = picture_cell(lon, lat, 0, 1);
         var edge = false;
         if right == NO_CELL || below == NO_CELL {
-            edge = true;
+            edge = g.more.z < 0.5;   // the real coastline is drawn instead when there is one
         } else if cell_info(right).g != info.g || cell_info(below).g != info.g {
             edge = true;
         }
@@ -170,7 +173,7 @@ fn fs_tile(in: TileOut) -> @location(0) vec4f {
     let info = cell_info(in.cell);
     var color = land_color(info);
     // built-up ground is greyer
-    color = mix(color, vec3f(0.55, 0.53, 0.52), f32(info.a) / 255.0 * 0.6 * g.more.x);
+    color = mix(color, vec3f(0.60, 0.57, 0.55), f32(info.a) / 255.0 * 0.7 * g.more.w);
     if in.cell == g.ids.x {
         color = mix(color, vec3f(1.0), 0.4);
     }
@@ -180,9 +183,12 @@ fn fs_tile(in: TileOut) -> @location(0) vec4f {
     let px = in.inward / max(fwidth(in.inward), 1e-6);
     color = mix(color, color * 0.80, line(px, 0.5) * g.misc.z);                                  // the hexagon grid
     if (in.side & 1u) != 0u { color = mix(color, color * 0.55, line(px, 0.6) * 0.8); }           // province border
-    if (in.side & 2u) != 0u { color = mix(color, vec3f(0.12, 0.10, 0.10), line(px, 1.2)); }      // country border
-    if (in.side & 8u) != 0u { color = mix(color, vec3f(0.20, 0.28, 0.36), line(px, 1.0)); }      // coast
-    if (in.side & 4u) != 0u { color = mix(color, vec3f(0.22, 0.42, 0.68), line(px, 1.6)); }      // river
+    // With the real lines drawn, the hexagon-side versions step back: borders and coasts go
+    // faint, and the river sides (where a unit really has to cross) show only close up.
+    let own = 1.0 - g.more.z;
+    if (in.side & 2u) != 0u { color = mix(color, vec3f(0.12, 0.10, 0.10), line(px, 1.2) * max(own, 0.25)); }      // country border
+    if (in.side & 8u) != 0u { color = mix(color, vec3f(0.20, 0.28, 0.36), line(px, 1.0) * own); }                 // coast
+    if (in.side & 4u) != 0u { color = mix(color, vec3f(0.22, 0.42, 0.68), line(px, 1.6) * max(own, g.misc.z)); }  // river
     if (in.side & 16u) != 0u { color = mix(color, vec3f(0.36, 0.24, 0.16), line(lane, 0.7) * g.more.x); }                       // road
     if (in.side & 32u) != 0u {                                                                                                  // railway: a dashed dark line
         let dash = step(0.5, fract(in.inward * 7.0));
@@ -195,4 +201,98 @@ fn fs_tile(in: TileOut) -> @location(0) vec4f {
         color = mix(color, vec3f(0.93, 0.90, 0.82), line(lane, 1.2) * line(px, 4.0) * g.more.x);
     }
     return vec4f(color, 1.0);
+}
+
+// ---------------------------------------------------------------- real lines
+
+// Coasts, borders, rivers, roads and railways as they run on the ground: each short piece is a
+// thin rectangle a set number of pixels wide. The ends come as whole metres from the Earth's
+// centre and the camera's place is taken off in whole numbers first, so nothing is lost to
+// 32-bit floats however close the camera is.
+
+struct LineIn {
+    @builtin(vertex_index) corner: u32,
+    @location(0) a: vec3i,
+    @location(1) b: vec3i,
+    @location(2) style: u32,
+};
+
+struct LineOut {
+    @builtin(position) pos: vec4f,
+    @location(0) @interpolate(flat) style: u32,
+    @location(1) across: f32,          // pixels from the middle of the line
+    @location(2) @interpolate(flat) half_width: f32,
+};
+
+fn line_half_width(style: u32) -> f32 {
+    var w = 0.5;
+    switch style {
+        case 0u { w = 0.6; }    // coast
+        case 1u { w = 0.9; }    // border
+        case 2u { w = 1.1; }    // great river
+        case 3u { w = 0.6; }    // river
+        case 4u { w = 1.0; }    // major highway
+        case 5u { w = 0.6; }    // highway or road
+        case 6u { w = 0.4; }    // minor road
+        default { w = 0.35; }   // railway
+    }
+    // a little bolder close up
+    return w * clamp(sqrt(500.0 / g.eye_part.w), 1.0, 2.2);
+}
+
+fn line_color(style: u32) -> vec3f {
+    switch style {
+        case 0u { return vec3f(0.18, 0.26, 0.36); }
+        case 1u { return vec3f(0.12, 0.10, 0.10); }
+        case 2u { return vec3f(0.20, 0.40, 0.68); }
+        case 3u { return vec3f(0.24, 0.44, 0.70); }
+        case 4u { return vec3f(0.58, 0.18, 0.12); }
+        case 5u { return vec3f(0.42, 0.27, 0.16); }
+        case 6u { return vec3f(0.42, 0.33, 0.24); }
+        default { return vec3f(0.16, 0.15, 0.17); }
+    }
+}
+
+fn to_clip(v: vec3f) -> vec4f {
+    let depth = -dot(v, g.toward.xyz);
+    return vec4f(dot(v, g.row_x.xyz), dot(v, g.row_y.xyz), 0.5 * depth, depth);
+}
+
+@vertex
+fn vs_line(in: LineIn) -> LineOut {
+    var o: LineOut;
+    o.style = in.style;
+    o.half_width = line_half_width(in.style);
+    // over the horizon: both ends must be on the near side
+    let limit = g.misc.x / g.toward.w;
+    let da = normalize(vec3f(in.a));
+    let db = normalize(vec3f(in.b));
+    if dot(da, g.toward.xyz) < limit || dot(db, g.toward.xyz) < limit {
+        o.pos = vec4f(2.0, 2.0, 2.0, 1.0);
+        o.across = 0.0;
+        return o;
+    }
+    let ca = to_clip(vec3f(in.a - g.eye_whole.xyz) - g.eye_part.xyz);
+    let cb = to_clip(vec3f(in.b - g.eye_whole.xyz) - g.eye_part.xyz);
+    let half_screen = g.screen.xy * 0.5;
+    let sa = ca.xy / ca.w * half_screen;
+    let sb = cb.xy / cb.w * half_screen;
+    let along = sb - sa;
+    let len = max(length(along), 1e-4);
+    let normal = vec2f(-along.y, along.x) / len;
+    // corners: 0 1 2, 2 1 3 of the rectangle (end, side)
+    let ends = array<f32, 6>(0.0, 1.0, 0.0, 0.0, 1.0, 1.0);
+    let sides = array<f32, 6>(-1.0, -1.0, 1.0, 1.0, -1.0, 1.0);
+    let reach = o.half_width + 1.0;   // one more pixel for the soft edge
+    let clip = mix(ca, cb, ends[in.corner]);
+    let shift = normal * sides[in.corner] * reach / half_screen;
+    o.pos = vec4f(clip.xy + shift * clip.w, clip.z, clip.w);
+    o.across = sides[in.corner] * reach;
+    return o;
+}
+
+@fragment
+fn fs_line(in: LineOut) -> @location(0) vec4f {
+    let cover = 1.0 - smoothstep(in.half_width - 0.5, in.half_width + 0.5, abs(in.across));
+    return vec4f(line_color(in.style), cover);
 }

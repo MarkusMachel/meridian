@@ -28,6 +28,8 @@ $PY $B/build_terrain.py "$INTER" $NE data/source/etopo/ETOPO_2022_v1_60s_N90W180
 $PY $B/build_sites.py "$INTER" $NE
 $PY $B/build_population.py "$INTER" $NE data/source/worldbank
 $PY $B/bake_map.py "$INTER" "$BAKED"
+# The real coasts, borders, rivers, roads and railways for the globe view (drawing only).
+$PY $B/build_globe_lines.py "$INTER" $NE "$(dirname "$BAKED")/meridian-globe-lines.bin"
 # The render file is for the flat client, which cannot show the hexagon world; the globe client
 # (map rewrite M3) replaces it. Set RENDER_OLD=1 to try the old step anyway.
 if [ "${RENDER_OLD:-0}" = 1 ]; then
