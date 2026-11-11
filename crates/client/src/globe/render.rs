@@ -31,6 +31,14 @@ struct Globals {
     north: [f32; 4],
     misc: [f32; 4],
     ids: [u32; 4],
+    more: [f32; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Coloring {
+    PaletteShaded = 0,
+    Palette = 1,
+    Terrain = 2,
 }
 
 struct GpuTile {
@@ -53,6 +61,11 @@ pub struct GlobeRenderer {
     frame: u64,
     /// Tiles drawn and tiles still to make, in the last frame (for the status line).
     pub drawn: (usize, usize),
+    /// How land is coloured: by the province palette with the terrain shaded in (political),
+    /// by the palette alone, or by each hexagon's own terrain.
+    pub coloring: Coloring,
+    /// Draw roads, railways and bridges when zoomed in.
+    pub show_roads: bool,
 }
 
 fn texture_u32(device: &wgpu::Device, queue: &wgpu::Queue, label: &str, width: u32, height: u32, format: wgpu::TextureFormat, data: &[u8]) -> wgpu::TextureView {
@@ -83,14 +96,14 @@ impl GlobeRenderer {
         let picture = index.world_picture(PICTURE.0, PICTURE.1);
         let picture_view = texture_u32(device, queue, "world picture", PICTURE.0, PICTURE.1, wgpu::TextureFormat::R32Uint, bytemuck::cast_slice(&picture));
         drop(picture);
-        // per cell: province and country
+        // per cell: province, country, terrain and how built-up it is
         let cells = map.cell_count();
         let table_rows = cells.div_ceil(TABLE_WIDTH).max(1);
-        let mut table = vec![[0u32; 2]; (TABLE_WIDTH * table_rows) as usize];
+        let mut table = vec![[0u32; 4]; (TABLE_WIDTH * table_rows) as usize];
         for (c, entry) in table.iter_mut().enumerate().take(cells as usize) {
-            *entry = [map.cell_province[c], map.cell_state[c] as u32];
+            *entry = [map.cell_province[c], map.cell_state[c] as u32, map.cell_terrain[c] as u32, map.cell_urban[c] as u32];
         }
-        let table_view = texture_u32(device, queue, "cell table", TABLE_WIDTH, table_rows, wgpu::TextureFormat::Rg32Uint, bytemuck::cast_slice(&table));
+        let table_view = texture_u32(device, queue, "cell table", TABLE_WIDTH, table_rows, wgpu::TextureFormat::Rgba32Uint, bytemuck::cast_slice(&table));
         let palette_rows = map.province_count().div_ceil(4096).max(1);
         let palette = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("palette"),
@@ -142,6 +155,7 @@ impl GlobeRenderer {
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32, offset: 12, shader_location: 1 },
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 16, shader_location: 2 },
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32, offset: 20, shader_location: 3 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 24, shader_location: 5 },
         ];
         let offset_attrs = [wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 4 }];
         let buffers = [
@@ -160,7 +174,7 @@ impl GlobeRenderer {
             cache: None,
         });
         let offsets = device.create_buffer(&wgpu::BufferDescriptor { label: Some("tile offsets"), size: (TILES_KEPT * 12) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        GlobeRenderer { globals, bind, palette, palette_rows, far_pipeline, tile_pipeline, offsets, tiles: HashMap::new(), frame: 0, drawn: (0, 0) }
+        GlobeRenderer { globals, bind, palette, palette_rows, far_pipeline, tile_pipeline, offsets, tiles: HashMap::new(), frame: 0, drawn: (0, 0), coloring: Coloring::PaletteShaded, show_roads: true }
     }
 
     /// One colour per province (from a map mode).
@@ -188,6 +202,8 @@ impl GlobeRenderer {
         // the far land fades out as the hexagons take over, and the grid fades in once a hexagon is some pixels wide
         let far_land = ((m_per_px - 0.4 * TILES_BELOW_M_PER_PX) / (0.6 * TILES_BELOW_M_PER_PX)).clamp(0.0, 1.0);
         let grid = ((250.0 - m_per_px) / 150.0).clamp(0.0, 1.0);
+        // roads and railways come in once a hexagon is about 15 pixels wide
+        let roads = if self.show_roads { ((450.0 - m_per_px) / 150.0).clamp(0.0, 1.0) } else { 0.0 };
         let v4 = |v: [f64; 3], w: f64| [v[0] as f32, v[1] as f32, v[2] as f32, w as f32];
         let k = |v: [f64; 3], by: f64| v.map(|x| x / by);
         let globals = Globals {
@@ -198,6 +214,7 @@ impl GlobeRenderer {
             north: v4(north, TAN_HALF_FOV),
             misc: [EARTH_RADIUS_M as f32, far_land as f32, grid as f32, 0.0],
             ids: [selected.unwrap_or(NO_CELL), PICTURE.0, PICTURE.1, TABLE_WIDTH],
+            more: [roads as f32, self.coloring as u32 as f32, 0.0, 0.0],
         };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
 

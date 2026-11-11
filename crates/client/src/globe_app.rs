@@ -59,11 +59,23 @@ struct App {
     status: String,
     show_settings: bool,
     show_labels: bool,
+    show_roads: bool,
     ui_scale: f32,
     /// Tiles drawn and tiles still loading in the last frame.
     tiles_drawn: (usize, usize),
     /// City sites, largest first: (site, population).
     cities: Vec<(u32, u32)>,
+}
+
+/// Countries are coloured with the ground shaded in, the debug values plainly, and the
+/// terrain mode by each hexagon's own terrain.
+pub fn coloring_for(mode: Mode) -> client::globe::render::Coloring {
+    use client::globe::render::Coloring;
+    match mode {
+        Mode::Political => Coloring::PaletteShaded,
+        Mode::Value => Coloring::Palette,
+        Mode::Terrain => Coloring::Terrain,
+    }
 }
 
 const SAVE_PATH: &str = "saves/quicksave.mrsv";
@@ -99,6 +111,7 @@ pub fn run(inputs: Inputs) {
         status: String::new(),
         show_settings: false,
         show_labels: true,
+        show_roads: true,
         ui_scale: 1.0,
         tiles_drawn: (0, 0),
         cities,
@@ -143,6 +156,8 @@ impl App {
             };
             if let Some(g) = &mut self.gfx {
                 g.map_renderer.set_colors(&g.queue, &colors);
+                g.map_renderer.coloring = coloring_for(self.mode);
+                g.map_renderer.show_roads = self.show_roads;
             }
             self.shown_tick = Some(snap.tick);
             self.colors_dirty = false;
@@ -426,6 +441,9 @@ impl App {
         }
         egui::Window::new("Settings").open(&mut self.show_settings).show(ui.ctx(), |ui| {
             ui.checkbox(&mut self.show_labels, "City names");
+            if ui.checkbox(&mut self.show_roads, "Roads, railways and bridges").changed() {
+                self.colors_dirty = true;
+            }
             ui.add(egui::Slider::new(&mut self.ui_scale, 0.75..=2.0).text("Interface scale"));
         });
         egui::Panel::right("province").default_size(260.0).show(ui, |ui| {
@@ -620,20 +638,38 @@ impl App {
         let place_of = |i: usize| stacks.iter().find(|s| s.0.contains(&i)).map(|s| s.1).or_else(|| self.unit_screen(i));
         let index_of = |id: u32| self.snapshot.units.iter().position(|u| u.0 == id);
         let ink = egui::Color32::from_rgb(20, 20, 20);
-        // marches as the simulation has them: an arrow from each marching unit to the cell it is heading for
-        for (i, c) in self.snapshot.unit_cells.iter().enumerate() {
-            if c.1 >= self.map.cell_count() {
+        // marches as the simulation has them: the route each marching unit has still to go,
+        // hexagon by hexagon, with an arrowhead at its destination
+        for (i, route) in self.snapshot.unit_routes.iter().enumerate() {
+            if route.is_empty() {
                 continue;
             }
-            let (Some(a), Some(b)) = (place_of(i), self.cell_screen(c.1)) else { continue };
-            let (a, b) = (to_pt(a), to_pt(b));
-            if (b - a).length() < 4.0 {
+            let Some(start) = place_of(i) else { continue };
+            let mut pts = vec![to_pt(start)];
+            pts.extend(route.iter().filter_map(|&c| self.cell_screen(c)).map(to_pt));
+            let (Some(&b), Some(&a)) = (pts.last(), pts.iter().rev().find(|p| (**p - *pts.last().unwrap()).length() > 6.0)) else { continue };
+            if !pts.iter().any(|p| map_rect.contains(*p)) {
                 continue;
             }
-            painter.line_segment([a, b], egui::Stroke::new(2.0, ink));
+            painter.add(egui::Shape::line(pts, egui::Stroke::new(2.0, ink)));
             let d = (b - a).normalized();
             let n = egui::vec2(-d.y, d.x);
             painter.add(egui::Shape::convex_polygon(vec![b, b - d * 12.0 + n * 5.0, b - d * 12.0 - n * 5.0], ink, egui::Stroke::NONE));
+        }
+        // destroyed bridges: a red cross on the river where the bridge was (zoomed in only)
+        if self.camera.m_per_px() < 450.0 {
+            let red = egui::Stroke::new(2.5, egui::Color32::from_rgb(200, 30, 30));
+            for &(a, b, condition) in &self.snapshot.bridges {
+                if condition > 0 {
+                    continue;
+                }
+                let (Some(pa), Some(pb)) = (self.cell_screen(a), self.cell_screen(b)) else { continue };
+                let mid = to_pt(((pa.0 + pb.0) / 2.0, (pa.1 + pb.1) / 2.0));
+                if map_rect.contains(mid) {
+                    painter.line_segment([mid + egui::vec2(-6.0, -6.0), mid + egui::vec2(6.0, 6.0)], red);
+                    painter.line_segment([mid + egui::vec2(-6.0, 6.0), mid + egui::vec2(6.0, -6.0)], red);
+                }
+            }
         }
         // the chain of command of the selected unit: a line up to the unit it reports to (and on
         // up the chain), and a line down to each unit that reports to it

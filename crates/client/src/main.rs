@@ -175,6 +175,7 @@ fn globe_main(args: &Args, map: Arc<meridian_core::Map>) {
         Mode::Terrain => modes::terrain(&modes::dominant_terrain(&map)),
     };
     renderer.set_colors(&gpu.queue, &colors);
+    renderer.coloring = globe_app::coloring_for(args.mode);
     let (w, h) = args.size;
     let camera = match args.at {
         Some((lat, lon, km)) => GlobeCamera::looking_at(w as f64, h as f64, lat, lon, km),

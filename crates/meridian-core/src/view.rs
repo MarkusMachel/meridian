@@ -77,6 +77,15 @@ impl<'a> CountryView<'a> {
         Some((e.cell, e.march.as_ref().and_then(|m| m.destination())))
     }
 
+    /// The route one of the country's own units is marching along: the cells it has still to
+    /// enter, the next one first. Empty when it is not marching or is not this country's.
+    pub fn own_unit_route(&self, id: UnitId) -> Vec<u32> {
+        if self.world.unit(id).is_none_or(|u| u.owner != self.country) {
+            return Vec::new();
+        }
+        self.world.unit_ext(id).and_then(|e| e.march.as_ref()).map_or_else(Vec::new, |m| m.path.iter().rev().copied().collect())
+    }
+
     /// The type and size codes of one of the country's own units (rules-defined; 0 = not set).
     pub fn own_unit_type(&self, id: UnitId) -> Option<(u16, u8)> {
         self.world.unit(id).filter(|u| u.owner == self.country)?;

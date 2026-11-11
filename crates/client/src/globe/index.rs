@@ -5,6 +5,7 @@ use super::camera::EARTH_RADIUS_M;
 use super::{add, dir_of, dot, lat_lon_of, scale, sub, unit, V3};
 use bytemuck::{Pod, Zeroable};
 use h3o::{CellIndex, LatLng, Resolution};
+use meridian_core::map::cell_edge_flag;
 use meridian_core::{CellId, Map};
 
 /// The level of the map's hexagons, and of the tiles they are drawn in (a level-3 hexagon
@@ -21,9 +22,12 @@ pub mod side {
     pub const COUNTRY: u32 = 2;
     pub const RIVER: u32 = 4;
     pub const COAST: u32 = 8;
+    /// A road, a railway passes this side (drawn from the hexagon's centre to the side).
+    pub const ROAD: u32 = 16;
+    pub const RAIL: u32 = 32;
 }
 
-/// One corner of a triangle as the graphics card gets it: 24 bytes.
+/// One corner of a triangle as the graphics card gets it: 28 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Vertex {
@@ -34,6 +38,9 @@ pub struct Vertex {
     pub inward: f32,
     /// `side` bits for the side this triangle stands on.
     pub side: u32,
+    /// +1 at one end of the side, -1 at the other, 0 at the centre: zero along the line from
+    /// the hexagon's centre to the middle of the side, where a road is drawn.
+    pub across: f32,
 }
 
 /// A group of hexagons drawn together: the cells under one level-3 hexagon.
@@ -159,16 +166,18 @@ impl HexIndex {
                 if map.cell_state[other] != map.cell_state[cell as usize] {
                     bits |= side::COUNTRY;
                 }
-                if map.c_flags[e] & meridian_core::map::cell_edge_flag::RIVER != 0 {
-                    bits |= side::RIVER;
+                for (flag, bit) in [(cell_edge_flag::RIVER, side::RIVER), (cell_edge_flag::ROAD, side::ROAD), (cell_edge_flag::RAIL, side::RAIL)] {
+                    if map.c_flags[e] & flag != 0 {
+                        bits |= bit;
+                    }
                 }
                 sides[facing.expect("a hexagon has sides")] = bits;
             }
             let local = |d: V3| sub(scale(d, EARTH_RADIUS_M), anchor).map(|v| v as f32);
             for i in 0..n {
-                out.push(Vertex { pos: local(middle), cell, inward: 1.0, side: sides[i] });
-                out.push(Vertex { pos: local(corners[i]), cell, inward: 0.0, side: sides[i] });
-                out.push(Vertex { pos: local(corners[(i + 1) % n]), cell, inward: 0.0, side: sides[i] });
+                out.push(Vertex { pos: local(middle), cell, inward: 1.0, side: sides[i], across: 0.0 });
+                out.push(Vertex { pos: local(corners[i]), cell, inward: 0.0, side: sides[i], across: 1.0 });
+                out.push(Vertex { pos: local(corners[(i + 1) % n]), cell, inward: 0.0, side: sides[i], across: -1.0 });
             }
         }
         (anchor, out)

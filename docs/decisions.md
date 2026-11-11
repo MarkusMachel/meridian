@@ -524,3 +524,14 @@ Started on the owner's word ("do all the steps") with M1's and M2's Mac checks s
 - March arrows are straight lines on screen, not the route.
 - Terrain, roads, railways and bridges are not drawn on the globe.
 - The flat client and the old builder steps are still in the tree. They are not retired until the owner says so: the trees, buildings, traffic and landmarks made for the flat map live there, and the globe has none of them.
+
+## Map rewrite M3, second part: roads, terrain and routes on the globe (2026-11-10)
+
+The owner built the hexagon map on the Mac and reported that everything works (the `map-bench`, `map-run` and frame-time numbers have not been sent yet, so the budgets stay provisional and the macOS-against-Linux comparison is still open).
+
+- **Roads and railways** are drawn from a hexagon's centre to the middle of each side they pass, so they join centre to centre, the way units move. They are a diagram of the movement network, not the real road lines (those come with the map sheets in M4). They appear below about 450 m a pixel.
+- **Bridges** show as a pale deck across the river side; a destroyed bridge gets a red cross (from the simulation's bridge table).
+- **Terrain per hexagon.** The per-cell table now also carries terrain and how built-up a cell is. The political colouring lets the ground show through a little and greys built-up hexagons; the terrain mode colours each hexagon by its own terrain (before, a whole province took its commonest terrain).
+- **March routes** are drawn hexagon by hexagon. The read interface gained `CountryView::own_unit_route`.
+
+**Still not done in M3:** real border lines and shaded relief, a tilting camera, and retiring the flat client (the owner's call).
