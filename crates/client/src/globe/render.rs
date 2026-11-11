@@ -206,6 +206,7 @@ pub fn inside_rings(points: &[i32], ring_off: &[u32], lon: f64, lat: f64) -> boo
 
 /// For every cell, how many hexagons it is from the nearest cell of another country (0 for a
 /// cell on the border itself), counted outward from the borders and capped at 15.
+#[allow(clippy::needless_range_loop)] // the cell number is used for more than indexing
 fn hexagons_from_border(map: &Map) -> Vec<u8> {
     let n = map.cell_count() as usize;
     let mut from = vec![15u8; n];

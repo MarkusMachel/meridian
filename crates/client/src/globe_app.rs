@@ -38,6 +38,9 @@ struct Gfx {
     egui_renderer: egui_wgpu::Renderer,
 }
 
+/// The supply routes last worked out: between which two cells, then by road and by rail.
+type SupplyRoutes = ((u32, u32), Option<LinkRoute>, Option<LinkRoute>);
+
 struct App {
     view: Option<(f64, f64, f64)>,
     assets: Option<client::globe::assets::GlobeAssets>,
@@ -67,7 +70,7 @@ struct App {
     selected_unit: Option<(u32, u16)>,
     /// The road and rail supply routes from the selected unit's hexagon to the selected
     /// hexagon, with the pair of cells they were worked out for.
-    routes: Option<((u32, u32), Option<LinkRoute>, Option<LinkRoute>)>,
+    routes: Option<SupplyRoutes>,
     search: PathScratch,
     status: String,
     show_settings: bool,
