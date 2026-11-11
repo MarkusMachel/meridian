@@ -134,6 +134,20 @@ pub fn add_formation(w: &mut World, formation: &[FormationUnit]) -> Vec<UnitId> 
     ids
 }
 
+/// Placeholder: what a road or a railway of each level carries, in tonnes a day (index = level,
+/// 0 = no link). Invented round numbers so the client has something to show; the real values
+/// belong to the rules data and the supply system that will use them.
+pub const ROAD_TONNES_PER_DAY: [u32; 6] = [0, 300, 800, 2_000, 5_000, 12_000];
+pub const RAIL_TONNES_PER_DAY: [u32; 6] = [0, 1_500, 4_000, 9_000, 18_000, 30_000];
+
+pub fn link_capacity(kind: meridian_core::map::LinkKind, level: u8) -> u32 {
+    let table = match kind {
+        meridian_core::map::LinkKind::Road => &ROAD_TONNES_PER_DAY,
+        meridian_core::map::LinkKind::Rail => &RAIL_TONNES_PER_DAY,
+    };
+    table[(level as usize).min(5)]
+}
+
 /// Placeholder marching numbers so units can be moved about on the map: every unit covers 12 km
 /// of open ground an hour, fording a river costs as much as 30 km, a bridge in at least half
 /// condition costs nothing. Real values per unit type belong to the rules data.

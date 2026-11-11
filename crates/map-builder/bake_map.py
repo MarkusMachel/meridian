@@ -8,6 +8,7 @@ Payload: u32 array_count, then per array:
   name_len u8 | name | dtype u8 | count u64 | raw little-endian elements
   dtype: 1 u8, 2 u16, 3 u32, 4 i16, 5 i32, 6 u64
 Version 2: hexagon cells on the globe (cell_h3, cell_xyz, node_xyz; distances over the ground).
+Version 3: road and railway levels per cell edge (c_road, c_rail).
 Names of arrays and their meaning are listed in docs/data-formats.md.
 """
 import csv
@@ -24,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # -I leaves the script
 import build_hexes as bh  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 KIND_MAP = 2
 DTYPES = {np.dtype("u1"): 1, np.dtype("<u2"): 2, np.dtype("<u4"): 3, np.dtype("<i2"): 4, np.dtype("<i4"): 5, np.dtype("<u8"): 6}
 FWD = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:8857", always_xy=True)
@@ -139,8 +140,10 @@ def main(inter, out_file):
     # cell graph
     ce = np.load(c / "cell_edges.npy"); cf = np.load(c / "cell_edge_flags.npy")
     cdist = np.load(c / "cell_edge_dist_m.npy").astype(np.int64) + DIST_MARGIN_M
-    coff, cdst, (clen, cfl, cdi) = csr(N, ce[:, 0], ce[:, 1], [ce[:, 2], cf, cdist])
+    road = np.load(c / "cell_edge_road.npy"); rail = np.load(c / "cell_edge_rail.npy")
+    coff, cdst, (clen, cfl, cdi, croad, crail) = csr(N, ce[:, 0], ce[:, 1], [ce[:, 2], cf, cdist, road, rail])
     put("c_off", coff, "<u4"); put("c_dst", cdst, "<u4"); put("c_len_m", clen, "<u4"); put("c_flags", cfl, "u1")
+    put("c_road", croad, "u1"); put("c_rail", crail, "u1")   # the level of the road and of the railway on each link, 0 = none
     put("c_dist_m", cdi, "<u4")  # ground distance between cell centres, plus the margin
 
     # sites

@@ -446,10 +446,20 @@ fn fs_tile(in: TileOut) -> @location(0) vec4f {
     if (in.side & 2u) != 0u { marked = mix(marked, vec3f(0.12, 0.10, 0.10), line(px, 1.2) * max(own, 0.15)); }     // country border
     if (in.side & 8u) != 0u { marked = mix(marked, vec3f(0.20, 0.28, 0.36), line(px, 1.0) * own); }                // coast
     if (in.side & 4u) != 0u { marked = mix(marked, vec3f(0.22, 0.42, 0.68), line(px, 1.6) * max(own, g.more.x)); } // river
-    if (in.side & 16u) != 0u { marked = mix(marked, vec3f(0.36, 0.24, 0.16), line(lane, 0.7) * g.more.x); }        // road
-    if (in.side & 32u) != 0u {                                                                                     // railway: a dashed dark line
-        let dash = step(0.5, fract(in.inward * 7.0));
-        marked = mix(marked, vec3f(0.08, 0.08, 0.10), line(lane, 0.9) * dash * g.more.x);
+    // The supply network: each link drawn from the hexagon's centre to the side it crosses,
+    // wider and stronger in colour the higher its level (its capacity class).
+    let road_level = f32((in.side >> 8u) & 7u);
+    let rail_level = f32((in.side >> 12u) & 7u);
+    if (in.side & 16u) != 0u {
+        let road_color = mix(vec3f(0.62, 0.52, 0.40), vec3f(0.86, 0.30, 0.10), road_level / 5.0);
+        marked = mix(marked, vec3f(0.15, 0.10, 0.06), line(lane, 1.3 + 0.6 * road_level) * g.more.x);
+        marked = mix(marked, road_color, line(lane, 0.5 + 0.6 * road_level) * g.more.x);
+    }
+    if (in.side & 32u) != 0u {
+        // a railway: dark, with pale ties across it
+        let ties = step(0.5, fract(in.inward * 9.0));
+        marked = mix(marked, vec3f(0.06, 0.06, 0.08), line(lane, 0.6 + 0.45 * rail_level) * g.more.x);
+        marked = mix(marked, vec3f(0.92, 0.92, 0.90), line(lane, 0.1 + 0.30 * rail_level) * ties * g.more.x * step(1.5, rail_level));
     }
     if (in.side & 4u) != 0u && (in.side & 48u) != 0u {
         // a bridge: a pale deck with dark rails across the river

@@ -7,13 +7,15 @@
 //!
 //! Version 2 (map rewrite, phase M1): the cells are hexagons on the globe. Adds `cell_h3`,
 //! `cell_xyz` and `node_xyz`; distances are over the ground of the sphere.
+//!
+//! Version 3: `c_road` and `c_rail`, the level of the road and of the railway on each cell edge.
 
 use crate::error::{DataError, ErrorKind};
 use meridian_core::{Map, RawMap};
 use std::collections::HashMap;
 use std::path::Path;
 
-pub const MAP_FORMAT_VERSION: u32 = 2;
+pub const MAP_FORMAT_VERSION: u32 = 3;
 const KIND_MAP: u32 = 2;
 const HEADER_LEN: usize = 28;
 
@@ -134,6 +136,14 @@ fn open_container<'a>(file: &'a str, bytes: &'a [u8], kind: u32, version_wanted:
 }
 
 pub fn parse_map(file: &str, bytes: &[u8]) -> Result<Map, Vec<DataError>> {
+    finish(file, parse_raw(file, bytes)?)
+}
+
+fn finish(file: &str, raw: RawMap) -> Result<Map, Vec<DataError>> {
+    Map::from_raw(raw).map_err(|errs| errs.into_iter().map(|e| DataError::new(file, "map", ErrorKind::BadBinary, e.0)).collect())
+}
+
+fn parse_raw(file: &str, bytes: &[u8]) -> Result<RawMap, Vec<DataError>> {
     let one = |e: DataError| vec![e];
     let (a, crc) = open_container(file, bytes, KIND_MAP, MAP_FORMAT_VERSION, "map")?;
     let raw = (|| -> Result<RawMap, DataError> {
@@ -178,6 +188,8 @@ pub fn parse_map(file: &str, bytes: &[u8]) -> Result<Map, Vec<DataError>> {
             c_dst: a.u32s("c_dst")?,
             c_len_m: a.u32s("c_len_m")?,
             c_flags: a.u8s("c_flags")?,
+            c_road: a.u8s("c_road")?,
+            c_rail: a.u8s("c_rail")?,
             c_dist_m: a.u32s("c_dist_m")?,
             site_kind: a.u8s("site_kind")?,
             site_cell: a.u32s("site_cell")?,
@@ -192,13 +204,107 @@ pub fn parse_map(file: &str, bytes: &[u8]) -> Result<Map, Vec<DataError>> {
         })
     })()
     .map_err(one)?;
-    Map::from_raw(raw).map_err(|errs| errs.into_iter().map(|e| DataError::new(file, "map", ErrorKind::BadBinary, e.0)).collect())
+    Ok(raw)
 }
 
+/// Load the baked map, with every regional network pack found beside it laid over it: the
+/// files `packs/*.network.bin` in the map's folder, in name order. A pack replaces the roads
+/// and railways inside its region with finer ones, so the map every tool loads (client,
+/// runner, tests) is the same one. The map's checksum takes the packs in, so a save made with
+/// a pack does not load without it.
 pub fn load_map_file(path: &Path) -> Result<Map, Vec<DataError>> {
-    let name = path.display().to_string();
-    let bytes = std::fs::read(path).map_err(|e| vec![DataError::new(&name, "-", ErrorKind::Io, e.to_string())])?;
-    parse_map(&name, &bytes)
+    let (name, bytes) = read_file(path)?;
+    let mut raw = parse_raw(&name, &bytes)?;
+    drop(bytes);
+    let mut packs: Vec<std::path::PathBuf> = path
+        .parent()
+        .map(|dir| dir.join("packs"))
+        .and_then(|dir| std::fs::read_dir(dir).ok())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".network.bin")))
+        .collect();
+    packs.sort();
+    for pack in packs {
+        apply_network_pack(&mut raw, &load_network_pack_file(&pack)?);
+    }
+    finish(&name, raw)
+}
+
+// ---- regional network packs: finer roads and railways for the simulation ----
+
+const KIND_NETWORK_PACK: u32 = 7;
+
+/// The roads and railways of a region as links between hexagons, with levels (see
+/// `RawMap::c_road`). Unlike the other pack files this one feeds the simulation.
+#[derive(Clone, Debug, Default)]
+pub struct NetworkPack {
+    /// CRC-32 of the file's contents.
+    pub checksum: u32,
+    /// The H3 numbers of every hexagon in the region, ascending. Links between two of these
+    /// are replaced by the pack's (or removed, where the pack has none).
+    pub cells: Vec<u64>,
+    /// The links, ascending by (a, b) with a < b, as H3 numbers, and their levels.
+    pub link_a: Vec<u64>,
+    pub link_b: Vec<u64>,
+    pub road: Vec<u8>,
+    pub rail: Vec<u8>,
+}
+
+pub fn load_network_pack_file(path: &Path) -> Result<NetworkPack, Vec<DataError>> {
+    let (name, bytes) = read_file(path)?;
+    let (a, crc) = open_container(&name, &bytes, KIND_NETWORK_PACK, 1, "network pack")?;
+    let read = || -> Result<NetworkPack, DataError> {
+        let p = NetworkPack { checksum: crc, cells: a.u64s("cells")?, link_a: a.u64s("link_a")?, link_b: a.u64s("link_b")?, road: a.u8s("road")?, rail: a.u8s("rail")? };
+        let n = p.link_a.len();
+        let pairs_ascend = (1..n).all(|i| (p.link_a[i - 1], p.link_b[i - 1]) < (p.link_a[i], p.link_b[i]));
+        let ok = p.link_b.len() == n && p.road.len() == n && p.rail.len() == n && p.cells.windows(2).all(|w| w[0] < w[1]) && pairs_ascend && (0..n).all(|i| p.link_a[i] < p.link_b[i] && p.road[i] <= 5 && p.rail[i] <= 5);
+        if !ok {
+            return Err(a.bad("-", "the arrays do not fit together or are not in order".into()));
+        }
+        Ok(p)
+    };
+    read().map_err(|e| vec![e])
+}
+
+/// Lay a network pack over a map: inside the pack's region the links are the pack's. Whole
+/// numbers and sorted lists only, so every machine gets the same map.
+pub fn apply_network_pack(raw: &mut RawMap, pack: &NetworkPack) {
+    use meridian_core::map::{cell_edge_flag, cell_flag};
+    if raw.c_road.len() != raw.c_dst.len() || raw.cell_h3.len() != raw.cell_state.len() {
+        return; // a map without link levels or hexagon numbers: nothing to lay it over
+    }
+    let n = raw.cell_h3.len();
+    let covered: Vec<bool> = raw.cell_h3.iter().map(|h| pack.cells.binary_search(h).is_ok()).collect();
+    for a in 0..n {
+        if !covered[a] {
+            continue;
+        }
+        let (mut any_road, mut any_rail) = (false, false);
+        for e in raw.c_off[a] as usize..raw.c_off[a + 1] as usize {
+            let b = raw.c_dst[e] as usize;
+            if covered[b] {
+                let (ha, hb) = (raw.cell_h3[a].min(raw.cell_h3[b]), raw.cell_h3[a].max(raw.cell_h3[b]));
+                // find the link in the pack's list, which is sorted by (a, b)
+                let at = pack.link_a.partition_point(|&x| x < ha);
+                let found = (at..pack.link_a.len()).take_while(|&i| pack.link_a[i] == ha).find(|&i| pack.link_b[i] == hb);
+                let (road, rail) = found.map_or((0, 0), |i| (pack.road[i], pack.rail[i]));
+                raw.c_road[e] = road;
+                raw.c_rail[e] = rail;
+                raw.c_flags[e] = (raw.c_flags[e] & !(cell_edge_flag::ROAD | cell_edge_flag::RAIL)) | if road > 0 { cell_edge_flag::ROAD } else { 0 } | if rail > 0 { cell_edge_flag::RAIL } else { 0 };
+            }
+            any_road |= raw.c_road[e] > 0;
+            any_rail |= raw.c_rail[e] > 0;
+        }
+        raw.cell_flags[a] = (raw.cell_flags[a] & !(cell_flag::ROAD | cell_flag::RAIL)) | if any_road { cell_flag::ROAD } else { 0 } | if any_rail { cell_flag::RAIL } else { 0 };
+    }
+    // the map is now a different map: mix the pack into its checksum
+    let mut h = crc32fast::Hasher::new();
+    h.update(&raw.checksum.to_le_bytes());
+    h.update(&pack.checksum.to_le_bytes());
+    raw.checksum = h.finalize();
 }
 
 // ---- the globe's drawn lines (map rewrite M3) ----
@@ -332,4 +438,56 @@ pub fn load_globe_lines_file(path: &Path) -> Result<GlobeLines, Vec<DataError>> 
         Ok(g)
     };
     read().map_err(|e| vec![e])
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+    use meridian_core::map::{cell_edge_flag, cell_flag};
+
+    /// Three cells in a row (0 - 1 - 2) with hexagon numbers 10, 20, 30; a level-2 road on both
+    /// links and a railway on the first.
+    fn row() -> RawMap {
+        RawMap {
+            checksum: 7,
+            cell_h3: vec![10, 20, 30],
+            cell_state: vec![0, 0, 0],
+            cell_flags: vec![cell_flag::ROAD | cell_flag::RAIL, cell_flag::ROAD | cell_flag::RAIL, cell_flag::ROAD],
+            c_off: vec![0, 1, 3, 4],
+            c_dst: vec![1, 0, 2, 1],
+            c_flags: vec![cell_edge_flag::ROAD | cell_edge_flag::RAIL, cell_edge_flag::ROAD | cell_edge_flag::RAIL, cell_edge_flag::ROAD | cell_edge_flag::RIVER, cell_edge_flag::ROAD | cell_edge_flag::RIVER],
+            c_road: vec![2, 2, 2, 2],
+            c_rail: vec![1, 1, 0, 0],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_pack_replaces_the_links_inside_its_region_and_only_there() {
+        // the region is cells 10 and 20: their link becomes a motorway with no railway;
+        // the link from 20 to 30 leaves the region and stays as it was
+        let pack = NetworkPack { checksum: 99, cells: vec![10, 20], link_a: vec![10], link_b: vec![20], road: vec![5], rail: vec![0] };
+        let mut m = row();
+        apply_network_pack(&mut m, &pack);
+        assert_eq!(m.c_road, vec![5, 5, 2, 2]);
+        assert_eq!(m.c_rail, vec![0, 0, 0, 0]);
+        assert_eq!(m.c_flags[0], cell_edge_flag::ROAD, "the railway flag went with the railway");
+        assert_eq!(m.c_flags[2], cell_edge_flag::ROAD | cell_edge_flag::RIVER, "the river and the outside link are untouched");
+        assert_eq!(m.cell_flags, vec![cell_flag::ROAD, cell_flag::ROAD, cell_flag::ROAD]);
+        assert_ne!(m.checksum, 7, "a map with a pack is a different map");
+
+        // a region the pack has no links for loses its links
+        let empty = NetworkPack { checksum: 5, cells: vec![10, 20, 30], ..Default::default() };
+        let mut m = row();
+        apply_network_pack(&mut m, &empty);
+        assert_eq!((m.c_road.clone(), m.c_rail.clone()), (vec![0; 4], vec![0; 4]));
+        assert_eq!(m.cell_flags, vec![0, 0, 0]);
+        assert_eq!(m.c_flags[2], cell_edge_flag::RIVER);
+
+        // the same pack on the same map always gives the same checksum
+        let (mut a, mut b) = (row(), row());
+        apply_network_pack(&mut a, &pack);
+        apply_network_pack(&mut b, &pack);
+        assert_eq!(a.checksum, b.checksum);
+    }
 }

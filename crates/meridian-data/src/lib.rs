@@ -15,7 +15,7 @@ pub mod schema;
 
 pub use autosave::Autosave;
 pub use error::{DataError, ErrorKind};
-pub use map_file::{load_globe_lines_file, load_globe_ground_file, load_map_file, load_pack_cover_file, parse_map, GlobeGround, GlobeLines, PackCover};
+pub use map_file::{load_globe_lines_file, apply_network_pack, load_globe_ground_file, load_network_pack_file, load_map_file, load_pack_cover_file, parse_map, GlobeGround, GlobeLines, NetworkPack, PackCover};
 pub use render_file::{load_render_file, parse_render, Labels, LineKind, LineLayer, Relief, RenderData, RenderLevel};
 pub use load::{load_scenario_file, load_scenario_str, validate_scenario_file, validate_scenario_str};
 pub use save::{load_world, save_world, SAVE_VERSION};

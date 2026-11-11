@@ -118,6 +118,12 @@ Written by `crates/map-builder/build_render.py` (checked by `validate_render.py`
 - Since version 3: `relief` (u8 hillshade raster, 8192 wide, Equal Earth plane, row 0 = top; byte 128 = no change, client multiplies colour by byte/128) with `relief_info` (i32: width, height, x0, y0, x1, y1 metres); rivers `river_x`, `river_y` (i32), `river_off` (u32), `river_rank` (u8, Natural Earth scalerank, lower = bigger); place names `country_*` (one per country in map order) and `region_*` (one per region): `_name_off` (u32), `_name_bytes` (u8 UTF-8), `_x`, `_y` (i32 Equal Earth label point inside the largest part), `_area_km2` (u32).
 - Size: about 353 MB (heights 61 MB, land colours 92 MB, relief 30 MB, roads and railways about 6 MB, urban areas 3 MB). Earlier: about 191 MB for the whole world (cell outlines 34 MB and cell rings 32 MB of it).
 
+## Link levels and network packs (map version 3, 2026-11-11)
+
+The baked map has two more per-edge arrays beside `c_flags`: `c_road` and `c_rail` (u8, 0 = none, 1 to 5). Road: 1 local, 2 secondary, 3 main, 4 trunk, 5 motorway. Rail: 1 for being a railway, plus one each for main line, two or more tracks, electrified, 200 km/h or more. The `c_flags` road and rail bits are set exactly where the level is above 0. From Natural Earth the world gets road levels 1 to 4 and rail levels 2 to 4.
+
+`data/baked/packs/<name>.network.bin` (container kind 7, version 1, written by `build_pack.py`) holds a region's links from OpenStreetMap: `cells` (u64, the H3 numbers of the hexagons in the region, ascending), `link_a`, `link_b` (u64 H3 numbers, a < b, ascending by pair), `road`, `rail` (u8 levels). `load_map_file` lays every such file found beside the map over it, in name order: a link between two hexagons of the region takes the pack's levels (0 where the pack has none), other links keep the map's. The map's checksum becomes the CRC-32 of (map checksum, pack checksum), so saves and replays made with a pack need it. **This file feeds the simulation** and is derived from OpenStreetMap (ODbL).
+
 ## Globe lines file (version 1)
 
 `data/baked/meridian-globe-lines.bin`, written by `crates/map-builder/build_globe_lines.py`, read by `meridian_data::load_globe_lines_file`. Drawing only: the engine never reads it, and the client runs without it. The same container as the baked map (magic `MRMP`, version, kind, length, CRC-32), with kind 4.

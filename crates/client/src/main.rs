@@ -4,6 +4,7 @@
 //! Options: --data DIR (default data/baked) | --size WxH | --view CX,CY,M_PER_PX (Equal Earth metres)
 //!          --mode political|value|terrain | --ticks N | --select PROVINCE | --bench FRAMES
 //!          --at LAT,LON,KM (hexagon map: look at a place, the screen KM kilometres wide)
+//!          --network (hexagon map: draw the supply network, the links between hexagons by level)
 //!
 //! A hexagon map (map rewrite) is shown as a globe; an old cell map with its render file as the flat map.
 
@@ -26,6 +27,7 @@ struct Args {
     size: (u32, u32),
     view: Option<(f64, f64, f64)>,
     at: Option<(f64, f64, f64)>,
+    network: bool,
     mode: Mode,
     ticks: u64,
     select: u32,
@@ -33,7 +35,7 @@ struct Args {
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut a = Args { data: PathBuf::from("data/baked"), screenshot: None, size: (1600, 900), view: None, at: None, mode: Mode::Political, ticks: 0, select: NO_PROVINCE, bench: 0 };
+    let mut a = Args { data: PathBuf::from("data/baked"), screenshot: None, size: (1600, 900), view: None, at: None, network: false, mode: Mode::Political, ticks: 0, select: NO_PROVINCE, bench: 0 };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
@@ -52,6 +54,7 @@ fn parse_args() -> Result<Args, String> {
                 }
                 a.view = Some((v[0], v[1], v[2]));
             }
+            "--network" => a.network = true,
             "--at" => {
                 let v: Vec<f64> = value("--at")?.split(',').map(|x| x.parse().map_err(|_| "bad --at number")).collect::<Result<_, _>>()?;
                 if v.len() != 3 {
@@ -181,7 +184,7 @@ fn globe_main(args: &Args, map: Arc<meridian_core::Map>) {
     };
     renderer.set_colors(&gpu.queue, &colors);
     renderer.coloring = globe_app::coloring_for(args.mode);
-    renderer.show_roads = assets.lines.is_none() && assets.packs.is_empty();
+    renderer.show_roads = args.network || (assets.lines.is_none() && assets.packs.is_empty());
     renderer.set_assets(&gpu.device, &gpu.queue, &assets);
     let (w, h) = args.size;
     let camera = match args.at {

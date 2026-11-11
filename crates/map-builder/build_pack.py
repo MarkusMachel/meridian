@@ -7,7 +7,7 @@ Usage: python -I build_pack.py <name> <features.geojsonseq> <coverage.poly> <out
 `fetch_pack.sh` makes the inputs: it downloads a Geofabrik extract and its coverage outline and
 runs the `osmium` tool to keep and export the features used here.
 
-Writes two files:
+Writes three files:
   <out-dir>/<name>.lines.bin   the globe lines container (see build_globe_lines.py), with two
                                more arrays: `info` (u32: how far a bucket reaches, in millionths
                                of a radian) and the coverage outline `cover` (i32 longitude,
@@ -27,6 +27,14 @@ Writes two files:
                                OpenStreetMap's coastline (osmdata.openstreetmap.de); without that
                                file everything is taken for land.
 
+  <out-dir>/<name>.network.bin container kind 7, version 1: the region's roads and railways as
+                               links between neighbouring hexagons, with levels (see
+                               build_network.py). Unlike the other two this file feeds the
+                               simulation: the map loader lays it over the baked map. Arrays:
+                               `cells` (u64, the H3 numbers of the hexagons in the region,
+                               ascending), `link_a`, `link_b` (u64 H3 numbers, a < b, ascending
+                               by pair), `road`, `rail` (u8 levels, 0 = none).
+
 OpenStreetMap is (c) OpenStreetMap contributors, Open Database License. The data is today's
 world, not 1990's: motorways and suburbs built since then are in it.
 """
@@ -42,6 +50,7 @@ from shapely.geometry import shape
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_globe_lines as gl  # noqa: E402
+import build_network  # noqa: E402
 import container  # noqa: E402
 
 # line styles (the client's colours and widths) and detail tiers, by OpenStreetMap tag
@@ -62,6 +71,29 @@ PIXEL_LON, PIXEL_LAT = 0.001, 0.00075
 TILE = 2048
 SEA, WATER, WOODS, BUILT, INDUSTRY, LAND, OUTSIDE = 0, 1, 2, 3, 4, 6, 7
 MIN_AREA_DEG2 = 4e-7            # areas under about 0.4 hectare are left out
+
+
+# The simulation's links (build_network.py): a road's level by its class, a railway's by what
+# kind of line it is.
+ROAD_LEVEL = {"motorway": 5, "trunk": 4, "primary": 3, "secondary": 2, "tertiary": 1, "unclassified": 1}
+
+
+def number(text, default=0.0):
+    try:
+        return float(str(text).split()[0].split(";")[0])
+    except (ValueError, IndexError):
+        return default
+
+
+def rail_level(tags):
+    """1 for being a railway, and one more each for: a main line, two or more tracks,
+    electrified, built for 200 km/h or more."""
+    level = 1
+    level += tags.get("usage") == "main"
+    level += number(tags.get("tracks", tags.get("passenger_lines", 1)), 1.0) >= 2
+    level += tags.get("electrified", "no") not in ("no", "")
+    level += number(tags.get("maxspeed", 0)) >= 200 or tags.get("highspeed") == "yes"
+    return int(level)
 
 
 def cover_class(tags):
@@ -152,6 +184,7 @@ def main(name, features_file, poly_file, out_dir, land_file=None):
         print("no land polygons given: everything inside the picture is taken for land")
 
     lines, counts, areas, bad = [], {}, {}, 0
+    network = build_network.Levels()
     with open(features_file, encoding="utf-8") as f:
         for n, row in enumerate(f):
             row = row.strip().lstrip("\x1e")
@@ -166,6 +199,12 @@ def main(name, features_file, poly_file, out_dir, land_file=None):
                 continue
             kind = geom.geom_type
             if kind in ("LineString", "MultiLineString"):
+                # the simulation's links first: tunnels and bridges carry traffic like any other stretch
+                road = ROAD_LEVEL.get(tags.get("highway"), 0)
+                rail = rail_level(tags) if tags.get("railway") == "rail" and tags.get("service") is None else 0
+                if road or rail:
+                    for p in gl.parts(geom):
+                        network.add(p, road=road, rail=rail)
                 found = ROADS.get(tags.get("highway")) or (RAIL if tags.get("railway") == "rail" and tags.get("service") is None else None) or WATERWAYS.get(tags.get("waterway"))
                 if found is None or tags.get("tunnel") in ("yes", "building_passage"):
                     continue
@@ -220,6 +259,25 @@ def main(name, features_file, poly_file, out_dir, land_file=None):
         "cover_off": (cover_off, "<u4"),
     })
     print(f"{out_dir / (name + '.lines.bin')}: {size:,} bytes; {len(style):,} pieces in {len(starts):,} buckets")
+
+    # ---- the network file ----
+    region = set()
+    for ring in rings:
+        region.update(h3.polygon_to_cells(h3.LatLngPoly([(lat, lon) for lon, lat in ring.tolist()]), build_network.LEVEL))
+    region_ids = np.array(sorted(h3.str_to_int(c) for c in region), dtype=np.uint64)
+    keys = sorted(set(network.road) | set(network.rail))
+    road_levels = np.array([network.road.get(k, 0) for k in keys], dtype=np.uint8)
+    rail_levels = np.array([network.rail.get(k, 0) for k in keys], dtype=np.uint8)
+    size = container.write(out_dir / f"{name}.network.bin", 7, 1, {
+        "cells": (region_ids, "<u8"),
+        "link_a": (np.array([k[0] for k in keys], dtype=np.uint64), "<u8"),
+        "link_b": (np.array([k[1] for k in keys], dtype=np.uint64), "<u8"),
+        "road": (road_levels, "u1"),
+        "rail": (rail_levels, "u1"),
+    })
+    print(f"{out_dir / (name + '.network.bin')}: {size:,} bytes; {len(region_ids):,} hexagons in the region, {len(keys):,} links; "
+          + "road by level " + ", ".join(f"{k}: {int((road_levels == k).sum()):,}" for k in range(1, 6))
+          + "; rail by level " + ", ".join(f"{k}: {int((rail_levels == k).sum()):,}" for k in range(1, 6)))
 
     # ---- the ground cover file ----
     grid = np.full((height, width), LAND, dtype=np.uint8)

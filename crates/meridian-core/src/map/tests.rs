@@ -476,3 +476,80 @@ fn on_the_globe_the_nearest_cell_is_found_and_bad_places_are_caught() {
         assert!(Map::from_raw(bad).is_err(), "not caught: {name}");
     }
 }
+
+// ---- links: roads and railways with levels ----
+
+/// Give the edge between two neighbouring cells a road or railway level, both ways, and set
+/// the flag that goes with it.
+fn set_link(r: &mut RawMap, a: u32, b: u32, kind: LinkKind, level: u8) {
+    if r.c_road.is_empty() {
+        r.c_road = vec![0; r.c_dst.len()];
+        r.c_rail = vec![0; r.c_dst.len()];
+    }
+    for (from, to) in [(a, b), (b, a)] {
+        let e = (r.c_off[from as usize] as usize..r.c_off[from as usize + 1] as usize).find(|&e| r.c_dst[e] == to).expect("the cells are neighbours");
+        match kind {
+            LinkKind::Road => {
+                r.c_road[e] = level;
+                r.c_flags[e] |= cell_edge_flag::ROAD;
+            }
+            LinkKind::Rail => {
+                r.c_rail[e] = level;
+                r.c_flags[e] |= cell_edge_flag::RAIL;
+            }
+        }
+    }
+}
+
+#[test]
+fn a_supply_route_takes_the_strongest_chain_of_links_then_the_shortest() {
+    // 8 cells wide: a weak road straight along the top row, a strong one that dips to the second row
+    let w = 8u32;
+    let mut r = test_map(8, 8);
+    for x in 0..7 {
+        set_link(&mut r, x, x + 1, LinkKind::Road, 2);
+        set_link(&mut r, w + x, w + x + 1, LinkKind::Road, 4);
+    }
+    set_link(&mut r, 0, w, LinkKind::Road, 5);
+    set_link(&mut r, 7, w + 7, LinkKind::Road, 4);
+    set_link(&mut r, 0, 1, LinkKind::Rail, 1);
+    let m = Map::from_raw(r).unwrap_or_else(|e| panic!("{e:?}"));
+    let mut s = PathScratch::new(m.cell_count() as usize);
+    let as_built = |_: u32, _: u32, built: u8| built;
+
+    assert_eq!(m.link_level(CellId(0), CellId(w), LinkKind::Road), 5);
+    assert_eq!(m.link_level(CellId(w), CellId(0), LinkKind::Road), 5);
+    assert_eq!(m.link_level(CellId(0), CellId(1), LinkKind::Rail), 1);
+    assert_eq!(m.link_level(CellId(0), CellId(9), LinkKind::Road), 0, "not neighbours");
+
+    // the strong road wins although it is two steps longer; its weakest link is level 4
+    let route = m.find_link_route(CellId(0), CellId(7), LinkKind::Road, &as_built, &mut s).unwrap();
+    assert_eq!((route.level, route.length_m), (4, 90_000));
+    assert_eq!(route.cells, vec![0, 8, 9, 10, 11, 12, 13, 14, 15, 7]);
+    // part of the way, the strong road only helps if it reaches: 0 to 3 along the top is level 2
+    let short = m.find_link_route(CellId(0), CellId(3), LinkKind::Road, &as_built, &mut s).unwrap();
+    assert_eq!((short.level, short.length_m), (2, 30_000));
+    // cut one link of the strong road: the weak one is what is left
+    let cut = |a: u32, b: u32, built: u8| if (a.min(b), a.max(b)) == (10, 11) { 0 } else { built };
+    let route = m.find_link_route(CellId(0), CellId(7), LinkKind::Road, &cut, &mut s).unwrap();
+    assert_eq!((route.level, route.length_m), (2, 70_000));
+    // damage that lowers a link without cutting it lowers the route
+    let worn = |a: u32, b: u32, built: u8| if (a.min(b), a.max(b)) == (10, 11) { 3 } else { built };
+    assert_eq!(m.find_link_route(CellId(0), CellId(7), LinkKind::Road, &worn, &mut s).unwrap().level, 3);
+    // no road goes to the far corner, and the railway is one link long
+    assert_eq!(m.find_link_route(CellId(0), CellId(63), LinkKind::Road, &as_built, &mut s), None);
+    assert_eq!(m.find_link_route(CellId(0), CellId(7), LinkKind::Rail, &as_built, &mut s), None);
+    assert_eq!(m.find_link_route(CellId(0), CellId(1), LinkKind::Rail, &as_built, &mut s).unwrap().level, 1);
+    assert_eq!(m.find_link_route(CellId(5), CellId(5), LinkKind::Rail, &as_built, &mut s).unwrap().cells, vec![5]);
+
+    // a level without its flag, or above 5, is caught
+    let mut bad = test_map(8, 8);
+    set_link(&mut bad, 0, 1, LinkKind::Road, 3);
+    bad.c_road[0] = 9;
+    assert!(Map::from_raw(bad).is_err());
+    let mut bad = test_map(8, 8);
+    set_link(&mut bad, 0, 1, LinkKind::Road, 3);
+    let e = (0..bad.c_flags.len()).find(|&e| bad.c_flags[e] & cell_edge_flag::ROAD != 0).unwrap();
+    bad.c_flags[e] &= !cell_edge_flag::ROAD;
+    assert!(Map::from_raw(bad).is_err());
+}

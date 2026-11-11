@@ -6,6 +6,7 @@ use client::globe::{GlobeCamera, GlobeRenderer, HexIndex, V3};
 use client::modes::{self, Mode};
 use client::session::Session;
 use client::Speed;
+use meridian_core::map::{LinkKind, LinkRoute, PathScratch};
 use meridian_core::{Command, CountryId, Map, UnitId};
 use std::sync::Arc;
 use std::time::Instant;
@@ -64,6 +65,10 @@ struct App {
     snapshot: client::Snapshot,
     /// The unit that right-click orders go to: (unit id, owner).
     selected_unit: Option<(u32, u16)>,
+    /// The road and rail supply routes from the selected unit's hexagon to the selected
+    /// hexagon, with the pair of cells they were worked out for.
+    routes: Option<((u32, u32), Option<LinkRoute>, Option<LinkRoute>)>,
+    search: PathScratch,
     status: String,
     show_settings: bool,
     show_labels: bool,
@@ -125,6 +130,8 @@ pub fn run(inputs: Inputs) {
         last_frame: Instant::now(),
         snapshot: Default::default(),
         selected_unit: None,
+        routes: None,
+        search: PathScratch::new(inputs.map.cell_count() as usize),
         show_settings: false,
         show_labels: true,
         ui_scale: 1.0,
@@ -283,6 +290,29 @@ impl App {
             .collect()
     }
 
+    /// Which way one cell lies from another, as a compass point.
+    fn compass(&self, from: u32, to: u32) -> &'static str {
+        let place = |c: u32| self.map.cell_place(meridian_core::CellId(c)).map(|p| client::globe::lat_lon_of(p.map(|v| v as f64)));
+        let (Some((lat_a, lon_a)), Some((lat_b, lon_b))) = (place(from), place(to)) else { return "?" };
+        let (north, east) = (lat_b - lat_a, (lon_b - lon_a) * lat_a.cos());
+        let turn = east.atan2(north).to_degrees().rem_euclid(360.0);
+        ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][((turn + 22.5) / 45.0) as usize % 8]
+    }
+
+    /// Work the supply routes out again when the selected unit or hexagon has changed.
+    fn refresh_routes(&mut self) {
+        let from = self.selected_unit.and_then(|(id, _)| self.snapshot.units.iter().position(|u| u.0 == id)).and_then(|i| self.snapshot.unit_cells.get(i)).map(|c| c.0).filter(|&c| c < self.map.cell_count());
+        let wanted = from.zip(self.selected_cell);
+        if wanted == self.routes.as_ref().map(|r| r.0) {
+            return;
+        }
+        self.routes = wanted.map(|(a, b)| {
+            let as_built = |_: u32, _: u32, built: u8| built;
+            let mut route = |kind| self.map.find_link_route(meridian_core::CellId(a), meridian_core::CellId(b), kind, &as_built, &mut self.search);
+            ((a, b), route(LinkKind::Road), route(LinkKind::Rail))
+        });
+    }
+
     /// The land hexagon under a pixel.
     fn pick(&self, p: PhysicalPosition<f64>) -> Option<u32> {
         self.index.cell_at(self.camera.screen_to_dir(p.x, p.y)?).map(|c| c.0)
@@ -295,6 +325,10 @@ impl App {
                 self.session.set_speed(s);
             }
             Key::Character(c) => match c.as_str() {
+                "n" | "N" => {
+                    self.show_roads = !self.show_roads;
+                    self.colors_dirty = true;
+                }
                 "1" | "2" | "3" | "4" | "5" => self.session.set_speed(Speed::Run(c.parse().unwrap())),
                 "." => {
                     self.session.set_speed(Speed::Paused);
@@ -313,6 +347,7 @@ impl App {
         self.last_frame = now;
         self.session.advance(dt.min(0.25));
         self.refresh_colors();
+        self.refresh_routes();
         let Some(mut g) = self.gfx.take() else { return };
 
         // --- egui ---
@@ -480,7 +515,7 @@ impl App {
                 self.colors_dirty = true;
             }
             ui.label("Regional packs: (c) OpenStreetMap contributors, ODbL.");
-            if ui.checkbox(&mut self.show_roads, "Movement network (roads, railways, bridges and river crossings on the hexagons)").changed() {
+            if ui.checkbox(&mut self.show_roads, "Supply network: road and railway links by level, bridges, river crossings (N)").changed() {
                 self.colors_dirty = true;
             }
             ui.add(egui::Slider::new(&mut self.ui_scale, 0.75..=2.0).text("Interface scale"));
@@ -569,6 +604,47 @@ impl App {
                     row("built-up", format!("{} / 255", self.map.cell_urban[c]));
                     row("features", if f.is_empty() { "none".into() } else { f.join(", ") });
                 });
+                // the links of this hexagon: where to, and what level
+                let cell_id = meridian_core::CellId(c as u32);
+                let links: Vec<String> = self
+                    .map
+                    .cell_edges(cell_id)
+                    .filter_map(|e| {
+                        let other = meridian_core::CellId(self.map.c_dst[e]);
+                        let (road, rail) = (self.map.link_level(cell_id, other, LinkKind::Road), self.map.link_level(cell_id, other, LinkKind::Rail));
+                        if road == 0 && rail == 0 {
+                            return None;
+                        }
+                        let mut parts = Vec::new();
+                        if road > 0 {
+                            parts.push(format!("road {road} ({} t/day)", proving_ground::link_capacity(LinkKind::Road, road)));
+                        }
+                        if rail > 0 {
+                            parts.push(format!("rail {rail} ({} t/day)", proving_ground::link_capacity(LinkKind::Rail, rail)));
+                        }
+                        Some(format!("{}: {}", self.compass(c as u32, other.0), parts.join(", ")))
+                    })
+                    .collect();
+                ui.separator();
+                ui.heading("Links");
+                if links.is_empty() {
+                    ui.label("No road or railway.");
+                }
+                for l in &links {
+                    ui.label(l);
+                }
+                // the supply routes from the selected unit to this hexagon
+                if let Some((_, road, rail)) = &self.routes {
+                    ui.separator();
+                    ui.heading("Supply route from the unit");
+                    for (name, kind, route) in [("road", LinkKind::Road, road), ("rail", LinkKind::Rail, rail)] {
+                        match route {
+                            Some(r) => ui.label(format!("by {name}: {} km, weakest link level {} ({} t/day)", r.length_m / 1000, r.level, proving_ground::link_capacity(kind, r.level))),
+                            None => ui.label(format!("by {name}: no route")),
+                        };
+                    }
+                    ui.small("Capacities are placeholder numbers.");
+                }
             }
         });
         // the map area is what the panels left over: names and icons stay inside it
@@ -694,6 +770,15 @@ impl App {
             let d = (b - a).normalized();
             let n = egui::vec2(-d.y, d.x);
             painter.add(egui::Shape::convex_polygon(vec![b, b - d * 12.0 + n * 5.0, b - d * 12.0 - n * 5.0], ink, egui::Stroke::NONE));
+        }
+        // the supply routes from the selected unit to the selected hexagon: road in orange, rail in black
+        if let Some((_, road, rail)) = &self.routes {
+            for (route, color) in [(road, egui::Color32::from_rgb(235, 120, 20)), (rail, egui::Color32::from_rgb(20, 20, 25))] {
+                let Some(route) = route else { continue };
+                let pts: Vec<egui::Pos2> = route.cells.iter().filter_map(|&c| self.cell_screen(c)).map(to_pt).collect();
+                painter.add(egui::Shape::line(pts.clone(), egui::Stroke::new(5.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 170))));
+                painter.add(egui::Shape::line(pts, egui::Stroke::new(2.5, color)));
+            }
         }
         // destroyed bridges: a red cross on the river where the bridge was (zoomed in only)
         if self.camera.m_per_px() < 450.0 {

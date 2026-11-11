@@ -98,6 +98,12 @@ pub struct RawMap {
     pub c_dst: Vec<u32>,
     pub c_len_m: Vec<u32>,
     pub c_flags: Vec<u8>,
+    /// The level of the road and of the railway on each cell edge: 0 none, 1 (a local road, a
+    /// single-track branch line) to 5 (a motorway, a double-track electrified high-speed line).
+    /// A link's level is its capacity class; what a level carries is the ruleset's business.
+    /// Both lists are empty on a map without link levels (the small test maps).
+    pub c_road: Vec<u8>,
+    pub c_rail: Vec<u8>,
     pub c_dist_m: Vec<u32>,
 
     pub site_kind: Vec<u8>,
@@ -541,6 +547,70 @@ impl Map {
         Some((CellId(c), ground_m(place_of(&self.raw.cell_xyz, c), at)))
     }
 
+    /// The level of the road or railway that joins two neighbouring cells: 0 when there is none
+    /// (or they are not neighbours).
+    pub fn link_level(&self, a: CellId, b: CellId, kind: LinkKind) -> u8 {
+        let levels = match kind {
+            LinkKind::Road => &self.raw.c_road,
+            LinkKind::Rail => &self.raw.c_rail,
+        };
+        if levels.is_empty() {
+            return 0;
+        }
+        self.cell_edges(a).find(|&e| self.raw.c_dst[e] == b.0).map_or(0, |e| levels[e])
+    }
+
+    /// The best route between two cells that stays on roads (or on railways): first the route
+    /// whose weakest link is as strong as possible, then, among those, the shortest. That is
+    /// how a supply line is judged: it carries what its weakest stretch carries.
+    ///
+    /// `level_now(a, b, built)` gives a link's level at this moment from the level it was built
+    /// with (damage and upgrades change during play, so they live in the world, not in the
+    /// map); return 0 for a link that is cut. `None` when no chain of links joins the cells.
+    pub fn find_link_route(&self, from: CellId, to: CellId, kind: LinkKind, level_now: &dyn Fn(u32, u32, u8) -> u8, scratch: &mut PathScratch) -> Option<LinkRoute> {
+        let r = &self.raw;
+        let levels = match kind {
+            LinkKind::Road => &r.c_road,
+            LinkKind::Rail => &r.c_rail,
+        };
+        if from == to {
+            return Some(LinkRoute { cells: vec![from.0], level: MAX_LINK_LEVEL, length_m: 0 });
+        }
+        if levels.is_empty() || !self.same_landmass(from, to) {
+            return None;
+        }
+        let goal = self.cell_place(to);
+        let (gx, gy) = (r.cell_x[to.index()], r.cell_y[to.index()]);
+        // Try the strongest network first: only level 5 links, then 4 and up, and so on. The
+        // first level at which the two cells are joined is the best possible weakest link, and
+        // the search at that level already returns the shortest such route.
+        for at_least in (1..=MAX_LINK_LEVEL).rev() {
+            let found = astar(
+                &r.c_off,
+                &r.c_dst,
+                from.0,
+                to.0,
+                |a, e| {
+                    let built = levels[e];
+                    if built >= at_least && level_now(a, r.c_dst[e], built) >= at_least {
+                        r.c_dist_m[e]
+                    } else {
+                        u32::MAX
+                    }
+                },
+                |n| match goal {
+                    Some(g) => chord_m(place_of(&r.cell_xyz, n), g),
+                    None => dist_m(r.cell_x[n as usize], r.cell_y[n as usize], gx, gy),
+                },
+                scratch,
+            );
+            if let Some(path) = found {
+                return Some(LinkRoute { cells: path.nodes, level: at_least, length_m: path.cost });
+            }
+        }
+        None
+    }
+
     /// Are two cells joined by land (whatever the terrain)? Known without a search.
     pub fn same_landmass(&self, a: CellId, b: CellId) -> bool {
         self.cell_group[a.index()] == self.cell_group[b.index()]
@@ -729,6 +799,26 @@ pub struct Path {
     pub expanded: u32,
 }
 
+/// The two kinds of link between neighbouring cells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkKind {
+    Road,
+    Rail,
+}
+
+/// The highest level a road or a railway can have.
+pub const MAX_LINK_LEVEL: u8 = 5;
+
+/// A route along roads or along railways (see `Map::find_link_route`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkRoute {
+    /// The cells passed, first to last.
+    pub cells: Vec<u32>,
+    /// The level of the weakest link on the way: the route's capacity class.
+    pub level: u8,
+    pub length_m: u32,
+}
+
 /// Reusable search memory so a query does not clear millions of entries.
 pub struct PathScratch {
     stamp: Vec<u32>,
@@ -783,7 +873,11 @@ fn astar(
         }
         let (lo, hi) = (off[v as usize] as usize, off[v as usize + 1] as usize);
         for (e, &w) in dst[lo..hi].iter().enumerate().map(|(i, w)| (lo + i, w)) {
-            let ng = gv.saturating_add(edge_cost(v, e));
+            let step = edge_cost(v, e);
+            if step == u32::MAX {
+                continue; // no way along this edge
+            }
+            let ng = gv.saturating_add(step);
             if s.stamp[w as usize] != gen || ng < s.g[w as usize] {
                 s.stamp[w as usize] = gen;
                 s.g[w as usize] = ng;
@@ -845,6 +939,19 @@ fn check_structure(r: &RawMap) -> Vec<MapError> {
     for (name, l) in [("c_len_m", r.c_len_m.len()), ("c_flags", r.c_flags.len()), ("c_dist_m", r.c_dist_m.len())] {
         if l != r.c_dst.len() {
             err(format!("array {name} has {l} entries, expected {}", r.c_dst.len()));
+        }
+    }
+    for (name, levels, bit) in [("c_road", &r.c_road, cell_edge_flag::ROAD), ("c_rail", &r.c_rail, cell_edge_flag::RAIL)] {
+        if levels.is_empty() {
+            continue;
+        }
+        if levels.len() != r.c_dst.len() {
+            err(format!("array {name} has {} entries, expected {}", levels.len(), r.c_dst.len()));
+        } else if r.c_flags.len() == levels.len() {
+            // a level above 5 does not exist, and a link is there exactly when its flag is set
+            if let Some(e) = (0..levels.len()).find(|&e| levels[e] > MAX_LINK_LEVEL || (levels[e] > 0) != (r.c_flags[e] & bit != 0)) {
+                err(format!("{name}: edge {e} has level {} and flags {:#04x}, which do not agree", levels[e], r.c_flags[e]));
+            }
         }
     }
     if !r.cell_xyz.is_empty() || !r.cell_h3.is_empty() || !r.node_xyz.is_empty() {

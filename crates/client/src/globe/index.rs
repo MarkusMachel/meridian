@@ -25,6 +25,9 @@ pub mod side {
     /// A road, a railway passes this side (drawn from the hexagon's centre to the side).
     pub const ROAD: u32 = 16;
     pub const RAIL: u32 = 32;
+    /// The road's and the railway's level (0 to 5) sit in three bits each from here.
+    pub const ROAD_LEVEL_SHIFT: u32 = 8;
+    pub const RAIL_LEVEL_SHIFT: u32 = 12;
 }
 
 /// One corner of a triangle as the graphics card gets it: 32 bytes.
@@ -174,6 +177,10 @@ impl HexIndex {
                     if map.c_flags[e] & flag != 0 {
                         bits |= bit;
                     }
+                }
+                // the link's levels, for the supply network's line widths
+                if !map.c_road.is_empty() {
+                    bits |= (map.c_road[e] as u32) << side::ROAD_LEVEL_SHIFT | (map.c_rail[e] as u32) << side::RAIL_LEVEL_SHIFT;
                 }
                 let facing = facing.expect("a hexagon has sides");
                 sides[facing] = bits;

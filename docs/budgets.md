@@ -153,3 +153,5 @@ Before two fixes the same run took 33 s: every march order made 44 MB of search 
 | Closest zoom, 51 km across (20 m a pixel) | 98 ms |
 
 Start-up on the same machine: hexagon index 0.3 s (13,094 tiles), the picture of the world for the far view (8192 x 4096 hexagon lookups on all cores) 7.9 s on 2 cores. Graphics memory: world picture 134 MB, per-cell table 30 MB, up to 1,200 tiles of about 150 KB each. A tile is built in about 1 ms; at most 24 are built per frame.
+
+**Map version 3 (link levels, 2026-11-11), cloud container, stand-in elevation.** File 569 MB. Local cell query mean 364 us, long query mean 9.4 ms; a year of `map-run` 23.3 s with a mean tick of 50 us; replay matches. A supply route from Hamburg to Munich (142 hexagons) is found in well under the test's noise; not benchmarked on its own yet.

@@ -131,3 +131,35 @@ fn the_division_is_placed_by_latitude_and_longitude() {
     let brigades = view.own_units().into_iter().filter(|&(id, _)| view.own_unit_command(id).is_some_and(|c| c.1 == Some(hq))).count();
     assert_eq!(brigades, 4, "three brigades and the artillery regiment report to the division");
 }
+
+/// Roads and railways are links with levels: a supply route follows the strongest chain.
+#[test]
+fn supply_routes_follow_the_road_and_rail_links() {
+    use meridian_core::map::LinkKind;
+    let Some(m) = load() else { return };
+    assert_eq!(m.c_road.len(), m.c_dst.len(), "the baked map has a road level for every cell edge");
+    let mut s = PathScratch::new(m.cell_count() as usize);
+    let as_built = |_: u32, _: u32, built: u8| built;
+    let (hamburg, munich) = (cell_at(&m, 53.55, 10.0), cell_at(&m, 48.14, 11.58));
+    let direct = m.cell_distance_m(hamburg, munich);
+    for kind in [LinkKind::Road, LinkKind::Rail] {
+        let route = m.find_link_route(hamburg, munich, kind, &as_built, &mut s).unwrap_or_else(|| panic!("no {kind:?} route from Hamburg to Munich"));
+        eprintln!("Hamburg to Munich by {kind:?}: level {}, {} km ({} km in a straight line), {} hexagons", route.level, route.length_m / 1000, direct / 1000, route.cells.len());
+        // (the level is that of the weakest link, and the links at a city's own hexagon are
+        // often the weakest: Natural Earth marks many city approaches as plain roads)
+        assert!(route.level >= 2, "a real route joins the two cities");
+        assert!(route.length_m >= direct && route.length_m < direct * 2);
+        // every step of the route really is a link of at least the route's level
+        for w in route.cells.windows(2) {
+            assert!(m.link_level(CellId(w[0]), CellId(w[1]), kind) >= route.level);
+        }
+        // cutting a link in the middle forces another way, never a better one
+        let (ca, cb) = (route.cells[route.cells.len() / 2], route.cells[route.cells.len() / 2 + 1]);
+        let cut = |a: u32, b: u32, built: u8| if (a.min(b), a.max(b)) == (ca.min(cb), ca.max(cb)) { 0 } else { built };
+        if let Some(other) = m.find_link_route(hamburg, munich, kind, &cut, &mut s) {
+            assert!(other.level < route.level || other.length_m >= route.length_m);
+        }
+    }
+    // no road crosses the sea
+    assert!(m.find_link_route(cell_at(&m, 40.1, 9.0), cell_at(&m, 41.9, 12.5), LinkKind::Road, &as_built, &mut s).is_none(), "Sardinia is an island");
+}

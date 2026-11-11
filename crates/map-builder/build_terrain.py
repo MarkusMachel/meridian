@@ -24,6 +24,7 @@ from shapely.geometry import shape
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_provinces as bp  # noqa: E402
+import build_network  # noqa: E402
 import build_rivers  # noqa: E402
 
 INV = pyproj.Transformer.from_crs("EPSG:8857", "EPSG:4326", always_xy=True)
@@ -48,31 +49,6 @@ def read_blobs(path):
 
 def outlines(blobs, idx):
     return shapely.from_wkb(blobs[idx])
-
-
-def edges_passed(edges, blobs, lines, line_idx, cell_idx):
-    """Which cell edges does one of `lines` pass? An edge counts when the same line touches both
-    of its cells and also the strip where the two cells meet (their shared border, 5 m wide).
-    `line_idx`, `cell_idx` are the (line, cell) pairs that intersect. Returns a boolean array,
-    one per edge."""
-    out = np.zeros(len(edges), dtype=bool)
-    by_cell = {}
-    for l, cc in zip(np.asarray(line_idx).tolist(), np.asarray(cell_idx).tolist()):
-        by_cell.setdefault(cc, set()).add(l)
-    hit_a, hit_b, hit_l, hit_e = [], [], [], []
-    for e, (a, b) in enumerate(edges[:, :2].tolist()):
-        la, lb = by_cell.get(a), by_cell.get(b)
-        if not la or not lb:
-            continue
-        for l in sorted(la & lb):
-            hit_a.append(a); hit_b.append(b); hit_l.append(l); hit_e.append(e)
-    hit_a, hit_b, hit_l, hit_e = (np.asarray(v, dtype=np.int64) for v in (hit_a, hit_b, hit_l, hit_e))
-    for lo in range(0, len(hit_e), CHUNK):
-        k = slice(lo, lo + CHUNK)
-        sliver = shapely.intersection(shapely.buffer(outlines(blobs, hit_a[k]), 5.0), shapely.buffer(outlines(blobs, hit_b[k]), 5.0))
-        crosses = shapely.intersects(sliver, lines[hit_l[k]])
-        out[hit_e[k][crosses]] = True
-    return out
 
 
 def load_layer(path, keep=None):
@@ -126,8 +102,6 @@ def main(inter, ne_dir, tif):
     ice_l = layer("ne_10m_glaciated_areas")
     desert_l = layer("ne_10m_geography_regions_polys", keep=lambda rec: rec["FEATURECLA"] == "Desert")
     urban_l = layer("ne_10m_urban_areas")
-    roads = layer("ne_10m_roads", keep=lambda rec: str(rec.get("type", "")) != "Ferry")
-    rails = layer("ne_10m_railroads")
     # Rivers run along hexagon sides (build_rivers.py). Lake centre lines are kept so a river
     # is not broken where it passes through a lake.
     rivers_ll = load_layer(ne_dir / "ne_10m_rivers_lake_centerlines" / "ne_10m_rivers_lake_centerlines", keep=lambda rec: rec["featurecla"] in ("River", "Canal", "Lake Centerline"))
@@ -135,7 +109,6 @@ def main(inter, ne_dir, tif):
 
     area = np.zeros(n); mean = np.zeros(n); relief = np.zeros(n)
     ice = np.zeros(n); desert = np.zeros(n); urban = np.zeros(n)
-    hits = {"road": [], "rail": []}     # (line, cell) pairs that intersect
     ang = np.arange(8) * (np.pi / 4)
     for lo in range(0, n, CHUNK):
         k = np.arange(lo, min(lo + CHUNK, n))
@@ -154,14 +127,10 @@ def main(inter, ne_dir, tif):
         v = np.maximum(elev[row, col].astype(np.float64), 0.0)   # land cells: no negative heights
         mean[k] = (v * inside).sum(axis=1) / inside.sum(axis=1)
         relief[k] = np.where(inside, v, -1).max(axis=1) - np.where(inside, v, 1e9).min(axis=1)
-        # ---- ice, desert, built-up area; roads, railways and rivers that touch the cell ----
+        # ---- ice, desert, built-up area ----
         tree = shapely.STRtree(polys)
         for cover, lay in [(ice, ice_l), (desert, desert_l), (urban, urban_l)]:
             cover[k] = np.clip(overlap_area(polys, tree, lay) / np.maximum(a, 1.0), 0.0, 1.0)
-        for name, lines in [("road", roads), ("rail", rails)]:
-            li, ci = tree.query(lines, predicate="intersects")
-            hits[name].append(np.stack([li, ci + lo]))
-    hits = {name: np.concatenate(parts, axis=1) for name, parts in hits.items()}
     cell_elev = np.rint(mean).astype(np.int16); cell_relief = np.minimum(np.rint(relief), 65535).astype(np.uint16)
 
     terrain = np.full(n, PLAIN, dtype=np.uint8)
@@ -176,11 +145,15 @@ def main(inter, ne_dir, tif):
     # ---- roads, rails, rivers ----
     flags = np.zeros(n, dtype=np.uint8)
     edge_flags = np.zeros(len(edges), dtype=np.uint8)
-    for name, lines, bit, edge_bit in [("road", roads, ROAD, EDGE_ROAD), ("rail", rails, RAIL, EDGE_RAIL)]:
-        li, ci = hits[name]
-        flags[np.unique(ci)] |= bit
-        edge_flags[edges_passed(edges, blobs, lines, li, ci)] |= edge_bit
-    river_edge = build_rivers.snap_rivers(rivers_ll, rivers, np.load(c / "cell_h3.npy"), edges, bp.PROJ)
+    # Roads and railways are links between neighbouring hexagons, each with a level (its
+    # capacity class): build_network.py. A cell or an edge "has a road" when a link is there.
+    cell_h3 = np.load(c / "cell_h3.npy")
+    road_level, rail_level = build_network.world_levels(ne_dir, cell_h3, edges)
+    np.save(c / "cell_edge_road.npy", road_level); np.save(c / "cell_edge_rail.npy", rail_level)
+    for level, bit, edge_bit in [(road_level, ROAD, EDGE_ROAD), (rail_level, RAIL, EDGE_RAIL)]:
+        edge_flags[level > 0] |= edge_bit
+        flags[np.unique(edges[level > 0, :2])] |= bit
+    river_edge = build_rivers.snap_rivers(rivers_ll, rivers, cell_h3, edges, bp.PROJ)
     edge_flags[river_edge] |= EDGE_RIVER
     flags[np.unique(edges[river_edge, :2])] |= RIVER     # a river cell has the river on one of its sides
     flags[cz != 0xFFFFFFFF] |= COAST
