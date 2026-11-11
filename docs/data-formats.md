@@ -157,3 +157,33 @@ A regional pack's lines file (`data/baked/packs/<name>.lines.bin`) is the same f
 A pixel is 0.001 by 0.00075 degrees (about 79 by 83 m at 45 N). Drawing only.
 
 Version 2 (2026-11-11): land and sea come from OpenStreetMap's coastline (the land polygons of osmdata.openstreetmap.de), so 0 now means sea and the client cuts the hexagons' colour off at the real coast.
+
+## Pack heights file (version 1)
+
+`data/baked/packs/<name>.heights.bin`, written by `build_pack.py` when elevation tiles are given. Container kind 8.
+
+| Array | Type | Meaning |
+| --- | --- | --- |
+| `grid` | i32, 9 values | as in the pack ground cover file |
+| `tile_layer` | u32 per tile | which stored tile it is, or 0xFFFFFFFF when the tile is all at sea level |
+| `tiles` | u16 | the stored tiles one after another, tile * tile values each, rows north to south: metres above the sea (below the sea counts as 0) |
+
+A pixel is 0.002 by 0.0015 degrees (about 158 by 167 m at 45 N). Drawing only. Source: Copernicus DEM GLO-90.
+
+## Pack labels file (version 1)
+
+`data/baked/packs/<name>.labels.bin`, written by `build_pack.py`. Container kind 9.
+
+| Array | Type | Meaning |
+| --- | --- | --- |
+| `label_xyz` | i32, three per label | the place, whole metres from the Earth's centre |
+| `label_kind` | u8 per label | 0 city, 1 town, 2 village, 3 road number, 4 river name |
+| `label_text_blob` | u8 | all the texts one after another, UTF-8 |
+| `label_text_off` | u32, labels + 1 entries | where each text starts in the blob; the last entry is the blob's length |
+
+Labels are sorted by kind, then text, then the level-5 hexagon they are in. Drawing only.
+
+## Pack lines: streams (2026-11-11)
+
+Pack line files gained style 9, a stream, in tier 4. `fetch_pack.sh` keeps the number of its export step (`EXPORT`, now 2) in `data/source/osm/<name>.export` and exports again when it differs.
+

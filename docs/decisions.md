@@ -612,3 +612,18 @@ The owner showed a map from Flashpoint Campaigns (Aiterhofen) as the look wanted
 - **Town names** are white with a dark edge, large towns in capitals.
 
 Seen only on made-up data. Not done: the kilometre grid and road numbers of the model map, streams as outlined lines, real small hills.
+
+## The sheet's small hills, grid, numbers and streams (2026-11-11)
+
+The owner asked for all of what the drawn sheet still lacked. Written blind again: seen only on made-up data here, to be run on the Mac.
+
+- **Fine heights for a pack.** `fetch_pack.sh` downloads the Copernicus DEM GLO-90 squares over the pack (one file per degree, about 5 MB each, kept in `data/source/copernicus-dem-90`), and `build_pack.py` writes `<name>.heights.bin`: metres on a grid of 0.002 by 0.0015 degrees (about 160 m), each source pixel first averaged with its eight neighbours. GLO-90 and not GLO-30: a ninth of the download, and the sheet's steps are no finer than 20 m anyway. Where a pack has heights they replace the world's in the shader, for the lighting and the steps.
+- **Steps set by the zoom**, 20 m up to 30 m a pixel and doubling with each doubling of the view. Where the ground is too steep for the edges to stay 5 pixels apart, every second edge is dropped, and again. A first version chose the step from each pixel's own slope; on rough ground neighbouring pixels chose differently and the hills came out as speckle.
+- **Kilometre grid**: faint lines every kilometre (every 2 km above 45 m a pixel), a setting, on by default on the sheet. The lines follow true meridians and parallels, with the spacing between meridians set per band of latitude; it is a reading aid, not a military grid.
+- **Labels from the pack** (`<name>.labels.bin`): cities, towns and villages from OpenStreetMap's place points, road numbers from `ref` on motorways and main roads, river names. One label per name and level-5 hexagon. The client shows each kind below its own zoom, at most 140 at once, none over another. The world's own city names are drawn only where no pack label was placed.
+- **Streams** (`waterway=stream`) are drawn as thin outlined lines below 70 m a pixel. They are drawing only: no stream becomes a river side on the hexagons.
+- **A one-layer texture array read as empty** in the shader under the software renderer here (wgpu 30, Vulkan, llvmpipe): the made-up pack's heights fit one tile and every height came back zero. The renderer now always stores at least two layers. Not known whether Metal has the same fault; the padding costs one blank tile and is harmless.
+- **`fetch_pack.sh` re-exports** when its `EXPORT` number is newer than the one remembered beside the export, since the filter gained streams and place points.
+
+Not checked on real data: the elevation file names and address, the place-point export with osmium, how real Italian relief reads as steps, label crowding in the Po plain. Only one pack's heights are drawn at a time, as with cover.
+

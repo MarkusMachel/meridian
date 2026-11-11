@@ -491,3 +491,65 @@ mod network_tests {
         assert_eq!(a.checksum, b.checksum);
     }
 }
+
+// ---- a regional pack's fine heights and its names ----
+
+/// The fine heights of a regional pack: laid out like its ground cover (`PackCover`), with
+/// metres above the sea in place of classes. A tile that is not stored is all at sea level.
+#[derive(Clone, Debug, Default)]
+pub struct PackHeights {
+    pub west_e6: i32,
+    pub north_e6: i32,
+    pub pixel_lon_e9: i32,
+    pub pixel_lat_e9: i32,
+    pub width: u32,
+    pub height: u32,
+    pub tile: u32,
+    pub across: u32,
+    pub down: u32,
+    pub tile_layer: Vec<u32>,
+    pub tiles: Vec<u16>,
+}
+
+pub fn load_pack_heights_file(path: &Path) -> Result<PackHeights, Vec<DataError>> {
+    let (name, bytes) = read_file(path)?;
+    let (a, _) = open_container(&name, &bytes, 8, 1, "pack heights file")?;
+    let read = || -> Result<PackHeights, DataError> {
+        let g = a.i32s("grid")?;
+        if g.len() != 9 || g[2..].iter().any(|&v| v <= 0) {
+            return Err(a.bad("grid", "nine positive numbers expected".into()));
+        }
+        let h = PackHeights { west_e6: g[0], north_e6: g[1], pixel_lon_e9: g[2], pixel_lat_e9: g[3], width: g[4] as u32, height: g[5] as u32, tile: g[6] as u32, across: g[7] as u32, down: g[8] as u32, tile_layer: a.u32s("tile_layer")?, tiles: a.u16s("tiles")? };
+        let per_tile = h.tile as usize * h.tile as usize;
+        let stored = h.tiles.len() / per_tile;
+        let ok = h.tile_layer.len() == (h.across * h.down) as usize && h.tiles.len() == stored * per_tile && stored > 0 && h.tile_layer.iter().all(|&l| l == u32::MAX || (l as usize) < stored);
+        if !ok {
+            return Err(a.bad("-", "the arrays do not fit together".into()));
+        }
+        Ok(h)
+    };
+    read().map_err(|e| vec![e])
+}
+
+/// The names a regional pack writes on the map.
+#[derive(Clone, Debug, Default)]
+pub struct PackLabels {
+    /// Where each label stands: three whole metres from the Earth's centre.
+    pub xyz: Vec<i32>,
+    /// 0 city, 1 town, 2 village, 3 road number, 4 river name.
+    pub kind: Vec<u8>,
+    pub text: Vec<String>,
+}
+
+pub fn load_pack_labels_file(path: &Path) -> Result<PackLabels, Vec<DataError>> {
+    let (name, bytes) = read_file(path)?;
+    let (a, _) = open_container(&name, &bytes, 9, 1, "pack labels file")?;
+    let read = || -> Result<PackLabels, DataError> {
+        let l = PackLabels { xyz: a.i32s("label_xyz")?, kind: a.u8s("label_kind")?, text: a.strings("label_text")? };
+        if l.xyz.len() != 3 * l.kind.len() || l.text.len() != l.kind.len() {
+            return Err(a.bad("-", "the arrays do not fit together".into()));
+        }
+        Ok(l)
+    };
+    read().map_err(|e| vec![e])
+}

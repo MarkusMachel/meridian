@@ -2,7 +2,7 @@
 and waterways at close zoom, and the ground cover (water, woods, built-up areas) as a fine
 picture. Drawing only; the engine never reads a pack.
 
-Usage: python -I build_pack.py <name> <features.geojsonseq> <coverage.poly> <out-dir> [<land_polygons.shp>]
+Usage: python -I build_pack.py <name> <features.geojsonseq> <coverage.poly> <out-dir> [<land_polygons.shp> [<elevation-tiles-dir>]]
 
 `fetch_pack.sh` makes the inputs: it downloads a Geofabrik extract and its coverage outline and
 runs the `osmium` tool to keep and export the features used here.
@@ -35,6 +35,17 @@ Writes three files:
                                ascending), `link_a`, `link_b` (u64 H3 numbers, a < b, ascending
                                by pair), `road`, `rail` (u8 levels, 0 = none).
 
+  <out-dir>/<name>.labels.bin  container kind 9, version 1: names to write on the map. Arrays:
+                               `label_xyz` (i32, three per label: its place), `label_kind` (u8:
+                               0 city, 1 town, 2 village, 3 road number, 4 river name) and the
+                               texts as `label_text_blob` (u8) and `label_text_off` (u32).
+  <out-dir>/<name>.heights.bin container kind 8, version 1 (only with elevation tiles): the
+                               height of the land, finer than the world's, in the same tile
+                               layout as the ground cover but as u16 metres and with pixels
+                               twice as large. Arrays `grid`, `tile_layer`, `tiles` as above;
+                               a tile that is not stored is all at sea level.
+                               From the Copernicus DEM GLO-90 (see fetch_pack.sh for the credit).
+
 OpenStreetMap is (c) OpenStreetMap contributors, Open Database License. The data is today's
 world, not 1990's: motorways and suburbs built since then are in it.
 """
@@ -62,7 +73,7 @@ ROADS = {
     "tertiary": (8, 5), "unclassified": (8, 5),
 }
 RAIL = (7, 3)
-WATERWAYS = {"river": (3, 2), "canal": (3, 5)}
+WATERWAYS = {"river": (3, 2), "canal": (3, 5), "stream": (9, 4)}      # style 9: a stream, a thin line close up
 SIMPLIFY_DEG = 0.00008          # about 8 m: under half a pixel at the closest zoom
 BUCKET_LEVEL = 4                # hexagons about 45 km across
 BUCKET_REACH_MICRORAD = 6_500
@@ -71,6 +82,11 @@ PIXEL_LON, PIXEL_LAT = 0.001, 0.00075
 TILE = 2048
 SEA, WATER, WOODS, BUILT, INDUSTRY, LAND, OUTSIDE = 0, 1, 2, 3, 4, 6, 7
 MIN_AREA_DEG2 = 4e-7            # areas under about 0.4 hectare are left out
+# the heights picture: pixels twice the ground cover's (about 160 m)
+HEIGHT_PIXEL_LON, HEIGHT_PIXEL_LAT = 2 * PIXEL_LON, 2 * PIXEL_LAT
+PLACES = {"city": 0, "town": 1, "village": 2}
+ROAD_NUMBER, RIVER_NAME = 3, 4
+LABEL_SPREAD_LEVEL = 5          # one road number or river name per hexagon of about 17 km
 
 
 # The simulation's links (build_network.py): a road's level by its class, a railway's by what
@@ -158,7 +174,62 @@ def draw_land(land_file, pen, to_px, box):
     return n
 
 
-def main(name, features_file, poly_file, out_dir, land_file=None):
+def tiles_of(grid, tile):
+    """Cut a picture into square tiles; all-zero tiles are not stored. Returns the stored
+    tiles, the table saying which stored tile each one is, and how many across and down."""
+    height, width = grid.shape
+    across, down = -(-width // tile), -(-height // tile)
+    table = np.full(across * down, 0xFFFFFFFF, dtype=np.uint32)
+    stored = []
+    for ty in range(down):
+        for tx in range(across):
+            part = grid[ty * tile:(ty + 1) * tile, tx * tile:(tx + 1) * tile]
+            if not part.any():
+                continue
+            full = np.zeros((tile, tile), dtype=grid.dtype)
+            full[:part.shape[0], :part.shape[1]] = part
+            table[ty * across + tx] = len(stored)
+            stored.append(full)
+    return stored, table, across, down
+
+
+def heights_picture(dem_dir, west, south, east, north):
+    """The land's height in metres on a grid of HEIGHT_PIXEL degrees, from one-degree elevation
+    tiles (Copernicus DEM GLO-90 as cloud-optimised GeoTIFFs). A missing tile is sea."""
+    import tifffile
+    width = int(np.ceil((east - west) / HEIGHT_PIXEL_LON)); height = int(np.ceil((north - south) / HEIGHT_PIXEL_LAT))
+    out = np.zeros((height, width), dtype=np.uint16)
+    used = 0
+    for lat0 in range(int(np.floor(south)), int(np.ceil(north))):
+        for lon0 in range(int(np.floor(west)), int(np.ceil(east))):
+            ns = f"{'N' if lat0 >= 0 else 'S'}{abs(lat0):02d}"; ew = f"{'E' if lon0 >= 0 else 'W'}{abs(lon0):03d}"
+            path = Path(dem_dir) / f"Copernicus_DSM_COG_30_{ns}_00_{ew}_00_DEM.tif"
+            if not path.exists() or path.stat().st_size == 0:
+                continue
+            src = np.asarray(tifffile.imread(str(path)), dtype=np.float32)
+            # the picture's pixels are about two of the source's across: average each source pixel
+            # with its eight neighbours first, so single rough pixels do not become false hills
+            edge = np.pad(src, 1, mode="edge")
+            src = sum(edge[dy:dy + src.shape[0], dx:dx + src.shape[1]] for dy in range(3) for dx in range(3)) / 9.0
+            rows, cols = src.shape[:2]
+            # the picture's pixels whose middles fall in this tile
+            x0 = max(0, int(np.ceil((lon0 - west) / HEIGHT_PIXEL_LON - 0.5))); x1 = min(width, int(np.ceil((lon0 + 1 - west) / HEIGHT_PIXEL_LON - 0.5)))
+            y0 = max(0, int(np.ceil((north - (lat0 + 1)) / HEIGHT_PIXEL_LAT - 0.5))); y1 = min(height, int(np.ceil((north - lat0) / HEIGHT_PIXEL_LAT - 0.5)))
+            if x1 <= x0 or y1 <= y0:
+                continue
+            lon = west + (np.arange(x0, x1) + 0.5) * HEIGHT_PIXEL_LON
+            lat = north - (np.arange(y0, y1) + 0.5) * HEIGHT_PIXEL_LAT
+            cx = np.clip((lon - lon0) * cols - 0.5, 0, cols - 1); cy = np.clip((lat0 + 1 - lat) * rows - 0.5, 0, rows - 1)
+            ix = np.minimum(cx.astype(np.int64), cols - 2); iy = np.minimum(cy.astype(np.int64), rows - 2)
+            fx = (cx - ix)[None, :]; fy = (cy - iy)[:, None]
+            a = src[np.ix_(iy, ix)]; b = src[np.ix_(iy, ix + 1)]; c = src[np.ix_(iy + 1, ix)]; d = src[np.ix_(iy + 1, ix + 1)]
+            h = (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy
+            out[y0:y1, x0:x1] = np.clip(np.rint(h), 0, 65535).astype(np.uint16)
+            used += 1
+    return out, used
+
+
+def main(name, features_file, poly_file, out_dir, land_file=None, dem_dir=None):
     out_dir = Path(out_dir)
     rings = read_poly(poly_file)
     west = min(r[:, 0].min() for r in rings); east = max(r[:, 0].max() for r in rings)
@@ -184,6 +255,7 @@ def main(name, features_file, poly_file, out_dir, land_file=None):
         print("no land polygons given: everything inside the picture is taken for land")
 
     lines, counts, areas, bad = [], {}, {}, 0
+    labels = {}        # (kind, text, hexagon) -> (lon, lat): one label of a kind and text per hexagon
     network = build_network.Levels()
     with open(features_file, encoding="utf-8") as f:
         for n, row in enumerate(f):
@@ -198,6 +270,11 @@ def main(name, features_file, poly_file, out_dir, land_file=None):
                 bad += 1
                 continue
             kind = geom.geom_type
+            if kind == "Point":
+                place = PLACES.get(tags.get("place"))
+                if place is not None and tags.get("name"):
+                    labels[(place, str(tags["name"]), len(labels))] = (geom.x, geom.y)
+                continue
             if kind in ("LineString", "MultiLineString"):
                 # the simulation's links first: tunnels and bridges carry traffic like any other stretch
                 road = ROAD_LEVEL.get(tags.get("highway"), 0)
@@ -208,7 +285,15 @@ def main(name, features_file, poly_file, out_dir, land_file=None):
                 found = ROADS.get(tags.get("highway")) or (RAIL if tags.get("railway") == "rail" and tags.get("service") is None else None) or WATERWAYS.get(tags.get("waterway"))
                 if found is None or tags.get("tunnel") in ("yes", "building_passage"):
                     continue
-                simple = shapely.simplify(geom, SIMPLIFY_DEG)
+                # a number for the bigger roads and a name for the rivers, once per hexagon
+                text = (tags.get("ref") if found[0] in (4, 5) and "_link" not in str(tags.get("highway")) else tags.get("name") if tags.get("waterway") == "river" else None)
+                if text and kind == "LineString" and len(geom.coords) >= 2:
+                    at = geom.interpolate(0.5, normalized=True)
+                    text = str(text).split(";")[0].strip()
+                    key = (RIVER_NAME if tags.get("waterway") else ROAD_NUMBER, text, h3.latlng_to_cell(at.y, at.x, LABEL_SPREAD_LEVEL))
+                    if text and len(text) <= 40:
+                        labels.setdefault(key, (at.x, at.y))
+                simple = shapely.simplify(geom, SIMPLIFY_DEG * (2.5 if found[0] == 9 else 1.0))
                 for p in gl.parts(simple):
                     if len(p) >= 2:
                         lines.append((found, p))
@@ -297,18 +382,7 @@ def main(name, features_file, poly_file, out_dir, land_file=None):
         pen.polygon(to_px(ring), fill=255)
     grid[(np.asarray(inside) == 0) & ~sea] = OUTSIDE
     inside.close()
-    across, down = -(-width // TILE), -(-height // TILE)
-    tile_layer = np.full(across * down, 0xFFFFFFFF, dtype=np.uint32)
-    stored = []
-    for ty in range(down):
-        for tx in range(across):
-            part = grid[ty * TILE:(ty + 1) * TILE, tx * TILE:(tx + 1) * TILE]
-            if not part.any():
-                continue
-            full = np.zeros((TILE, TILE), dtype=np.uint8)
-            full[:part.shape[0], :part.shape[1]] = part
-            tile_layer[ty * across + tx] = len(stored)
-            stored.append(full)
+    stored, tile_layer, across, down = tiles_of(grid, TILE)
     if not stored:
         sys.exit("the picture is all sea")
     info = [round(west * 1e6), round(north * 1e6), round(PIXEL_LON * 1e9), round(PIXEL_LAT * 1e9), width, height, TILE, across, down]
@@ -322,7 +396,37 @@ def main(name, features_file, poly_file, out_dir, land_file=None):
           f"of the picture: sea {share[0]:.1%}, water {share[1]:.1%}, woods {share[2]:.1%}, built-up {share[3]:.1%}, industry {share[4]:.1%}")
 
 
+    # ---- the labels file ----
+    keys = sorted(labels, key=lambda k: (k[0], k[1], str(k[2])))
+    if keys:
+        where = np.array([labels[k] for k in keys])
+        texts = [k[1].encode("utf-8") for k in keys]
+        offsets = np.zeros(len(texts) + 1, dtype=np.uint32)
+        np.cumsum([len(t) for t in texts], out=offsets[1:])
+        size = container.write(out_dir / f"{name}.labels.bin", 9, 1, {
+            "label_xyz": (gl.places(where).reshape(-1), "<i4"),
+            "label_kind": (np.array([k[0] for k in keys], dtype=np.uint8), "u1"),
+            "label_text_blob": (np.frombuffer(b"".join(texts), dtype=np.uint8), "u1"),
+            "label_text_off": (offsets, "<u4"),
+        })
+        by_kind = np.bincount([k[0] for k in keys], minlength=5)
+        print(f"{out_dir / (name + '.labels.bin')}: {size:,} bytes; cities {by_kind[0]:,}, towns {by_kind[1]:,}, villages {by_kind[2]:,}, road numbers {by_kind[3]:,}, river names {by_kind[4]:,}")
+    else:
+        print("no names found (was the export run with points?): no labels file")
+
+    # ---- the heights file ----
+    if dem_dir:
+        heights, used = heights_picture(dem_dir, west, south, east, north)
+        if used == 0:
+            print(f"{dem_dir}: no elevation tile for this region: no heights file")
+        else:
+            stored, table, across, down = tiles_of(heights, TILE)
+            info = [round(west * 1e6), round(north * 1e6), round(HEIGHT_PIXEL_LON * 1e9), round(HEIGHT_PIXEL_LAT * 1e9), heights.shape[1], heights.shape[0], TILE, across, down]
+            size = container.write(out_dir / f"{name}.heights.bin", 8, 1, {"grid": (np.array(info), "<i4"), "tile_layer": (table, "<u4"), "tiles": (np.stack(stored).reshape(-1), "<u2")})
+            print(f"{out_dir / (name + '.heights.bin')}: {size:,} bytes; {used} elevation tiles, {len(stored)} of {across * down} tiles stored; highest {int(heights.max())} m")
+
+
 if __name__ == "__main__":
-    if len(sys.argv) not in (5, 6):
+    if len(sys.argv) not in (5, 6, 7):
         sys.exit(__doc__)
     main(*sys.argv[1:])

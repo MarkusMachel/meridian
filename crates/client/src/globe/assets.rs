@@ -1,7 +1,7 @@
 //! The optional drawing files of the globe: real lines, shaded relief and regional packs.
 //! All are looked for next to the baked map; the globe runs without any of them.
 
-use meridian_data::{GlobeGround, GlobeLines, PackCover};
+use meridian_data::{GlobeGround, GlobeLines, PackCover, PackHeights, PackLabels};
 use std::path::Path;
 
 #[derive(Default)]
@@ -14,6 +14,10 @@ pub struct GlobeAssets {
     pub packs: Vec<GlobeLines>,
     /// `packs/<name>.cover.bin`: the ground cover of the first pack that has one.
     pub cover: Option<PackCover>,
+    /// `packs/<name>.heights.bin`: the fine heights of the first pack that has them.
+    pub heights: Option<PackHeights>,
+    /// `packs/<name>.labels.bin`: the names of every pack.
+    pub labels: Vec<PackLabels>,
     /// What was found and what could not be read, for the status line and the terminal.
     pub notes: Vec<String>,
 }
@@ -44,6 +48,12 @@ pub fn load(dir: &Path) -> GlobeAssets {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
         if name.ends_with(".lines.bin") {
             a.packs.extend(get(&path, &mut a.notes, meridian_data::load_globe_lines_file));
+        } else if name.ends_with(".labels.bin") {
+            a.labels.extend(get(&path, &mut a.notes, meridian_data::load_pack_labels_file));
+        } else if name.ends_with(".heights.bin") {
+            if a.heights.is_none() {
+                a.heights = get(&path, &mut a.notes, meridian_data::load_pack_heights_file);
+            }
         } else if name.ends_with(".cover.bin") {
             if a.cover.is_none() {
                 a.cover = get(&path, &mut a.notes, meridian_data::load_pack_cover_file);

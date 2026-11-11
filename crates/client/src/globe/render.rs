@@ -37,6 +37,8 @@ struct Globals {
     screen: [f32; 4],
     pack_a: [f32; 4],
     pack_b: [u32; 4],
+    pack_c: [f32; 4],
+    pack_d: [u32; 4],
 }
 
 /// One piece of a real line as the graphics card gets it: 28 bytes.
@@ -67,6 +69,8 @@ struct Views {
     sampler: wgpu::Sampler,
     cover_tiles: wgpu::TextureView,
     cover_table: wgpu::TextureView,
+    height_tiles: wgpu::TextureView,
+    height_table: wgpu::TextureView,
 }
 
 /// Detail tiers come in below these metres per pixel: 0 always, 1 from a continent, 2 from a
@@ -109,6 +113,8 @@ pub struct GlobeRenderer {
     /// A pack's ground cover as the shader needs it: (west, north, pixel width, pixel height) in
     /// degrees and (width, height, tile size, tiles across) in pixels.
     pack: ([f32; 4], [u32; 4]),
+    /// The same for a pack's fine heights.
+    pack_heights: ([f32; 4], [u32; 4]),
     /// Draw the real lines (when a lines file was given).
     pub show_lines: bool,
     /// Light the terrain and paint the land (when the ground file was given), and draw a
@@ -117,6 +123,8 @@ pub struct GlobeRenderer {
     pub show_cover: bool,
     /// Draw the hexagon outlines close up.
     pub show_grid: bool,
+    /// Draw the kilometre grid of the close zoom.
+    pub show_km_grid: bool,
     /// Draw a pack's small roads and canals at the closest zoom.
     pub show_minor_roads: bool,
     offsets: wgpu::Buffer,
@@ -154,7 +162,14 @@ fn texture_u32(device: &wgpu::Device, queue: &wgpu::Queue, label: &str, width: u
 /// The ground cover of a pack as two textures: the stored tiles as layers of one array, and
 /// a small table saying which layer each tile of the picture is.
 #[allow(clippy::too_many_arguments)]
-fn cover_textures(device: &wgpu::Device, queue: &wgpu::Queue, tile: u32, stored: u32, across: u32, down: u32, tiles: &[u8], table: &[u32]) -> (wgpu::TextureView, wgpu::TextureView) {
+fn cover_textures(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, tile: u32, stored: u32, across: u32, down: u32, tiles: &[u8], table: &[u32]) -> (wgpu::TextureView, wgpu::TextureView) {
+    // Always at least two layers. A one-layer array read as empty in the shader (seen with the
+    // software renderer on Linux, wgpu 30), so a lone tile gets a blank layer after it.
+    let mut padded = tiles.to_vec();
+    if stored == 1 {
+        padded.resize(tiles.len() * 2, 0);
+    }
+    let (tiles, stored) = (&padded[..], stored.max(2));
     let layers = device.create_texture_with_data(
         queue,
         &wgpu::TextureDescriptor {
@@ -163,14 +178,13 @@ fn cover_textures(device: &wgpu::Device, queue: &wgpu::Queue, tile: u32, stored:
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Uint,
+            format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         },
         wgpu::util::TextureDataOrder::LayerMajor,
         tiles,
     );
-    // a one-layer texture would otherwise be taken for a plain picture, not an array
     let layers_view = layers.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
     (layers_view, texture_u32(device, queue, "ground cover table", across, down, wgpu::TextureFormat::R32Uint, bytemuck::cast_slice(table)))
 }
@@ -180,7 +194,7 @@ fn bind_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, globals: &w
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("globe"),
         layout,
-        entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }, view(1, &v.picture), view(2, &v.table), view(3, &v.palette), view(4, &v.heights), view(5, &v.cover_tiles), view(6, &v.cover_table), view(7, &v.paint), wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::Sampler(&v.sampler) }],
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }, view(1, &v.picture), view(2, &v.table), view(3, &v.palette), view(4, &v.heights), view(5, &v.cover_tiles), view(6, &v.cover_table), view(7, &v.paint), view(9, &v.height_tiles), view(10, &v.height_table), wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::Sampler(&v.sampler) }],
     })
 }
 
@@ -277,6 +291,8 @@ impl GlobeRenderer {
                 uint(6),
                 wgpu::BindGroupLayoutEntry { binding: 7, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 8, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry { binding: 9, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false }, count: None },
+                uint(10),
             ],
         });
         // until the real ones are given: flat ground of one colour and an empty ground cover
@@ -284,8 +300,9 @@ impl GlobeRenderer {
         let paint_view = texture_u32(device, queue, "land paint", 1, 1, wgpu::TextureFormat::Rgba8Unorm, &[158, 178, 122, 255]);
         // the painted colour is read smoothly between its pixels, and wraps round the world
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("smooth"), address_mode_u: wgpu::AddressMode::Repeat, mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
-        let (cover_tiles, cover_table) = cover_textures(device, queue, 1, 1, 1, 1, &[0], &[NO_CELL]);
-        let views = Views { picture: picture_view, table: table_view, palette: palette_view, heights: heights_view, paint: paint_view, sampler, cover_tiles, cover_table };
+        let (cover_tiles, cover_table) = cover_textures(device, queue, wgpu::TextureFormat::R8Uint, 1, 1, 1, 1, &[0], &[NO_CELL]);
+        let (height_tiles, height_table) = cover_textures(device, queue, wgpu::TextureFormat::R16Uint, 1, 1, 1, 1, &[0, 0], &[NO_CELL]);
+        let views = Views { picture: picture_view, table: table_view, palette: palette_view, heights: heights_view, paint: paint_view, sampler, cover_tiles, cover_table, height_tiles, height_table };
         let bind = bind_group(device, &layout, &globals, &views);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("globe"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let target = [Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })];
@@ -343,7 +360,7 @@ impl GlobeRenderer {
             cache: None,
         });
         let offsets = device.create_buffer(&wgpu::BufferDescriptor { label: Some("tile offsets"), size: (TILES_KEPT * 12) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        GlobeRenderer { globals, bind, palette, palette_rows, far_pipeline, tile_pipeline, line_pipeline, layout, views, lines: Vec::new(), has_ground: false, from_border, pack: ([0.0; 4], [0; 4]), show_lines: true, show_relief: true, show_cover: true, show_grid: false, show_minor_roads: false, offsets, tiles: HashMap::new(), frame: 0, drawn: (0, 0), coloring: Coloring::PaletteShaded, show_roads: true }
+        GlobeRenderer { globals, bind, palette, palette_rows, far_pipeline, tile_pipeline, line_pipeline, layout, views, lines: Vec::new(), has_ground: false, from_border, pack: ([0.0; 4], [0; 4]), pack_heights: ([0.0; 4], [0; 4]), show_km_grid: true, show_lines: true, show_relief: true, show_cover: true, show_grid: false, show_minor_roads: false, offsets, tiles: HashMap::new(), frame: 0, drawn: (0, 0), coloring: Coloring::PaletteShaded, show_roads: true }
     }
 
     /// Give the renderer the real lines to draw over the hexagons: the world's, then each
@@ -387,6 +404,9 @@ impl GlobeRenderer {
         if let Some(cover) = &a.cover {
             self.set_cover(device, queue, cover);
         }
+        if let Some(heights) = &a.heights {
+            self.set_pack_heights(device, queue, heights);
+        }
     }
 
     /// Give the renderer the ground of the world: heights for the lighting and the painted colour.
@@ -400,8 +420,16 @@ impl GlobeRenderer {
     /// Give the renderer a regional pack's ground cover (one pack at a time for now).
     pub fn set_cover(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, c: &meridian_data::PackCover) {
         let stored = c.tiles.len() as u32 / (c.tile * c.tile);
-        (self.views.cover_tiles, self.views.cover_table) = cover_textures(device, queue, c.tile, stored, c.across, c.down, &c.tiles, &c.tile_layer);
+        (self.views.cover_tiles, self.views.cover_table) = cover_textures(device, queue, wgpu::TextureFormat::R8Uint, c.tile, stored, c.across, c.down, &c.tiles, &c.tile_layer);
         self.pack = ([c.west_e6 as f32 * 1e-6, c.north_e6 as f32 * 1e-6, c.pixel_lon_e9 as f32 * 1e-9, c.pixel_lat_e9 as f32 * 1e-9], [c.width, c.height, c.tile, c.across]);
+        self.bind = bind_group(device, &self.layout, &self.globals, &self.views);
+    }
+
+    /// Give the renderer a regional pack's fine heights (one pack at a time for now).
+    pub fn set_pack_heights(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, h: &meridian_data::PackHeights) {
+        let stored = h.tiles.len() as u32 / (h.tile * h.tile);
+        (self.views.height_tiles, self.views.height_table) = cover_textures(device, queue, wgpu::TextureFormat::R16Uint, h.tile, stored, h.across, h.down, bytemuck::cast_slice(&h.tiles), &h.tile_layer);
+        self.pack_heights = ([h.west_e6 as f32 * 1e-6, h.north_e6 as f32 * 1e-6, h.pixel_lon_e9 as f32 * 1e-9, h.pixel_lat_e9 as f32 * 1e-9], [h.width, h.height, h.tile, h.across]);
         self.bind = bind_group(device, &self.layout, &self.globals, &self.views);
     }
 
@@ -442,7 +470,7 @@ impl GlobeRenderer {
             toward: v4(f, EARTH_RADIUS_M + camera.altitude_m),
             east: v4(east, TAN_HALF_FOV * aspect),
             north: v4(north, TAN_HALF_FOV),
-            misc: [EARTH_RADIUS_M as f32, 0.0, grid as f32, 0.0],
+            misc: [EARTH_RADIUS_M as f32, 0.0, grid as f32, if self.show_km_grid { 1.0 } else { 0.0 }],
             ids: [selected.unwrap_or(NO_CELL), PICTURE.0, PICTURE.1, TABLE_WIDTH],
             more: [roads as f32, self.coloring as u32 as f32, if real_lines { 1.0 } else { 0.0 }, 0.0],
             eye_whole: [eye_whole[0] as i32, eye_whole[1] as i32, eye_whole[2] as i32, 0],
@@ -450,6 +478,8 @@ impl GlobeRenderer {
             screen: [camera.width_px as f32, camera.height_px as f32, if self.has_ground && self.show_relief { 1.0 } else { 0.0 }, 0.0],
             pack_a: self.pack.0,
             pack_b: if self.show_cover { self.pack.1 } else { [0; 4] },
+            pack_c: self.pack_heights.0,
+            pack_d: if self.show_relief { self.pack_heights.1 } else { [0; 4] },
         };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
 

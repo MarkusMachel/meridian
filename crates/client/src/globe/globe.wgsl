@@ -15,7 +15,7 @@ struct Globals {
     toward: vec4f,   // xyz: direction from the Earth's centre to the point looked at; w: R + height
     east: vec4f,     // xyz: east; w: tan * aspect
     north: vec4f,    // xyz: north; w: tan
-    misc: vec4f,     // x: Earth radius; y: unused; z: hexagon grid strength; w: unused
+    misc: vec4f,     // x: Earth radius; y: unused; z: hexagon grid strength; w: 1 to draw the kilometre grid close up
     ids: vec4u,      // x: selected cell; y, z: world picture width, height; w: cell table width
     more: vec4f,     // x: movement network strength; y: colouring (0 country wash, 1 palette, 2 terrain); z: 1 when the real lines are drawn; w: unused
     eye_whole: vec4i,  // the camera's place in whole metres from the Earth's centre
@@ -23,6 +23,8 @@ struct Globals {
     screen: vec4f,     // xy: the picture's size in pixels; z: 1 when there is a ground file (heights and painted colour)
     pack_a: vec4f,     // a regional pack's ground cover: west edge, north edge, pixel width, pixel height (degrees)
     pack_b: vec4u,     // its picture's width and height in pixels (0 = no pack), tile size, tiles across
+    pack_c: vec4f,     // the same two for a pack's fine heights
+    pack_d: vec4u,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -34,6 +36,8 @@ struct Globals {
 @group(0) @binding(6) var cover_table: texture_2d<u32>;     // which stored tile each tile of the picture is
 @group(0) @binding(7) var land_paint: texture_2d<f32>;      // the painted colour of the world's land
 @group(0) @binding(8) var smooth_sampler: sampler;
+@group(0) @binding(9) var height_tiles: texture_2d_array<u32>;  // a pack's fine heights (metres), tile by tile
+@group(0) @binding(10) var height_table: texture_2d<u32>;
 
 const NO_CELL: u32 = 0xffffffffu;
 const NO_COVER: u32 = 255u;
@@ -134,6 +138,40 @@ fn height_at(lon: f32, lat: f32) -> f32 {
     return mix(top, bottom, f.y);
 }
 
+// One pixel of a regional pack's fine heights, in metres (sea and missing tiles are 0).
+fn fine_pixel(x: i32, y: i32) -> f32 {
+    let px = vec2u(u32(x), u32(y));
+    let layer = textureLoad(height_table, px / g.pack_d.z, 0).r;
+    if layer == NO_CELL {
+        return 0.0;
+    }
+    return f32(textureLoad(height_tiles, px % g.pack_d.z, layer, 0).r);
+}
+
+// A pack's fine heights at a longitude and latitude (radians): x the height in metres, y and z
+// the slope to the east and to the north (metres up per metre along), w 1 where the pack has
+// heights and 0 elsewhere. Blended between the four pixels around the point.
+fn fine_height(lon: f32, lat: f32) -> vec4f {
+    if g.pack_d.x == 0u {
+        return vec4f(0.0);
+    }
+    let p = vec2f((degrees(lon) - g.pack_c.x) / g.pack_c.z - 0.5, (g.pack_c.y - degrees(lat)) / g.pack_c.w - 0.5);
+    if p.x < 0.0 || p.y < 0.0 || p.x >= f32(g.pack_d.x) - 1.0 || p.y >= f32(g.pack_d.y) - 1.0 {
+        return vec4f(0.0);
+    }
+    let i = vec2i(floor(p));
+    let f = fract(p);
+    let h00 = fine_pixel(i.x, i.y);
+    let h10 = fine_pixel(i.x + 1, i.y);
+    let h01 = fine_pixel(i.x, i.y + 1);
+    let h11 = fine_pixel(i.x + 1, i.y + 1);
+    let east_m = radians(g.pack_c.z) * g.misc.x * max(cos(lat), 0.05);     // one pixel to the east, in metres
+    let south_m = radians(g.pack_c.w) * g.misc.x;
+    let east = mix(h10 - h00, h11 - h01, f.y) / east_m;
+    let north = -mix(h01 - h00, h11 - h10, f.x) / south_m;                  // rows run south
+    return vec4f(mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y), east, north, 1.0);
+}
+
 // One pixel of a regional pack's ground cover: 0 sea, 1 inland water, 2 woods, 3 built-up,
 // 4 industry, 6 other land; NO_COVER outside the pack's picture or its coverage.
 fn cover_pixel(x: i32, y: i32) -> u32 {
@@ -215,15 +253,23 @@ fn ground(political: vec3f, info: vec4u, from_border: f32, hex_land: f32, lon: f
     // ---- the shape of the land: slope from the heights, plus fine made-up roughness ----
     let has_ground = g.screen.z;
     let texel = PI / f32(textureDimensions(heights).y);
-    let h = height_at(lon, lat);
+    var h = height_at(lon, lat);
     let east_m = 2.0 * texel * radius * max(cos(lat), 0.05);
     var slope = vec2f(
         (height_at(lon + texel, lat) - height_at(lon - texel, lat)) / east_m,
         (height_at(lon, lat + texel) - height_at(lon, lat - texel)) / (2.0 * texel * radius),
     ) * has_ground;
+    // where a pack has fine heights, they replace the world's coarse ones
+    let fine = fine_height(lon, lat);
+    var has_height = has_ground;
+    if fine.w > 0.5 {
+        h = fine.x;
+        slope = fine.yz;
+        has_height = 1.0;
+    }
     let steep = length(slope);
     // roughness: finer than the height picture can show, stronger where the land is rugged
-    let rough = clamp(steep * 9.0, 0.12, 1.0) * (1.0 - smoothstep(300.0, 1500.0, m_per_px));
+    let rough = clamp(steep * 9.0, 0.12, 1.0) * (1.0 - smoothstep(300.0, 1500.0, m_per_px)) * (1.0 - 0.75 * fine.w);
     let d = max(m_per_px, 30.0);
     let bumps = vec2f(
         clouds((q + vec2f(d, 0.0)) / 2600.0) - clouds((q - vec2f(d, 0.0)) / 2600.0),
@@ -298,17 +344,29 @@ fn ground(political: vec3f, info: vec4u, from_border: f32, hex_land: f32, lon: f
         // a faint patchwork of fields
         let plot = patches(q / 380.0);
         m = m * (0.975 + 0.05 * plot.y) * (0.965 + 0.035 * smoothstep(0.0, 0.035, plot.x));
-        // height as steps: each 40 m a level, lighter the higher, with an inked edge and a
-        // shadow at its foot. Where the steps would crowd (steep ground) they are left out.
-        let level = h / 40.0;
-        let up = fract(level);
-        let px_per_step = 40.0 / max(steep * m_per_px, 1e-4);
+        // Height as steps with an inked edge, a shadow at the foot and light on the rim. The
+        // step is set by the zoom (20 m close up, doubling as the view widens). Where the
+        // ground is too steep for its edges to stay apart, every second edge is dropped, and
+        // again: a coarser step's edges are among the finer one's, so nothing jumps.
+        let base_m = 20.0 * exp2(clamp(ceil(log2(m_per_px / 30.0)), 0.0, 4.0));
+        var ink = 0.0;
+        var shadow = 0.0;
+        var rim = 0.0;
+        for (var k = 0; k < 5; k++) {
+            let step_m = base_m * exp2(f32(k));
+            let up = fract(h / step_m);
+            let px_per_step = step_m / max(steep * m_per_px, 1e-4);
+            let shown = smoothstep(5.0, 9.0, px_per_step);
+            ink = max(ink, (1.0 - smoothstep(0.4, 1.3, up * px_per_step)) * shown);
+            shadow = max(shadow, exp(-(1.0 - up) * px_per_step / 5.0) * shown);
+            rim = max(rim, (1.0 - smoothstep(1.0, 4.0, up * px_per_step)) * shown);
+        }
         // (dead flat ground has no steps at all: without this, a plain lying exactly on a level would be all edge)
-        let stepped = smoothstep(7.0, 16.0, px_per_step) * smoothstep(0.0008, 0.003, steep) * has_ground;
+        let stepped = smoothstep(0.0008, 0.003, steep) * has_height;
         m = m * (0.95 + 0.13 * clamp(h / 900.0, 0.0, 1.0));
-        m = m * (1.0 - 0.30 * exp(-(1.0 - up) * px_per_step / 5.0) * stepped);          // shadow below an edge
-        m = mix(m, m * 1.10, (1.0 - smoothstep(1.0, 4.0, up * px_per_step)) * stepped);   // light on the rim above it
-        m = mix(m, vec3f(0.16, 0.17, 0.08), (1.0 - smoothstep(0.4, 1.3, up * px_per_step)) * stepped * 0.85);
+        m = m * (1.0 - 0.30 * shadow * stepped);
+        m = mix(m, m * 1.10, rim * stepped);
+        m = mix(m, vec3f(0.16, 0.17, 0.08), ink * stepped * 0.85);
         if detailed > 0.5 {
             // Symbols are drawn larger than life so they can be read: a tree about 9 pixels,
             // a house about 7, doubling in ground size each time the zoom would make them smaller.
@@ -379,7 +437,19 @@ fn ground(political: vec3f, info: vec4u, from_border: f32, hex_land: f32, lon: f
     let sheet_water = vec3f(0.24, 0.55, 0.86);
     c = mix(c, mix(SHALLOW_SEA * ripple, sheet_water, sheet), inland_water);
     c = mix(mix(water * ripple, sheet_water, sheet), c, land);
-    return mix(c, vec3f(0.07, 0.17, 0.33), shore_ink * sheet);
+    c = mix(c, vec3f(0.07, 0.17, 0.33), shore_ink * sheet);
+    if g.misc.w > 0.5 && sheet > 0.0 {
+        // the kilometre grid of the drawn sheet (every 2 km from a little farther off). Its
+        // upright lines are true north-south lines; their spacing is set for the latitude,
+        // a quarter of a degree at a time.
+        let spacing = select(1000.0, 2000.0, m_per_px > 45.0);
+        let band = cos(radians(round(degrees(lat) * 4.0) / 4.0));
+        let east = lon * band * radius;
+        let north = lat * radius;
+        let from_line = min(abs(fract(east / spacing + 0.5) - 0.5), abs(fract(north / spacing + 0.5) - 0.5)) * spacing / m_per_px;
+        c = mix(c, c * 0.78, (1.0 - smoothstep(0.3, 0.9, from_line)) * 0.55 * sheet);
+    }
+    return c;
 }
 
 // ---------------------------------------------------------------- far
@@ -578,7 +648,7 @@ struct LineOut {
 };
 
 // Styles: 0 coast, 1 border, 2 great river, 3 river, 4 motorway, 5 main road, 6 minor road,
-// 7 railway, 8 local road.
+// 7 railway, 8 local road, 9 stream.
 fn line_half_width(style: u32) -> f32 {
     var w = 0.5;
     switch style {
@@ -590,6 +660,7 @@ fn line_half_width(style: u32) -> f32 {
         case 5u { w = 1.1; }
         case 6u { w = 0.75; }
         case 7u { w = 0.8; }
+        case 9u { w = 0.45; }
         default { w = 0.6; }
     }
     // bolder close up, so a motorway is a band and not a hair; finer from far away
@@ -607,6 +678,7 @@ fn line_fill(style: u32) -> vec3f {
         case 5u { return vec3f(0.96, 0.88, 0.52); }
         case 6u { return vec3f(0.84, 0.85, 0.80); }
         case 7u { return vec3f(0.12, 0.12, 0.13); }
+        case 9u { return vec3f(0.24, 0.55, 0.86); }
         default { return vec3f(0.80, 0.81, 0.76); }
     }
 }

@@ -81,6 +81,10 @@ struct App {
     tiles_drawn: (usize, usize),
     /// City sites, largest first: (site, population).
     cities: Vec<(u32, u32)>,
+    /// The names regional packs write on the map: (place, kind, text), kinds as in
+    /// `meridian_data::PackLabels`, sorted by kind so the cities come first.
+    pack_labels: Vec<(V3, u8, String)>,
+    show_km_grid: bool,
 }
 
 /// Countries are coloured with the ground shaded in, the debug values plainly, and the
@@ -104,6 +108,8 @@ pub fn run(inputs: Inputs) {
     let map = inputs.map.clone();
     let mut cities: Vec<(u32, u32)> = (0..map.site_kind.len() as u32).filter(|&s| map.site_kind[s as usize] == 0).map(|s| (s, map.site_size[s as usize])).collect();
     cities.sort_by_key(|c| (std::cmp::Reverse(c.1), c.0));
+    let mut pack_labels: Vec<(V3, u8, String)> = inputs.assets.labels.iter().flat_map(|l| (0..l.kind.len()).map(move |i| ([l.xyz[3 * i] as f64, l.xyz[3 * i + 1] as f64, l.xyz[3 * i + 2] as f64], l.kind[i], l.text[i].clone()))).collect();
+    pack_labels.sort_by(|a, b| (a.1, &a.2).cmp(&(b.1, &b.2)));
     let mut app = App {
         view: inputs.view,
         // with the real lines, the diagram of roads between hexagon centres starts switched off
@@ -140,6 +146,8 @@ pub fn run(inputs: Inputs) {
         ui_scale: 1.0,
         tiles_drawn: (0, 0),
         cities,
+        pack_labels,
+        show_km_grid: true,
     };
     event_loop.run_app(&mut app).expect("run event loop");
 }
@@ -191,6 +199,7 @@ impl App {
                 g.map_renderer.show_cover = self.show_cover;
                 g.map_renderer.show_grid = self.show_grid;
                 g.map_renderer.show_minor_roads = self.show_minor_roads;
+                g.map_renderer.show_km_grid = self.show_km_grid;
             }
             self.shown_tick = Some(snap.tick);
             self.colors_dirty = false;
@@ -505,6 +514,9 @@ impl App {
             if ui.checkbox(&mut self.show_lines, "Real coasts, borders, rivers, roads and railways").changed() {
                 self.colors_dirty = true;
             }
+            if ui.checkbox(&mut self.show_km_grid, "Kilometre grid (close up)").changed() {
+                self.colors_dirty = true;
+            }
             if ui.checkbox(&mut self.show_minor_roads, "Small roads and canals (closest zoom, regional packs)").changed() {
                 self.colors_dirty = true;
             }
@@ -518,6 +530,7 @@ impl App {
                 self.colors_dirty = true;
             }
             ui.label("Regional packs: (c) OpenStreetMap contributors, ODbL.");
+            ui.label("Fine heights: (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved.");
             if ui.checkbox(&mut self.show_roads, "Supply network: road and railway links by level, bridges, river crossings (N)").changed() {
                 self.colors_dirty = true;
             }
@@ -726,7 +739,50 @@ impl App {
             let m = self.camera.m_per_px();
             let smallest = if m > 6_000.0 { 3_000_000 } else if m > 2_500.0 { 1_000_000 } else if m > 900.0 { 300_000 } else if m > 300.0 { 100_000 } else { 0 };
             let mut taken: Vec<egui::Rect> = Vec::new();
-            for &(site, population) in self.cities.iter().take_while(|c| c.1 >= smallest) {
+            // Names from a regional pack, close up: towns and villages in white, road numbers
+            // in a pale box, rivers in light blue. The more important kinds are placed first
+            // and a name that would overlap one already placed is left out.
+            let outline = egui::Color32::from_rgba_unmultiplied(20, 18, 12, 235);
+            for (place, kind, text) in &self.pack_labels {
+                let below = [450.0, 250.0, 60.0, 110.0, 130.0][(*kind as usize).min(4)];
+                if m >= below || taken.len() >= 140 {
+                    continue;
+                }
+                let Some(at) = self.camera.dir_to_screen(*place) else { continue };
+                let pos = to_pt(at);
+                if !map_rect.contains(pos) {
+                    continue;
+                }
+                let (size, shown) = match kind {
+                    0 => (15.0, text.to_uppercase()),
+                    1 => (12.5, text.clone()),
+                    2 => (10.5, text.clone()),
+                    _ => (9.5, text.clone()),
+                };
+                let font = egui::FontId::proportional(size);
+                let space = egui::Rect::from_center_size(pos, egui::vec2(shown.chars().count() as f32 * size * 0.56 + 8.0, size * 1.3));
+                if taken.iter().any(|r| r.intersects(space)) {
+                    continue;
+                }
+                taken.push(space);
+                match kind {
+                    3 => {
+                        painter.rect_filled(space.shrink(1.0), 2.0, egui::Color32::from_rgb(244, 240, 226));
+                        painter.rect_stroke(space.shrink(1.0), 2.0, egui::Stroke::new(1.0, outline), egui::StrokeKind::Inside);
+                        painter.text(pos, egui::Align2::CENTER_CENTER, &shown, font, egui::Color32::from_rgb(30, 26, 18));
+                    }
+                    _ => {
+                        for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                            painter.text(pos + egui::vec2(dx, dy), egui::Align2::CENTER_CENTER, &shown, font.clone(), outline);
+                        }
+                        let ink = if *kind == 4 { egui::Color32::from_rgb(170, 215, 255) } else { egui::Color32::from_rgb(250, 250, 244) };
+                        painter.text(pos, egui::Align2::CENTER_CENTER, &shown, font, ink);
+                    }
+                }
+            }
+            // the world's own city names, where no pack name was placed (and from farther off)
+            let from_packs = !taken.is_empty();
+            for &(site, population) in self.cities.iter().take_while(|c| c.1 >= smallest && !from_packs) {
                 if taken.len() >= 60 {
                     break;
                 }
