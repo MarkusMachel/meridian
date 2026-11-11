@@ -282,7 +282,13 @@ def main(name, features_file, poly_file, out_dir, land_file=None, dem_dir=None):
                 if road or rail:
                     for p in gl.parts(geom):
                         network.add(p, road=road, rail=rail)
-                found = ROADS.get(tags.get("highway")) or (RAIL if tags.get("railway") == "rail" and tags.get("service") is None else None) or WATERWAYS.get(tags.get("waterway"))
+                waterway = tags.get("waterway")
+                if waterway in ("river", "canal") and not tags.get("name"):
+                    # OpenStreetMap tags countless small, unnamed watercourses as "river" in
+                    # hilly country; without a name it is almost never one, so it is drawn (if
+                    # at all) as a stream, close up only, not as a major river everywhere.
+                    waterway = "stream"
+                found = ROADS.get(tags.get("highway")) or (RAIL if tags.get("railway") == "rail" and tags.get("service") is None else None) or WATERWAYS.get(waterway)
                 if found is None or tags.get("tunnel") in ("yes", "building_passage"):
                     continue
                 # a number for the bigger roads and a name for the rivers, once per hexagon

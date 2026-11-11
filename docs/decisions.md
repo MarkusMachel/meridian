@@ -636,3 +636,12 @@ The owner's screenshot showed a dead-straight orange line running for a hundred 
 
 Roads and railways themselves were already the real OpenStreetMap lines, curved as drawn; nothing changed there.
 
+## Fewer rivers, and city, region and country outlines (2026-11-11)
+
+The owner's screenshot showed the ground choked with blue lines, and asked that rivers, roads, railways and bridges follow the real lines on the map (they already did; see the entry above), and for city, region and country areas to be outlined, the way Victoria 3 and Hearts of Iron IV do.
+
+- **Rivers.** OpenStreetMap tags countless small, unnamed watercourses as `waterway=river` in hilly country, and `build_pack.py` was drawing every one of them as a major river, visible at any reasonably close zoom. An unnamed river or canal is now drawn as a stream instead (close zoom only, under 70 m a pixel): a real, named river keeps its place, the typical nameless hillside gully does not. Seen only on made-up data, where it cut forty watercourses to one; real Italian terrain, and how many named rivers survive, is unchecked.
+- **A city's own outline** (`globe.wgsl`, `ground()`): where a pack's built-up ground crosses the half-way mark, a dark ink line now follows it, the width always about a pixel (from `fwidth` of the blended fraction, not from the zoom). It fades out on the drawn sheet, where the houses already say the same thing, and shows nowhere without a pack.
+- **A region's border** (the hexagon-edge province line in `fs_tile`) is stronger and in its own colour (a dark red-brown) rather than a faint darkening, and now stays visible out to a region's own scale (to about 3,200 m a pixel) instead of fading by 600. It still follows hexagon edges, a coarser shape than the real admin-1 line engineering M4 may draw later, not the province's true outline.
+- **Country borders already draw from the real 1990 line** (`build_globe_lines.py`, style 1); nothing changed there.
+

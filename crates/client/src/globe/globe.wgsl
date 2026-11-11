@@ -336,6 +336,16 @@ fn ground(political: vec3f, info: vec4u, from_border: f32, hex_land: f32, lon: f
         c = mix(c, political * (0.80 + 0.20 * lit), mix(edge, 0.78, far));
     }
 
+    // ---- a city's own outline, where a pack's built-up ground crosses the half-way mark, the
+    // way Victoria 3 and Hearts of Iron IV ring a city on the map. `fwidth` of the blended
+    // fraction gives a one-pixel line whatever the zoom; it fades out on the drawn sheet, where
+    // the houses themselves already show the town, and where there is no pack to say so.
+    if detailed > 0.5 {
+        let urban = clamp(cover.built + cover.industry, 0.0, 1.0);
+        let city_ink = 1.0 - smoothstep(0.0, 1.4, abs(urban - 0.5) / max(fwidth(urban), 1e-4));
+        c = mix(c, vec3f(0.30, 0.13, 0.10), city_ink * (1.0 - sheet));
+    }
+
     // ---- the drawn sheet: one olive ground, everything on it a symbol with an inked edge ----
     var m = c;
     var shore_ink = 0.0;
@@ -591,9 +601,10 @@ fn fs_tile(in: TileOut) -> @location(0) vec4f {
     let px = in.inward / max(fwidth(in.inward), 1e-6);
     var marked = color;
     marked = mix(marked, marked * 0.80, line(px, 0.5) * g.misc.z);                                 // the hexagon grid
-    // (none on the drawn sheet of the closest zoom)
-    let province_lines = 0.35 * (1.0 - smoothstep(250.0, 600.0, g.eye_part.w)) * smoothstep(90.0, 220.0, g.eye_part.w);
-    if (in.side & 1u) != 0u { marked = mix(marked, marked * 0.62, line(px, 0.6) * province_lines); }  // province border, close up only
+    // (none on the drawn sheet of the closest zoom; fully shown by the time the sheet has
+    // faded in, kept visible out to a region's own scale, like a state border in Vic3 or HOI4)
+    let province_lines = 0.55 * (1.0 - smoothstep(1800.0, 3200.0, g.eye_part.w)) * smoothstep(90.0, 220.0, g.eye_part.w);
+    if (in.side & 1u) != 0u { marked = mix(marked, vec3f(0.30, 0.22, 0.14), line(px, 0.9) * province_lines); }  // province (region) border
     // With the real lines drawn, the hexagon-side versions step back: borders and coasts go
     // faint, and the river sides (where a unit really has to cross) show only with the
     // movement network switched on.
