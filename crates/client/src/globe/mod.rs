@@ -10,6 +10,7 @@
 //! floats, which near the Earth's surface (6,371 km from the centre) are only good to about
 //! half a metre; distances from the camera are small numbers and stay exact.
 
+pub mod assets;
 pub mod camera;
 pub mod index;
 pub mod render;

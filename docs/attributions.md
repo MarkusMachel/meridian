@@ -12,3 +12,9 @@ Hand-written data (state merge table, chokepoints, strategic sites) is original 
 
 - `wgpu`, `winit`, `egui`, `egui-wgpu`, `egui-winit`, `pollster`, `bytemuck`, `png`: MIT and/or Apache-2.0 (licences as declared on crates.io; re-check with `cargo license` before a release).
 - `epaint_default_fonts` (enabled by egui's `default_fonts` feature, used for the interface text): the crate is `(MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0`. It bundles Ubuntu-Light (Ubuntu Font License), Hack (MIT-style), Noto Emoji (SIL OFL) and an emoji icon font (MIT). All allow commercial use; the licence texts ship in that crate's `fonts/` folder and must be included with a release. Replace with the typewriter-style OFL fonts from `docs/design-notes.md` when the paper-map look is built.
+
+## Regional detail packs (optional, separate files)
+
+| Source | Used for | Licence | Notes |
+| --- | --- | --- | --- |
+| [OpenStreetMap](https://www.openstreetmap.org/copyright) via [Geofabrik](https://download.geofabrik.de/) extracts | roads, railways, waterways, woods, built-up areas and water in `data/baked/packs/*` | Open Database License 1.0 | Credit required wherever the packs are shown or shipped: "(c) OpenStreetMap contributors". The packs are derived databases under the ODbL and are kept in their own files, apart from the map and the engine. Shown in the client's Settings window. The data is the present-day map, not 1990. |

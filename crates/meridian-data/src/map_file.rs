@@ -34,6 +34,9 @@ impl<'a> Arrays<'a> {
         debug_assert_eq!(bytes.len(), count * width);
         Ok((count, bytes))
     }
+    fn has(&self, name: &str) -> bool {
+        self.by_name.contains_key(name)
+    }
     fn u8s(&self, name: &str) -> Result<Vec<u8>, DataError> {
         Ok(self.raw(name, 1, 1)?.1.to_vec())
     }
@@ -219,16 +222,105 @@ pub struct GlobeLines {
     pub bucket_tier: Vec<u8>,
     /// The middle of each bucket's area on the sphere (three numbers each).
     pub bucket_xyz: Vec<i32>,
+    /// How far a bucket's pieces reach from its middle, in millionths of a radian.
+    pub bucket_reach_microrad: u32,
+    /// A regional pack only: the outline of the area it covers, as longitude and latitude in
+    /// millionths of a degree, ring after ring; ring `k` is points `cover_off[k]..cover_off[k + 1]`.
+    /// Inside it the pack's lines replace the world's coarse roads, railways and small rivers.
+    pub cover: Vec<i32>,
+    pub cover_off: Vec<u32>,
+}
+
+/// Shaded relief for the globe: a picture of the world (longitude by latitude, left edge
+/// 180° W, top edge 90° N), 128 for flat ground, lighter facing the light.
+#[derive(Clone, Debug, Default)]
+pub struct GlobeRelief {
+    pub width: u32,
+    pub height: u32,
+    pub shade: Vec<u8>,
+}
+
+/// The ground cover of a regional pack: a fine picture cut in square tiles, each pixel 0
+/// nothing, 1 water, 2 woods, 3 built-up, 4 industry.
+#[derive(Clone, Debug, Default)]
+pub struct PackCover {
+    /// West and north edge in millionths of a degree.
+    pub west_e6: i32,
+    pub north_e6: i32,
+    /// Pixel width and height in billionths of a degree.
+    pub pixel_lon_e9: i32,
+    pub pixel_lat_e9: i32,
+    pub width: u32,
+    pub height: u32,
+    /// Tile size in pixels, and how many tiles across and down.
+    pub tile: u32,
+    pub across: u32,
+    pub down: u32,
+    /// For each tile, row by row from the north-west: which stored tile it is, or `u32::MAX`.
+    pub tile_layer: Vec<u32>,
+    /// The stored tiles one after another, `tile * tile` bytes each.
+    pub tiles: Vec<u8>,
+}
+
+const KIND_GLOBE_RELIEF: u32 = 5;
+const KIND_PACK_COVER: u32 = 6;
+
+fn read_file(path: &Path) -> Result<(String, Vec<u8>), Vec<DataError>> {
+    let name = path.display().to_string();
+    let bytes = std::fs::read(path).map_err(|e| vec![DataError::new(&name, "-", ErrorKind::Io, e.to_string())])?;
+    Ok((name, bytes))
+}
+
+pub fn load_globe_relief_file(path: &Path) -> Result<GlobeRelief, Vec<DataError>> {
+    let (name, bytes) = read_file(path)?;
+    let (a, _) = open_container(&name, &bytes, KIND_GLOBE_RELIEF, 1, "globe relief file")?;
+    let read = || -> Result<GlobeRelief, DataError> {
+        let size = a.u32s("size")?;
+        let shade = a.u8s("shade")?;
+        if size.len() != 2 || size[0] == 0 || shade.len() as u64 != size[0] as u64 * size[1] as u64 {
+            return Err(a.bad("-", "the picture is not the size the file says".into()));
+        }
+        Ok(GlobeRelief { width: size[0], height: size[1], shade })
+    };
+    read().map_err(|e| vec![e])
+}
+
+pub fn load_pack_cover_file(path: &Path) -> Result<PackCover, Vec<DataError>> {
+    let (name, bytes) = read_file(path)?;
+    let (a, _) = open_container(&name, &bytes, KIND_PACK_COVER, 1, "pack ground cover file")?;
+    let read = || -> Result<PackCover, DataError> {
+        let g = a.i32s("grid")?;
+        if g.len() != 9 || g[2..].iter().any(|&v| v <= 0) {
+            return Err(a.bad("grid", "nine positive numbers expected".into()));
+        }
+        let c = PackCover { west_e6: g[0], north_e6: g[1], pixel_lon_e9: g[2], pixel_lat_e9: g[3], width: g[4] as u32, height: g[5] as u32, tile: g[6] as u32, across: g[7] as u32, down: g[8] as u32, tile_layer: a.u32s("tile_layer")?, tiles: a.u8s("tiles")? };
+        let per_tile = c.tile as usize * c.tile as usize;
+        let stored = c.tiles.len() / per_tile;
+        let ok = c.tile_layer.len() == (c.across * c.down) as usize && c.tiles.len() == stored * per_tile && stored > 0 && c.tile_layer.iter().all(|&l| l == u32::MAX || (l as usize) < stored) && c.across * c.tile >= c.width && c.down * c.tile >= c.height;
+        if !ok {
+            return Err(a.bad("-", "the arrays do not fit together".into()));
+        }
+        Ok(c)
+    };
+    read().map_err(|e| vec![e])
 }
 
 pub fn load_globe_lines_file(path: &Path) -> Result<GlobeLines, Vec<DataError>> {
-    let name = path.display().to_string();
-    let bytes = std::fs::read(path).map_err(|e| vec![DataError::new(&name, "-", ErrorKind::Io, e.to_string())])?;
+    let (name, bytes) = read_file(path)?;
     let (a, _) = open_container(&name, &bytes, KIND_GLOBE_LINES, GLOBE_LINES_VERSION, "globe lines file")?;
     let read = || -> Result<GlobeLines, DataError> {
-        let g = GlobeLines { seg_a: a.i32s("seg_a")?, seg_b: a.i32s("seg_b")?, seg_style: a.u8s("seg_style")?, bucket_off: a.u32s("bucket_off")?, bucket_tier: a.u8s("bucket_tier")?, bucket_xyz: a.i32s("bucket_xyz")? };
+        let g = GlobeLines { seg_a: a.i32s("seg_a")?, seg_b: a.i32s("seg_b")?, seg_style: a.u8s("seg_style")?, bucket_off: a.u32s("bucket_off")?, bucket_tier: a.u8s("bucket_tier")?,
+            bucket_xyz: a.i32s("bucket_xyz")?,
+            // the world file has none of these three
+            bucket_reach_microrad: if a.has("info") { a.u32s("info")?.first().copied().unwrap_or(40_000) } else { 40_000 },
+            cover: if a.has("cover") { a.i32s("cover")? } else { Vec::new() },
+            cover_off: if a.has("cover_off") { a.u32s("cover_off")? } else { Vec::new() },
+        };
         let (n, b) = (g.seg_style.len(), g.bucket_tier.len());
-        let ok = g.seg_a.len() == 3 * n && g.seg_b.len() == 3 * n && g.bucket_xyz.len() == 3 * b && g.bucket_off.len() == b + 1 && g.bucket_off.windows(2).all(|w| w[0] <= w[1]) && g.bucket_off.last().is_some_and(|&e| e as usize == n);
+        let ok = g.seg_a.len() == 3 * n && g.seg_b.len() == 3 * n && g.bucket_xyz.len() == 3 * b && g.bucket_off.len() == b + 1 && g.bucket_off.windows(2).all(|w| w[0] <= w[1]) && g.bucket_off.last().is_some_and(|&e| e as usize == n)
+            && g.cover.len().is_multiple_of(2)
+            && g.cover_off.windows(2).all(|w| w[0] <= w[1])
+            && g.cover_off.last().is_none_or(|&e| e as usize * 2 == g.cover.len());
         if !ok {
             return Err(a.bad("-", "the arrays do not fit together".into()));
         }

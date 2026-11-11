@@ -155,11 +155,13 @@ fn globe_main(args: &Args, map: Arc<meridian_core::Map>) {
     use client::globe::{GlobeCamera, GlobeRenderer, HexIndex};
     let world = proving_ground::scenario_on_map(1, map.clone());
     let mut session = Session::new(world, Box::new(proving_ground::rules(false)), CountryId(0));
-    // the real lines are optional: without the file the globe shows hexagons only
-    let lines_path = args.data.join("meridian-globe-lines.bin");
-    let lines = lines_path.exists().then(|| meridian_data::load_globe_lines_file(&lines_path).unwrap_or_else(|e| panic!("{}", e[0])));
+    // real lines, relief and regional packs are optional: without them the globe shows hexagons only
+    let assets = client::globe::assets::load(&args.data);
+    for note in &assets.notes {
+        eprintln!("{note}");
+    }
     let Some(out) = args.screenshot.clone() else {
-        globe_app::run(globe_app::Inputs { map, session, lines, view: args.at });
+        globe_app::run(globe_app::Inputs { map, session, assets, view: args.at });
         return;
     };
     session.set_speed(Speed::Run(5));
@@ -179,10 +181,8 @@ fn globe_main(args: &Args, map: Arc<meridian_core::Map>) {
     };
     renderer.set_colors(&gpu.queue, &colors);
     renderer.coloring = globe_app::coloring_for(args.mode);
-    renderer.show_roads = lines.is_none();
-    if let Some(lines) = &lines {
-        renderer.set_lines(&gpu.device, lines);
-    }
+    renderer.show_roads = assets.lines.is_none();
+    renderer.set_assets(&gpu.device, &gpu.queue, &assets);
     let (w, h) = args.size;
     let camera = match args.at {
         Some((lat, lon, km)) => GlobeCamera::looking_at(w as f64, h as f64, lat, lon, km),

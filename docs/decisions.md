@@ -544,3 +544,17 @@ The owner asked why roads and railways were not curved and expected something cl
 - **Exact at any zoom.** A piece's ends are whole metres from the Earth's centre; the shader takes the camera's whole-metre place off in integers before turning anything into 32-bit floats.
 - **Source and limits.** Natural Earth at 1:10 million: the main roads and railways of about 2010, no streets, no buildings, no relief. Built-up ground is shown per hexagon from Natural Earth's urban areas.
 - **What "like a real map" still needs** (not built): shaded relief from elevation; land drawn from real outlines instead of whole hexagons; and OpenStreetMap for streets, buildings and land use at close zoom. OpenStreetMap cannot be downloaded on the machine this is written on, so that builder has to be run and checked on the owner's Mac. The earlier assumption that the OpenStreetMap packs were on hold is withdrawn: the owner expects them.
+
+## Shaded relief and the first OpenStreetMap pack, written blind (2026-11-11)
+
+The owner chose to have the detail builder written without my being able to run it on real data (OpenStreetMap and the elevation file cannot be downloaded where this is written), starting with Italy.
+
+- **Shaded relief** (`build_globe_relief.py`): a hillshade of the whole world from the ETOPO grid the terrain step already keeps, 8192 by 4096, lit from the north-west, blended into the land colour in both the far and the near drawing. Worked in bands of rows so it needs little memory (in one piece it ran out of 7 GB).
+- **Regional pack** (`fetch_pack.sh`, `build_pack.py`): downloads a Geofabrik extract, keeps and exports the wanted features with the `osmium` command-line tool (installed with Homebrew; it does the heavy reading in C++ and needs no Python package that might not exist for Python 3.15), and writes a lines file (motorways to unclassified roads, railways without sidings, rivers and canals; tunnels left out; simplified to about 8 m) and a ground-cover picture (water, woods, built-up, industry) at about 80 m a pixel in 2048-pixel tiles.
+- **Ground cover is a picture, not polygons.** Its size depends on the region's area, not on how detailed the mapping is, and the shader looks it up from the pixel's longitude and latitude.
+- **Inside a pack's outline the world's coarse roads, railways and small rivers are hidden**, so they are not drawn twice.
+- **Buildings and streets are not in this first cut.** Residential streets and single buildings would multiply the size several times and are below what a brigade-level map shows; built-up areas are shown as areas.
+- **Not 1990.** The pack is the present-day map. A 1990 look would need hand correction or an older source.
+- **Licence.** ODbL: packs stay in their own files and the credit is shown in Settings and in attributions.md.
+
+**Tested here only on made-up data** (an invented extract around Rome in the format `osmium export` writes, and invented elevation): the builders run, the client loads and draws everything. **Not tested:** the `osmium` commands themselves, real Italy's size and build time (the numbers in the script's comments are estimates), memory on the real extract, and how the result looks. The first real run is the owner's.

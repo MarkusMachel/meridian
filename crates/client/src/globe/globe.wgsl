@@ -14,13 +14,18 @@ struct Globals {
     more: vec4f,     // x: road and railway strength; y: colouring (0 palette with terrain shaded in, 1 palette, 2 terrain); z: 1 when the real lines are drawn; w: how strongly built-up ground shows
     eye_whole: vec4i,  // the camera's place in whole metres from the Earth's centre
     eye_part: vec4f,   // xyz: the rest of the camera's place (under a metre); w: metres per pixel
-    screen: vec4f,     // xy: the picture's size in pixels
+    screen: vec4f,     // xy: the picture's size in pixels; z: 1 when there is shaded relief
+    pack_a: vec4f,     // a regional pack's ground cover: west edge, north edge, pixel width, pixel height (degrees)
+    pack_b: vec4u,     // its picture's width and height in pixels (0 = no pack), tile size, tiles across
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(1) var world_picture: texture_2d<u32>;   // cell per longitude/latitude pixel
 @group(0) @binding(2) var cell_table: texture_2d<u32>;      // per cell: r province, g country, b terrain, a built-up (0..255)
 @group(0) @binding(3) var palette: texture_2d<f32>;         // colour per province
+@group(0) @binding(4) var relief: texture_2d<f32>;          // shaded relief of the world, 0.5 = flat
+@group(0) @binding(5) var cover_tiles: texture_2d_array<u32>;  // a pack's ground cover, tile by tile
+@group(0) @binding(6) var cover_table: texture_2d<u32>;     // which stored tile each tile of the picture is
 
 const NO_CELL: u32 = 0xffffffffu;
 const SEA: vec3f = vec3f(0.42, 0.55, 0.66);
@@ -59,6 +64,58 @@ fn land_color(info: vec4u) -> vec3f {
 
 fn province_color(province: u32) -> vec3f {
     return textureLoad(palette, vec2u(province % 4096u, province / 4096u), 0).rgb;
+}
+
+// Shaded relief at a longitude and latitude (radians), smoothed between the picture's pixels.
+fn relief_at(lon: f32, lat: f32) -> f32 {
+    let size = vec2i(textureDimensions(relief));
+    let p = vec2f((lon + PI) / (2.0 * PI) * f32(size.x) - 0.5, (0.5 * PI - lat) / PI * f32(size.y) - 0.5);
+    let i = vec2i(floor(p));
+    let f = fract(p);
+    let x0 = ((i.x % size.x) + size.x) % size.x;
+    let x1 = (x0 + 1) % size.x;
+    let y0 = clamp(i.y, 0, size.y - 1);
+    let y1 = clamp(i.y + 1, 0, size.y - 1);
+    let top = mix(textureLoad(relief, vec2i(x0, y0), 0).r, textureLoad(relief, vec2i(x1, y0), 0).r, f.x);
+    let bottom = mix(textureLoad(relief, vec2i(x0, y1), 0).r, textureLoad(relief, vec2i(x1, y1), 0).r, f.x);
+    return mix(top, bottom, f.y);
+}
+
+// A regional pack's ground cover at a longitude and latitude (radians): 0 nothing, 1 water,
+// 2 woods, 3 built-up, 4 industry.
+fn cover_at(lon: f32, lat: f32) -> u32 {
+    if g.pack_b.x == 0u {
+        return 0u;
+    }
+    let x = (degrees(lon) - g.pack_a.x) / g.pack_a.z;
+    let y = (g.pack_a.y - degrees(lat)) / g.pack_a.w;
+    if x < 0.0 || y < 0.0 || x >= f32(g.pack_b.x) || y >= f32(g.pack_b.y) {
+        return 0u;
+    }
+    let px = vec2u(u32(x), u32(y));
+    let tile = px / g.pack_b.z;
+    let layer = textureLoad(cover_table, tile, 0).r;
+    if layer == NO_CELL {
+        return 0u;
+    }
+    return textureLoad(cover_tiles, px % g.pack_b.z, layer, 0).r;
+}
+
+// The ground as a map shows it: relief shaded in, then woods, towns and water from a pack.
+// The pack's cover fades in from a country down (from farther away it is only noise).
+fn ground(color: vec3f, lon: f32, lat: f32) -> vec3f {
+    var c = color * mix(1.0, 0.45 + 1.1 * relief_at(lon, lat), g.screen.z);
+    let strength = clamp((2500.0 - g.eye_part.w) / 1000.0, 0.0, 1.0);
+    if strength > 0.0 {
+        switch cover_at(lon, lat) {
+            case 1u { c = mix(c, SEA, strength); }
+            case 2u { c = mix(c, vec3f(0.30, 0.50, 0.27), 0.75 * strength); }
+            case 3u { c = mix(c, vec3f(0.74, 0.68, 0.63), 0.65 * strength); }
+            case 4u { c = mix(c, vec3f(0.60, 0.58, 0.64), 0.65 * strength); }
+            default {}
+        }
+    }
+    return c;
 }
 
 // ---------------------------------------------------------------- far
@@ -110,7 +167,7 @@ fn fs_far(in: FarOut) -> @location(0) vec4f {
     let cell = picture_cell(lon, lat, 0, 0);
     if cell != NO_CELL {
         let info = cell_info(cell);
-        var land = land_color(info);
+        var land = ground(land_color(info), lon, lat);
         // country borders and coasts: a neighbouring pixel of the picture belongs to someone else
         let right = picture_cell(lon, lat, 1, 0);
         let below = picture_cell(lon, lat, 0, 1);
@@ -148,6 +205,7 @@ struct TileOut {
     @location(1) inward: f32,
     @location(2) @interpolate(flat) side: u32,
     @location(3) across: f32,
+    @location(4) from_centre: vec3f,   // the point's place from the Earth's centre (rough: good to a metre or two)
 };
 
 @vertex
@@ -160,6 +218,7 @@ fn vs_tile(in: TileIn) -> TileOut {
     o.inward = in.inward;
     o.side = in.side;
     o.across = in.across;
+    o.from_centre = v + vec3f(g.eye_whole.xyz) + g.eye_part.xyz;
     return o;
 }
 
@@ -171,7 +230,8 @@ fn line(px: f32, half_width: f32) -> f32 {
 @fragment
 fn fs_tile(in: TileOut) -> @location(0) vec4f {
     let info = cell_info(in.cell);
-    var color = land_color(info);
+    let d = normalize(in.from_centre);
+    var color = ground(land_color(info), atan2(d.y, d.x), asin(clamp(d.z, -1.0, 1.0)));
     // built-up ground is greyer
     color = mix(color, vec3f(0.60, 0.57, 0.55), f32(info.a) / 255.0 * 0.7 * g.more.w);
     if in.cell == g.ids.x {
@@ -234,6 +294,7 @@ fn line_half_width(style: u32) -> f32 {
         case 4u { w = 1.0; }    // major highway
         case 5u { w = 0.6; }    // highway or road
         case 6u { w = 0.4; }    // minor road
+        case 8u { w = 0.45; }   // local road (packs)
         default { w = 0.35; }   // railway
     }
     // a little bolder close up
@@ -249,6 +310,7 @@ fn line_color(style: u32) -> vec3f {
         case 4u { return vec3f(0.58, 0.18, 0.12); }
         case 5u { return vec3f(0.42, 0.27, 0.16); }
         case 6u { return vec3f(0.42, 0.33, 0.24); }
+        case 8u { return vec3f(0.36, 0.30, 0.24); }
         default { return vec3f(0.16, 0.15, 0.17); }
     }
 }
@@ -267,7 +329,8 @@ fn vs_line(in: LineIn) -> LineOut {
     let limit = g.misc.x / g.toward.w;
     let da = normalize(vec3f(in.a));
     let db = normalize(vec3f(in.b));
-    if dot(da, g.toward.xyz) < limit || dot(db, g.toward.xyz) < limit {
+    // style 255: a coarse world line that a regional pack replaces
+    if in.style == 255u || dot(da, g.toward.xyz) < limit || dot(db, g.toward.xyz) < limit {
         o.pos = vec4f(2.0, 2.0, 2.0, 1.0);
         o.across = 0.0;
         return o;

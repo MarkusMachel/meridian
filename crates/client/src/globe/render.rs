@@ -35,6 +35,8 @@ struct Globals {
     eye_whole: [i32; 4],
     eye_part: [f32; 4],
     screen: [f32; 4],
+    pack_a: [f32; 4],
+    pack_b: [u32; 4],
 }
 
 /// One piece of a real line as the graphics card gets it: 28 bytes.
@@ -51,14 +53,23 @@ struct Lines {
     pieces: wgpu::Buffer,
     /// (detail tier, direction to the bucket's middle, its pieces)
     buckets: Vec<(u8, [f64; 3], std::ops::Range<u32>)>,
+    /// How far a bucket's pieces reach from its middle, as an angle.
+    reach: f64,
 }
 
-/// A bucket's pieces reach at most this far from its middle, as an angle (a level-2 hexagon
-/// is about 320 km across; pieces are filed by their middle and are short).
-const BUCKET_REACH: f64 = 0.04;
+/// The textures the shader reads, kept so the set can be made again when one is replaced.
+struct Views {
+    picture: wgpu::TextureView,
+    table: wgpu::TextureView,
+    palette: wgpu::TextureView,
+    relief: wgpu::TextureView,
+    cover_tiles: wgpu::TextureView,
+    cover_table: wgpu::TextureView,
+}
+
 /// Detail tiers come in below these metres per pixel: 0 always, 1 from a continent, 2 from a
-/// country, 3 from a region.
-const TIER_BELOW_M_PER_PX: [f64; 4] = [f64::MAX, 5_000.0, 1_400.0, 600.0];
+/// country, 3 from a region, 4 close up (regional packs only).
+const TIER_BELOW_M_PER_PX: [f64; 5] = [f64::MAX, 5_000.0, 1_400.0, 600.0, 250.0];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Coloring {
@@ -83,9 +94,19 @@ pub struct GlobeRenderer {
     far_pipeline: wgpu::RenderPipeline,
     tile_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
-    lines: Option<Lines>,
+    layout: wgpu::BindGroupLayout,
+    views: Views,
+    /// The world's lines first, then each regional pack's.
+    lines: Vec<Lines>,
+    has_relief: bool,
+    /// A pack's ground cover as the shader needs it: (west, north, pixel width, pixel height) in
+    /// degrees and (width, height, tile size, tiles across) in pixels.
+    pack: ([f32; 4], [u32; 4]),
     /// Draw the real lines (when a lines file was given).
     pub show_lines: bool,
+    /// Shade the relief in, and draw a pack's woods, towns and water (when the files were given).
+    pub show_relief: bool,
+    pub show_cover: bool,
     offsets: wgpu::Buffer,
     tiles: HashMap<u32, GpuTile>,
     frame: u64,
@@ -116,6 +137,59 @@ fn texture_u32(device: &wgpu::Device, queue: &wgpu::Queue, label: &str, width: u
             data,
         )
         .create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// The ground cover of a pack as two textures: the stored tiles as layers of one array, and
+/// a small table saying which layer each tile of the picture is.
+#[allow(clippy::too_many_arguments)]
+fn cover_textures(device: &wgpu::Device, queue: &wgpu::Queue, tile: u32, stored: u32, across: u32, down: u32, tiles: &[u8], table: &[u32]) -> (wgpu::TextureView, wgpu::TextureView) {
+    let layers = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("ground cover"),
+            size: wgpu::Extent3d { width: tile, height: tile, depth_or_array_layers: stored },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Uint,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        tiles,
+    );
+    // a one-layer texture would otherwise be taken for a plain picture, not an array
+    let layers_view = layers.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
+    (layers_view, texture_u32(device, queue, "ground cover table", across, down, wgpu::TextureFormat::R32Uint, bytemuck::cast_slice(table)))
+}
+
+fn bind_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, globals: &wgpu::Buffer, v: &Views) -> wgpu::BindGroup {
+    let view = |binding, view| wgpu::BindGroupEntry { binding, resource: wgpu::BindingResource::TextureView(view) };
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("globe"),
+        layout,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }, view(1, &v.picture), view(2, &v.table), view(3, &v.palette), view(4, &v.relief), view(5, &v.cover_tiles), view(6, &v.cover_table)],
+    })
+}
+
+/// Is a longitude and latitude (degrees) inside one of the rings? Rings are longitude and
+/// latitude pairs in millionths of a degree; a point is inside when a line from it to the
+/// east crosses a ring's edge an odd number of times.
+pub fn inside_rings(points: &[i32], ring_off: &[u32], lon: f64, lat: f64) -> bool {
+    let (x, y) = (lon * 1e6, lat * 1e6);
+    ring_off.windows(2).any(|w| {
+        let ring = &points[2 * w[0] as usize..2 * w[1] as usize];
+        let n = ring.len() / 2;
+        let mut inside = false;
+        for i in 0..n {
+            let (ax, ay) = (ring[2 * i] as f64, ring[2 * i + 1] as f64);
+            let (bx, by) = (ring[2 * ((i + 1) % n)] as f64, ring[2 * ((i + 1) % n) + 1] as f64);
+            if (ay > y) != (by > y) && x < ax + (y - ay) / (by - ay) * (bx - ax) {
+                inside = !inside;
+            }
+        }
+        inside
+    })
 }
 
 impl GlobeRenderer {
@@ -155,18 +229,16 @@ impl GlobeRenderer {
                 uint(1),
                 uint(2),
                 wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false }, count: None },
+                uint(6),
             ],
         });
-        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("globe"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&picture_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&table_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&palette_view) },
-            ],
-        });
+        // until the real ones are given: flat relief and an empty ground cover
+        let relief_view = texture_u32(device, queue, "relief", 1, 1, wgpu::TextureFormat::R8Unorm, &[128]);
+        let (cover_tiles, cover_table) = cover_textures(device, queue, 1, 1, 1, 1, &[0], &[NO_CELL]);
+        let views = Views { picture: picture_view, table: table_view, palette: palette_view, relief: relief_view, cover_tiles, cover_table };
+        let bind = bind_group(device, &layout, &globals, &views);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("globe"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let target = [Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })];
         let far_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -222,22 +294,64 @@ impl GlobeRenderer {
             cache: None,
         });
         let offsets = device.create_buffer(&wgpu::BufferDescriptor { label: Some("tile offsets"), size: (TILES_KEPT * 12) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        GlobeRenderer { globals, bind, palette, palette_rows, far_pipeline, tile_pipeline, line_pipeline, lines: None, show_lines: true, offsets, tiles: HashMap::new(), frame: 0, drawn: (0, 0), coloring: Coloring::PaletteShaded, show_roads: true }
+        GlobeRenderer { globals, bind, palette, palette_rows, far_pipeline, tile_pipeline, line_pipeline, layout, views, lines: Vec::new(), has_relief: false, pack: ([0.0; 4], [0; 4]), show_lines: true, show_relief: true, show_cover: true, offsets, tiles: HashMap::new(), frame: 0, drawn: (0, 0), coloring: Coloring::PaletteShaded, show_roads: true }
     }
 
-    /// Give the renderer the real lines to draw over the hexagons.
-    pub fn set_lines(&mut self, device: &wgpu::Device, data: &meridian_data::GlobeLines) {
-        let pieces: Vec<Piece> = (0..data.seg_style.len())
-            .map(|i| Piece { a: [data.seg_a[3 * i], data.seg_a[3 * i + 1], data.seg_a[3 * i + 2]], b: [data.seg_b[3 * i], data.seg_b[3 * i + 1], data.seg_b[3 * i + 2]], style: data.seg_style[i] as u32 })
-            .collect();
-        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("real lines"), contents: bytemuck::cast_slice(&pieces), usage: wgpu::BufferUsages::VERTEX });
-        let buckets = (0..data.bucket_tier.len())
-            .map(|k| {
-                let middle = super::unit([data.bucket_xyz[3 * k] as f64, data.bucket_xyz[3 * k + 1] as f64, data.bucket_xyz[3 * k + 2] as f64]);
-                (data.bucket_tier[k], middle, data.bucket_off[k]..data.bucket_off[k + 1])
-            })
-            .collect();
-        self.lines = Some(Lines { pieces: buffer, buckets });
+    /// Give the renderer the real lines to draw over the hexagons: the world's, then each
+    /// regional pack's. Inside a pack's coverage the world's roads, railways and small rivers
+    /// are hidden, because the pack has the same ones in finer detail.
+    pub fn set_lines(&mut self, device: &wgpu::Device, world: Option<&meridian_data::GlobeLines>, packs: &[meridian_data::GlobeLines]) {
+        self.lines.clear();
+        let covered = |lon: f64, lat: f64| packs.iter().any(|p| inside_rings(&p.cover, &p.cover_off, lon, lat));
+        for (data, is_world) in world.into_iter().map(|w| (w, true)).chain(packs.iter().map(|p| (p, false))) {
+            let pieces: Vec<Piece> = (0..data.seg_style.len())
+                .map(|i| {
+                    let (a, b) = ([data.seg_a[3 * i], data.seg_a[3 * i + 1], data.seg_a[3 * i + 2]], [data.seg_b[3 * i], data.seg_b[3 * i + 1], data.seg_b[3 * i + 2]]);
+                    let mut style = data.seg_style[i] as u32;
+                    if is_world && style >= 3 && !packs.is_empty() {
+                        let (lat, lon) = super::lat_lon_of([(a[0] + b[0]) as f64, (a[1] + b[1]) as f64, (a[2] + b[2]) as f64]);
+                        if covered(lon.to_degrees(), lat.to_degrees()) {
+                            style = 255;
+                        }
+                    }
+                    Piece { a, b, style }
+                })
+                .collect();
+            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("real lines"), contents: bytemuck::cast_slice(&pieces), usage: wgpu::BufferUsages::VERTEX });
+            let buckets = (0..data.bucket_tier.len())
+                .map(|k| {
+                    let middle = super::unit([data.bucket_xyz[3 * k] as f64, data.bucket_xyz[3 * k + 1] as f64, data.bucket_xyz[3 * k + 2] as f64]);
+                    (data.bucket_tier[k], middle, data.bucket_off[k]..data.bucket_off[k + 1])
+                })
+                .collect();
+            self.lines.push(Lines { pieces: buffer, buckets, reach: data.bucket_reach_microrad as f64 * 1e-6 });
+        }
+    }
+
+    /// Hand over everything that was found next to the map.
+    pub fn set_assets(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, a: &super::assets::GlobeAssets) {
+        self.set_lines(device, a.lines.as_ref(), &a.packs);
+        if let Some(relief) = &a.relief {
+            self.set_relief(device, queue, relief);
+        }
+        if let Some(cover) = &a.cover {
+            self.set_cover(device, queue, cover);
+        }
+    }
+
+    /// Give the renderer the shaded relief of the world.
+    pub fn set_relief(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, relief: &meridian_data::GlobeRelief) {
+        self.views.relief = texture_u32(device, queue, "relief", relief.width, relief.height, wgpu::TextureFormat::R8Unorm, &relief.shade);
+        self.has_relief = true;
+        self.bind = bind_group(device, &self.layout, &self.globals, &self.views);
+    }
+
+    /// Give the renderer a regional pack's ground cover (one pack at a time for now).
+    pub fn set_cover(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, c: &meridian_data::PackCover) {
+        let stored = c.tiles.len() as u32 / (c.tile * c.tile);
+        (self.views.cover_tiles, self.views.cover_table) = cover_textures(device, queue, c.tile, stored, c.across, c.down, &c.tiles, &c.tile_layer);
+        self.pack = ([c.west_e6 as f32 * 1e-6, c.north_e6 as f32 * 1e-6, c.pixel_lon_e9 as f32 * 1e-9, c.pixel_lat_e9 as f32 * 1e-9], [c.width, c.height, c.tile, c.across]);
+        self.bind = bind_group(device, &self.layout, &self.globals, &self.views);
     }
 
     /// One colour per province (from a map mode).
@@ -267,7 +381,7 @@ impl GlobeRenderer {
         let grid = ((250.0 - m_per_px) / 150.0).clamp(0.0, 1.0);
         // roads and railways come in once a hexagon is about 15 pixels wide
         let roads = if self.show_roads { ((450.0 - m_per_px) / 150.0).clamp(0.0, 1.0) } else { 0.0 };
-        let real_lines = self.show_lines && self.lines.is_some();
+        let real_lines = self.show_lines && !self.lines.is_empty();
         let eye = camera.eye();
         let eye_whole = eye.map(f64::floor);
         // built-up ground shows from a country down
@@ -285,7 +399,9 @@ impl GlobeRenderer {
             more: [roads as f32, self.coloring as u32 as f32, if real_lines { 1.0 } else { 0.0 }, built_up as f32],
             eye_whole: [eye_whole[0] as i32, eye_whole[1] as i32, eye_whole[2] as i32, 0],
             eye_part: [(eye[0] - eye_whole[0]) as f32, (eye[1] - eye_whole[1]) as f32, (eye[2] - eye_whole[2]) as f32, m_per_px as f32],
-            screen: [camera.width_px as f32, camera.height_px as f32, 0.0, 0.0],
+            screen: [camera.width_px as f32, camera.height_px as f32, if self.has_relief && self.show_relief { 1.0 } else { 0.0 }, 0.0],
+            pack_a: self.pack.0,
+            pack_b: if self.show_cover { self.pack.1 } else { [0; 4] },
         };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
 
@@ -348,15 +464,33 @@ impl GlobeRenderer {
                 pass.draw(0..tile.vertices, i as u32..i as u32 + 1);
             }
         }
-        if let Some(lines) = self.lines.as_ref().filter(|_| real_lines) {
+        for lines in self.lines.iter().filter(|_| real_lines) {
             pass.set_pipeline(&self.line_pipeline);
             pass.set_vertex_buffer(0, lines.pieces.slice(..));
-            let limit = (camera.view_radius() + BUCKET_REACH).min(std::f64::consts::PI).cos();
+            let limit = (camera.view_radius() + lines.reach).min(std::f64::consts::PI).cos();
             for (tier, middle, range) in &lines.buckets {
-                if m_per_px < TIER_BELOW_M_PER_PX[(*tier as usize).min(3)] && super::dot(*middle, f) >= limit {
+                if m_per_px < TIER_BELOW_M_PER_PX[(*tier as usize).min(4)] && super::dot(*middle, f) >= limit {
                     pass.draw(0..6, range.clone());
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inside_rings;
+
+    #[test]
+    fn a_point_is_inside_a_ring_or_not() {
+        // a square from 10 to 12 E, 40 to 42 N, and a triangle far away
+        let points = [10_000_000, 40_000_000, 12_000_000, 40_000_000, 12_000_000, 42_000_000, 10_000_000, 42_000_000, 30_000_000, 0, 31_000_000, 0, 30_500_000, 1_000_000];
+        let rings = [0, 4, 7];
+        assert!(inside_rings(&points, &rings, 11.0, 41.0));
+        assert!(inside_rings(&points, &rings, 30.5, 0.3));
+        assert!(!inside_rings(&points, &rings, 9.99, 41.0));
+        assert!(!inside_rings(&points, &rings, 11.0, 42.01));
+        assert!(!inside_rings(&points, &rings, 30.1, 0.9));
+        assert!(!inside_rings(&[], &[], 11.0, 41.0));
     }
 }

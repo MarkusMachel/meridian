@@ -19,8 +19,8 @@ use winit::window::{Window, WindowId};
 pub struct Inputs {
     pub map: Arc<Map>,
     pub session: Session,
-    /// The real coasts, borders, rivers, roads and railways, when the file was built.
-    pub lines: Option<meridian_data::GlobeLines>,
+    /// The optional drawing files: real lines, relief, regional packs.
+    pub assets: client::globe::assets::GlobeAssets,
     /// Starting view (latitude, longitude, kilometres across); `None` shows the whole globe.
     pub view: Option<(f64, f64, f64)>,
 }
@@ -39,8 +39,10 @@ struct Gfx {
 
 struct App {
     view: Option<(f64, f64, f64)>,
-    lines: Option<meridian_data::GlobeLines>,
+    assets: Option<client::globe::assets::GlobeAssets>,
     show_lines: bool,
+    show_relief: bool,
+    show_cover: bool,
     map: Arc<Map>,
     index: HexIndex,
     session: Session,
@@ -95,9 +97,12 @@ pub fn run(inputs: Inputs) {
     let mut app = App {
         view: inputs.view,
         // with the real lines, the diagram of roads between hexagon centres starts switched off
-        show_roads: inputs.lines.is_none(),
+        show_roads: inputs.assets.lines.is_none(),
         show_lines: true,
-        lines: inputs.lines,
+        show_relief: true,
+        show_cover: true,
+        status: inputs.assets.notes.iter().filter(|n| !n.starts_with("loaded")).cloned().collect::<Vec<_>>().join("; "),
+        assets: Some(inputs.assets),
         index: HexIndex::new(&map),
         terrain: modes::dominant_terrain(&map),
         map,
@@ -116,7 +121,6 @@ pub fn run(inputs: Inputs) {
         last_frame: Instant::now(),
         snapshot: Default::default(),
         selected_unit: None,
-        status: String::new(),
         show_settings: false,
         show_labels: true,
         ui_scale: 1.0,
@@ -142,8 +146,8 @@ impl App {
         surface.configure(&device, &config);
 
         let mut map_renderer = GlobeRenderer::new(&device, &queue, format, &self.map, &self.index);
-        if let Some(lines) = self.lines.take() {
-            map_renderer.set_lines(&device, &lines);
+        if let Some(assets) = self.assets.take() {
+            map_renderer.set_assets(&device, &queue, &assets);
         }
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(egui_ctx.clone(), egui::ViewportId::ROOT, &*window, Some(window.scale_factor() as f32), window.theme(), Some(device.limits().max_texture_dimension_2d as usize));
@@ -169,6 +173,8 @@ impl App {
                 g.map_renderer.coloring = coloring_for(self.mode);
                 g.map_renderer.show_roads = self.show_roads;
                 g.map_renderer.show_lines = self.show_lines;
+                g.map_renderer.show_relief = self.show_relief;
+                g.map_renderer.show_cover = self.show_cover;
             }
             self.shown_tick = Some(snap.tick);
             self.colors_dirty = false;
@@ -455,6 +461,13 @@ impl App {
             if ui.checkbox(&mut self.show_lines, "Real coasts, borders, rivers, roads and railways").changed() {
                 self.colors_dirty = true;
             }
+            if ui.checkbox(&mut self.show_relief, "Shaded relief").changed() {
+                self.colors_dirty = true;
+            }
+            if ui.checkbox(&mut self.show_cover, "Woods, towns and water (regional packs)").changed() {
+                self.colors_dirty = true;
+            }
+            ui.label("Regional packs: (c) OpenStreetMap contributors, ODbL.");
             if ui.checkbox(&mut self.show_roads, "Movement network (roads, railways and bridges between hexagons)").changed() {
                 self.colors_dirty = true;
             }

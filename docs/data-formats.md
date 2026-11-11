@@ -131,3 +131,21 @@ Written by `crates/map-builder/build_render.py` (checked by `validate_render.py`
 | `bucket_xyz` | i32, three per bucket | the middle of the bucket's level-2 hexagon |
 
 Pieces are sorted by tier, then bucket hexagon, then style. No piece is longer than a quarter of a degree. Size on the world: 3.07 million pieces, 77 MB.
+
+A regional pack's lines file (`data/baked/packs/<name>.lines.bin`) is the same format with three more arrays: `info` (u32: how far a bucket reaches from its middle, in millionths of a radian), and the coverage outline `cover` (i32 longitude, latitude pairs in millionths of a degree) with `cover_off` (u32, ring starts, rings + 1 entries). Style 8 is a local road; tier 4 shows only close up. Inside the outline the client hides the world file's styles 3 and up.
+
+## Globe relief file (version 1)
+
+`data/baked/meridian-globe-relief.bin`, written by `build_globe_relief.py`. Container kind 5. `size` (u32: width, height; 8192 by 4096) and `shade` (u8, width * height, rows north to south, left edge 180 W): 128 is flat ground, lighter faces the north-west light. 33.6 MB.
+
+## Pack ground cover file (version 1)
+
+`data/baked/packs/<name>.cover.bin`, written by `build_pack.py`. Container kind 6.
+
+| Array | Type | Meaning |
+| --- | --- | --- |
+| `grid` | i32, 9 values | west edge and north edge (millionths of a degree), pixel width and height (billionths of a degree), picture width and height (pixels), tile size (pixels), tiles across, tiles down |
+| `tile_layer` | u32 per tile, row by row from the north-west | which stored tile it is, or 0xFFFFFFFF when the tile is empty |
+| `tiles` | u8 | the stored tiles one after another, tile * tile bytes each, rows north to south: 0 nothing, 1 water, 2 woods, 3 built-up, 4 industry |
+
+A pixel is 0.001 by 0.00075 degrees (about 79 by 83 m at 45 N). Drawing only.
