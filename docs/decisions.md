@@ -599,3 +599,16 @@ The owner: roads and railways must be objects, because they will be supply route
 - **Client**: the "Supply network" overlay (key N) draws each link wider and stronger in colour by level; the panel lists the selected hexagon's links, and with a unit selected shows the road and rail supply routes from the unit to the hexagon, drawn on the map, with the weakest level.
 
 **Not built:** damage, repair and upgrading of links; named routes (a motorway or a line as one object made of links); the supply system itself; movement cost by link level (movement still uses "both cells have a road"). **Known:** a route's level is often set by the links at a city's own hexagon (Hamburg to Munich comes out level 2 on Natural Earth data); whether the first and last stretch should count is a supply-rules question. Italy's levels are today's network, not 1990's (the high-speed lines are mostly later). The real Italy network file has not been built yet: it was tested on made-up data.
+
+## Close zoom as a drawn sheet (2026-11-11)
+
+The owner showed a map from Flashpoint Campaigns (Aiterhofen) as the look wanted: one olive ground, hills as stepped shapes, trees and houses as little symbols, bright outlined rivers, three kinds of road, no country colour. Decided: that look close up, the lit landscape with the country wash from countries and continents outward; houses are generated symbols, not real footprints.
+
+- **The sheet** takes over below 220 m a pixel and is complete under 90 (`sheet` in `globe.wgsl`). One olive ground with a faint patchwork; no country wash, no province lines; the border line stays.
+- **Symbols larger than life.** A tree is about 9 pixels and a house about 7 whatever the zoom; their size on the ground doubles each time the zoom would make them smaller. Trees stand where a pack has woods, houses (red roofs, some pale) where it has built-up ground, larger grey ones on industry. Each has an inked rim.
+- **Water** is one bright blue with a dark line at the shore.
+- **Height as steps** of 40 m with an inked edge, a shadow below and a light rim above, left out where steps would be under 7 pixels apart or the ground is flat. With the present height picture (4.9 km a pixel) these are broad shapes, not the small hills of the model map: that needs finer heights for Italy (Copernicus 30 m), which the owner has not yet agreed to download.
+- **Roads** (the owner: "way too cluttered"): orange motorways, yellow main roads, pale minor roads, each with a dark rim; railways black and white by turns. Main roads and railways now appear only below 300 m a pixel and secondary roads below 70; before it was 600 and 150.
+- **Town names** are white with a dark edge, large towns in capitals.
+
+Seen only on made-up data. Not done: the kilometre grid and road numbers of the model map, streams as outlined lines, real small hills.

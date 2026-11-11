@@ -72,7 +72,7 @@ struct Views {
 /// Detail tiers come in below these metres per pixel: 0 always, 1 from a continent, 2 from a
 /// country, 3 from a region, 4 close up (regional packs only). A map should show few lines:
 /// what is not needed at a zoom is left out.
-const TIER_BELOW_M_PER_PX: [f64; 5] = [f64::MAX, 5_000.0, 1_400.0, 600.0, 150.0];
+const TIER_BELOW_M_PER_PX: [f64; 5] = [f64::MAX, 5_000.0, 1_400.0, 300.0, 70.0];
 /// Tier 5 is the small roads and canals of a pack: drawn only when asked for, and close up.
 const MINOR_BELOW_M_PER_PX: f64 = 80.0;
 

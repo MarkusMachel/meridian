@@ -732,7 +732,8 @@ impl App {
                 if !map_rect.contains(pos) {
                     continue;
                 }
-                let name = &self.map.site_names[site as usize];
+                // white names with a dark edge, the big towns in capitals, as on the drawn sheet
+                let name = &if population >= 250_000 { self.map.site_names[site as usize].to_uppercase() } else { self.map.site_names[site as usize].clone() };
                 let size = if population >= 3_000_000 { 15.0 } else if population >= 500_000 { 13.0 } else { 11.5 };
                 let font = egui::FontId::proportional(size);
                 let anchor = pos + egui::vec2(8.0, 0.0);
@@ -743,9 +744,9 @@ impl App {
                 taken.push(space);
                 draw_site_icon(&painter, 0, pos, population);
                 for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
-                    painter.text(anchor + egui::vec2(dx, dy), egui::Align2::LEFT_CENTER, name, font.clone(), egui::Color32::from_rgba_unmultiplied(255, 248, 225, 230));
+                    painter.text(anchor + egui::vec2(dx, dy), egui::Align2::LEFT_CENTER, name, font.clone(), egui::Color32::from_rgba_unmultiplied(20, 18, 12, 235));
                 }
-                painter.text(anchor, egui::Align2::LEFT_CENTER, name, font, egui::Color32::from_rgb(35, 22, 12));
+                painter.text(anchor, egui::Align2::LEFT_CENTER, name, font, egui::Color32::from_rgb(250, 250, 244));
             }
         }
         let stacks = self.unit_stacks();

@@ -275,7 +275,11 @@ fn ground(political: vec3f, info: vec4u, from_border: f32, hex_land: f32, lon: f
     }
     c = c * lit;
 
-    // ---- the country's colour: a wash, strongest along the borders ----
+    // Close up the map is a drawn sheet (below); the landscape above is for countries and
+    // continents. `sheet` is how much of the drawn look applies: all of it under 90 m a pixel.
+    let sheet = 1.0 - smoothstep(90.0, 220.0, m_per_px);
+
+    // ---- the country's colour: a wash, strongest along the borders; none on the sheet ----
     if g.more.y > 1.5 {
         // terrain mode: the ground alone
     } else if g.more.y > 0.5 {
@@ -286,6 +290,83 @@ fn ground(political: vec3f, info: vec4u, from_border: f32, hex_land: f32, lon: f
         c = mix(c, political * (0.80 + 0.20 * lit), mix(edge, 0.78, far));
     }
 
+    // ---- the drawn sheet: one olive ground, everything on it a symbol with an inked edge ----
+    var m = c;
+    var shore_ink = 0.0;
+    if sheet > 0.0 {
+        m = vec3f(0.445, 0.455, 0.225);
+        // a faint patchwork of fields
+        let plot = patches(q / 380.0);
+        m = m * (0.975 + 0.05 * plot.y) * (0.965 + 0.035 * smoothstep(0.0, 0.035, plot.x));
+        // height as steps: each 40 m a level, lighter the higher, with an inked edge and a
+        // shadow at its foot. Where the steps would crowd (steep ground) they are left out.
+        let level = h / 40.0;
+        let up = fract(level);
+        let px_per_step = 40.0 / max(steep * m_per_px, 1e-4);
+        // (dead flat ground has no steps at all: without this, a plain lying exactly on a level would be all edge)
+        let stepped = smoothstep(7.0, 16.0, px_per_step) * smoothstep(0.0008, 0.003, steep) * has_ground;
+        m = m * (0.95 + 0.13 * clamp(h / 900.0, 0.0, 1.0));
+        m = m * (1.0 - 0.30 * exp(-(1.0 - up) * px_per_step / 5.0) * stepped);          // shadow below an edge
+        m = mix(m, m * 1.10, (1.0 - smoothstep(1.0, 4.0, up * px_per_step)) * stepped);   // light on the rim above it
+        m = mix(m, vec3f(0.16, 0.17, 0.08), (1.0 - smoothstep(0.4, 1.3, up * px_per_step)) * stepped * 0.85);
+        if detailed > 0.5 {
+            // Symbols are drawn larger than life so they can be read: a tree about 9 pixels,
+            // a house about 7, doubling in ground size each time the zoom would make them smaller.
+            let tree_plot = 130.0 * exp2(ceil(log2(max(1.0, 9.0 * m_per_px / 130.0))));
+            let house_plot = 85.0 * exp2(ceil(log2(max(1.0, 7.0 * m_per_px / 85.0))));
+            // woods: a darker floor and a tree symbol on every plot
+            let wood = cover.woods / cover.known;
+            m = mix(m, vec3f(0.30, 0.37, 0.20), smoothstep(0.30, 0.60, wood) * 0.75);
+            let tq = q / tree_plot;
+            let ti = floor(tq);
+            var tree = 9.0;                    // distance from the nearest tree's middle, in tree radii
+            var lean = vec2f(0.0);             // from that middle to here
+            for (var y = -1; y <= 1; y++) {
+                for (var x = -1; x <= 1; x++) {
+                    let cell = ti + vec2f(f32(x), f32(y));
+                    let middle = cell + 0.5 + (hash22(cell) - 0.5) * 0.7;
+                    let size = 0.34 + 0.14 * hash21(cell + 5.0);
+                    let dist = length(tq - middle) / size;
+                    if dist < tree {
+                        tree = dist;
+                        lean = (tq - middle) / size;
+                    }
+                }
+            }
+            if wood > 0.38 && tree < 1.0 {
+                var leaf = vec3f(0.17, 0.33, 0.25) * (1.0 + 0.30 * dot(lean, vec2f(-0.6, 0.6)));   // lit from the north-west
+                leaf = mix(leaf, vec3f(0.06, 0.13, 0.10), smoothstep(0.70, 0.92, tree));             // inked rim
+                m = leaf;
+            }
+            // towns: a paler floor and a house on most plots; works: bigger, grey
+            let town = cover.built / cover.known;
+            let works = cover.industry / cover.known;
+            m = mix(m, vec3f(0.50, 0.49, 0.30), smoothstep(0.30, 0.60, town + works) * 0.6);
+            let big = step(town, works);       // 1 where the works outweigh the houses
+            let hq = q / (house_plot * mix(1.0, 1.9, big));
+            let hi = floor(hq);
+            let pick = hash22(hi + 3.0);
+            if town + works > 0.42 && pick.x > 0.22 {
+                let middle = hi + 0.5 + (hash22(hi) - 0.5) * 0.3;
+                let turn = floor(pick.y * 4.0) * 0.3927 + hash21(floor(hq / 6.0)) * 3.14;    // streets of one quarter run one way
+                let rel = hq - middle;
+                let local = vec2f(rel.x * cos(turn) + rel.y * sin(turn), -rel.x * sin(turn) + rel.y * cos(turn));
+                let inside = max(abs(local.x) / 0.30, abs(local.y) / 0.20);                 // 1 on the wall
+                if inside < 1.0 {
+                    var roof = mix(vec3f(0.60, 0.27, 0.19), vec3f(0.72, 0.38, 0.24), pick.y);
+                    if pick.x > 0.80 || big > 0.5 {
+                        roof = mix(vec3f(0.78, 0.76, 0.70), vec3f(0.90, 0.88, 0.82), pick.y);
+                    }
+                    m = mix(roof, vec3f(0.13, 0.09, 0.07), smoothstep(0.72, 0.92, inside));   // inked wall
+                }
+            }
+            // an inked line where the land meets water
+            let wet = (cover.sea + cover.water) / cover.known;
+            shore_ink = smoothstep(0.20, 0.30, wet) * (1.0 - smoothstep(0.44, 0.54, wet));
+        }
+    }
+    c = mix(c, m, sheet);
+
     // ---- water ----
     let ripple = 0.97 + 0.06 * clouds(q / 900.0) * close;
     var water = DEEP_SEA;
@@ -294,8 +375,11 @@ fn ground(political: vec3f, info: vec4u, from_border: f32, hex_land: f32, lon: f
         let shore = smoothstep(0.15, 0.58, 1.0 - cover.sea / cover.known);
         water = mix(DEEP_SEA, SHALLOW_SEA, shore);
     }
-    c = mix(c, SHALLOW_SEA * ripple, inland_water);
-    return mix(water * ripple, c, land);
+    // on the sheet all water is one bright blue
+    let sheet_water = vec3f(0.24, 0.55, 0.86);
+    c = mix(c, mix(SHALLOW_SEA * ripple, sheet_water, sheet), inland_water);
+    c = mix(mix(water * ripple, sheet_water, sheet), c, land);
+    return mix(c, vec3f(0.07, 0.17, 0.33), shore_ink * sheet);
 }
 
 // ---------------------------------------------------------------- far
@@ -437,7 +521,8 @@ fn fs_tile(in: TileOut) -> @location(0) vec4f {
     let px = in.inward / max(fwidth(in.inward), 1e-6);
     var marked = color;
     marked = mix(marked, marked * 0.80, line(px, 0.5) * g.misc.z);                                 // the hexagon grid
-    let province_lines = 0.35 * (1.0 - smoothstep(250.0, 600.0, g.eye_part.w));
+    // (none on the drawn sheet of the closest zoom)
+    let province_lines = 0.35 * (1.0 - smoothstep(250.0, 600.0, g.eye_part.w)) * smoothstep(90.0, 220.0, g.eye_part.w);
     if (in.side & 1u) != 0u { marked = mix(marked, marked * 0.62, line(px, 0.6) * province_lines); }  // province border, close up only
     // With the real lines drawn, the hexagon-side versions step back: borders and coasts go
     // faint, and the river sides (where a unit really has to cross) show only with the
@@ -489,6 +574,7 @@ struct LineOut {
     @location(0) @interpolate(flat) style: u32,
     @location(1) across: f32,          // pixels from the middle of the line
     @location(2) @interpolate(flat) half_width: f32,
+    @location(3) along: f32,           // pixels along the piece, for a railway's dashes
 };
 
 // Styles: 0 coast, 1 border, 2 great river, 3 river, 4 motorway, 5 main road, 6 minor road,
@@ -498,12 +584,12 @@ fn line_half_width(style: u32) -> f32 {
     switch style {
         case 0u { w = 0.6; }
         case 1u { w = 1.0; }
-        case 2u { w = 1.2; }
-        case 3u { w = 0.8; }
+        case 2u { w = 1.4; }
+        case 3u { w = 1.0; }
         case 4u { w = 1.5; }
         case 5u { w = 1.1; }
-        case 6u { w = 0.5; }
-        case 7u { w = 0.7; }
+        case 6u { w = 0.75; }
+        case 7u { w = 0.8; }
         default { w = 0.6; }
     }
     // bolder close up, so a motorway is a band and not a hair; finer from far away
@@ -515,21 +601,22 @@ fn line_fill(style: u32) -> vec3f {
     switch style {
         case 0u { return vec3f(0.20, 0.30, 0.40); }
         case 1u { return vec3f(0.13, 0.10, 0.10); }
-        case 2u { return vec3f(0.36, 0.56, 0.76); }
-        case 3u { return vec3f(0.38, 0.58, 0.78); }
-        case 4u { return vec3f(0.95, 0.66, 0.28); }
-        case 5u { return vec3f(0.97, 0.88, 0.56); }
-        case 6u { return vec3f(0.90, 0.86, 0.76); }
-        case 7u { return vec3f(0.20, 0.19, 0.21); }
-        default { return vec3f(0.92, 0.89, 0.82); }
+        case 2u { return vec3f(0.24, 0.55, 0.86); }
+        case 3u { return vec3f(0.24, 0.55, 0.86); }
+        case 4u { return vec3f(0.93, 0.56, 0.22); }
+        case 5u { return vec3f(0.96, 0.88, 0.52); }
+        case 6u { return vec3f(0.84, 0.85, 0.80); }
+        case 7u { return vec3f(0.12, 0.12, 0.13); }
+        default { return vec3f(0.80, 0.81, 0.76); }
     }
 }
 
 fn line_rim(style: u32) -> vec3f {
     switch style {
-        case 2u, 3u { return vec3f(0.24, 0.40, 0.60); }
-        case 4u { return vec3f(0.45, 0.22, 0.10); }
-        case 5u, 6u, 8u { return vec3f(0.42, 0.34, 0.24); }
+        case 2u, 3u { return vec3f(0.07, 0.17, 0.33); }
+        case 4u { return vec3f(0.25, 0.14, 0.06); }
+        case 5u, 6u, 8u { return vec3f(0.20, 0.18, 0.10); }
+        case 7u { return vec3f(0.10, 0.10, 0.11); }
         default { return line_fill(style); }
     }
 }
@@ -552,6 +639,7 @@ fn vs_line(in: LineIn) -> LineOut {
     if in.style == 255u || dot(da, g.toward.xyz) < limit || dot(db, g.toward.xyz) < limit {
         o.pos = vec4f(2.0, 2.0, 2.0, 1.0);
         o.across = 0.0;
+        o.along = 0.0;
         return o;
     }
     let ca = to_clip(vec3f(in.a - g.eye_whole.xyz) - g.eye_part.xyz);
@@ -572,6 +660,7 @@ fn vs_line(in: LineIn) -> LineOut {
     let shift = (normal * sides[in.corner] * reach + along / len * (end * 2.0 - 1.0) * o.half_width * 0.5) / half_screen;
     o.pos = vec4f(clip.xy + shift * clip.w, clip.z, clip.w);
     o.across = sides[in.corner] * reach;
+    o.along = end * len;
     return o;
 }
 
@@ -581,5 +670,10 @@ fn fs_line(in: LineOut) -> @location(0) vec4f {
     let cover = 1.0 - smoothstep(in.half_width - 0.5, in.half_width + 0.5, from_middle);
     // the rim takes the outer pixel of a line wide enough to have one
     let rim = smoothstep(in.half_width - 1.3, in.half_width - 0.5, from_middle) * step(1.4, in.half_width);
-    return vec4f(mix(line_fill(in.style), line_rim(in.style), rim), cover);
+    var fill = line_fill(in.style);
+    if in.style == 7u {
+        // a railway: black and white by turns, as on a map
+        fill = mix(fill, vec3f(0.92, 0.92, 0.90), step(0.5, fract(in.along / 9.0)) * step(1.4, in.half_width));
+    }
+    return vec4f(mix(fill, line_rim(in.style), rim), cover);
 }
