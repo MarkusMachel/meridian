@@ -627,3 +627,12 @@ The owner asked for all of what the drawn sheet still lacked. Written blind agai
 
 Not checked on real data: the elevation file names and address, the place-point export with osmium, how real Italian relief reads as steps, label crowding in the Po plain. Only one pack's heights are drawn at a time, as with cover.
 
+## The supply route overlay was mistaken for a road (2026-11-11)
+
+The owner's screenshot showed a dead-straight orange line running for a hundred kilometres across real, curved roads, and asked that roads, railways and bridges follow the real lines on the ground. They were real roads (the OSM pack lines already follow the ground); the straight line was the debug overlay for the selected unit's supply route, drawn as one straight segment per hexagon on its path. It is really a statement about the hexagon-edge road and rail network, not a road itself, so:
+
+- It is now drawn only with "Supply network" (the hexagon-edge view, `N`) turned on, and as a thin dashed line rather than a thick solid one, so it reads as the debug line it is.
+- A standing bridge is now drawn as a small pale deck crossing the river at right angles, at every river crossing that still has one, not only (as a red cross) where the bridge is down. Seen on made-up data only; not yet checked on the real Italy pack.
+
+Roads and railways themselves were already the real OpenStreetMap lines, curved as drawn; nothing changed there.
+

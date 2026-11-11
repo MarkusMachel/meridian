@@ -831,28 +831,48 @@ impl App {
             let n = egui::vec2(-d.y, d.x);
             painter.add(egui::Shape::convex_polygon(vec![b, b - d * 12.0 + n * 5.0, b - d * 12.0 - n * 5.0], ink, egui::Stroke::NONE));
         }
-        // the supply routes from the selected unit to the selected hexagon: road in orange, rail in black
-        if let Some((_, road, rail)) = &self.routes {
-            for (route, color) in [(road, egui::Color32::from_rgb(235, 120, 20)), (rail, egui::Color32::from_rgb(20, 20, 25))] {
-                let Some(route) = route else { continue };
-                let pts: Vec<egui::Pos2> = route.cells.iter().filter_map(|&c| self.cell_screen(c)).map(to_pt).collect();
-                painter.add(egui::Shape::line(pts.clone(), egui::Stroke::new(5.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 170))));
-                painter.add(egui::Shape::line(pts, egui::Stroke::new(2.5, color)));
+        // The supply route from the selected unit to the selected hexagon is reported as text in
+        // the hexagon panel (distance, weakest link level); it used to also be drawn here as a
+        // straight line from hexagon centre to hexagon centre, which looked like a cross-country
+        // road that ignored the real roads on screen. It only ever stood for the chain of
+        // hexagon edges the route uses, so it is shown only in the "Supply network" debug view,
+        // alongside the hexagon-edge roads and rivers that it is really describing.
+        if self.show_roads {
+            if let Some((_, road, rail)) = &self.routes {
+                for (route, color) in [(road, egui::Color32::from_rgb(235, 120, 20)), (rail, egui::Color32::from_rgb(20, 20, 25))] {
+                    let Some(route) = route else { continue };
+                    let pts: Vec<egui::Pos2> = route.cells.iter().filter_map(|&c| self.cell_screen(c)).map(to_pt).collect();
+                    painter.add(egui::Shape::dashed_line(&pts, egui::Stroke::new(2.5, color), 10.0, 6.0));
+                }
             }
         }
-        // destroyed bridges: a red cross on the river where the bridge was (zoomed in only)
+        // Bridges: an object at every river crossing that still has one, like the way HOI4 marks
+        // a bridge on its own rail and road lines. A standing bridge is a short pale deck set
+        // across the river, at right angles to the line between the two hexagons it joins (which
+        // is roughly the line the river itself follows there); a destroyed one is a red cross.
         if self.camera.m_per_px() < 450.0 {
             let red = egui::Stroke::new(2.5, egui::Color32::from_rgb(200, 30, 30));
+            let deck_fill = egui::Color32::from_rgb(225, 220, 205);
+            let deck_rim = egui::Stroke::new(1.2, egui::Color32::from_rgb(70, 60, 45));
             for &(a, b, condition) in &self.snapshot.bridges {
-                if condition > 0 {
-                    continue;
-                }
                 let (Some(pa), Some(pb)) = (self.cell_screen(a), self.cell_screen(b)) else { continue };
                 let mid = to_pt(((pa.0 + pb.0) / 2.0, (pa.1 + pb.1) / 2.0));
-                if map_rect.contains(mid) {
+                if !map_rect.contains(mid) {
+                    continue;
+                }
+                if condition == 0 {
                     painter.line_segment([mid + egui::vec2(-6.0, -6.0), mid + egui::vec2(6.0, 6.0)], red);
                     painter.line_segment([mid + egui::vec2(-6.0, 6.0), mid + egui::vec2(6.0, -6.0)], red);
+                    continue;
                 }
+                let along = to_pt(pb) - to_pt(pa);
+                let along = if along.length() > 1.0 { along.normalized() } else { egui::vec2(1.0, 0.0) };
+                let across = egui::vec2(-along.y, along.x);
+                let deck: Vec<egui::Pos2> = [(-1.0, -5.0), (1.0, -5.0), (1.0, 5.0), (-1.0, 5.0)]
+                    .into_iter()
+                    .map(|(x, y): (f32, f32)| mid + along * x + across * y)
+                    .collect();
+                painter.add(egui::Shape::convex_polygon(deck, deck_fill, deck_rim));
             }
         }
         // the chain of command of the selected unit: a line up to the unit it reports to (and on
