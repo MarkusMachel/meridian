@@ -503,3 +503,24 @@ Started on the owner's word before M1's last check (the same hash on macOS and L
 ## Fine map scales: working assumption (2026-11-10)
 
 Asked whether 1:50,000 and 1:25,000 should be scenery only or dropped, the owner answered "do all" to a list that included the question, which does not settle it. **Assumed until told otherwise:** nothing finer than 1:250,000 is built now, and M6 (the OpenStreetMap packs) stays on hold. Nothing in M2 to M4 depends on the answer.
+
+## Map rewrite M3, first part: the globe client (2026-11-10)
+
+Started on the owner's word ("do all the steps") with M1's and M2's Mac checks still owed.
+
+**What is there.**
+- **Camera** (`globe/camera.rs`): looks straight down at a point from a height, north up, 30 degree field of view. Dragging keeps the ground under the cursor; the wheel zooms about the cursor. From the whole globe down to 20 m a pixel. All camera arithmetic is in 64-bit floats (display only; nothing here feeds the simulation).
+- **Camera-relative positions.** Hexagon triangles are stored relative to their tile's anchor, and each frame the anchor's position relative to the camera is worked out in 64 bits and sent as one small number per tile. A test does the graphics card's 32-bit arithmetic by hand at the closest zoom and lands within 0.05 pixel.
+- **Two ways of drawing** (`globe.wgsl`). Far: one triangle over the screen; each pixel finds where its line of sight meets the Earth and looks the hexagon up in a picture of the world (8192 x 4096, one cell number per pixel, made at start-up). Near (under 1 km a pixel): hexagons as triangles, in tiles of one level-3 hexagon (343 cells), made as they come into view and kept on the card. Colour comes from a per-cell table and a per-province palette, so a map mode is still only a list of province colours.
+- **Lines without line geometry.** Each hexagon is a fan of six triangles; each triangle knows what runs along its side (province border, country border, river, coast), and the pixel shader draws the line from how close the pixel is to the side. Rivers therefore show exactly where the simulation has them.
+- **Picking**: pixel to ground point to H3 number to cell. `h3o` 0.11.1 (BSD-3-Clause) is used for this and for hexagon corners, in the client only. The engine still has no hexagon library.
+- **The game shell** (`globe_app.rs`): the flat client's panels, time controls, save and load, counters, stacks, command lines and march orders, on the globe. City names come from the map's sites.
+
+**Done test.** Pixel to ground and back: exact to 0.0001 pixel in the camera tests; on the real map a hexagon put on screen is picked again at the equator, 70 degrees north and both sides of the 180th meridian, from the whole globe to 30 km across. Jitter: the 32-bit test above; to be looked at on the Mac. Frame time on the build machine: **not measured** (no graphics card here; budgets.md has the commands). Selecting, ordering and watching a unit march: built, and the window was opened and drawn under software rendering with the division at Hannover, but nobody has clicked in it yet.
+
+**Not done yet (the rest of M3).**
+- Borders and coasts follow hexagon sides; the real border lines and relief are not drawn.
+- The camera cannot tilt.
+- March arrows are straight lines on screen, not the route.
+- Terrain, roads, railways and bridges are not drawn on the globe.
+- The flat client and the old builder steps are still in the tree. They are not retired until the owner says so: the trees, buildings, traffic and landmarks made for the flat map live there, and the globe has none of them.

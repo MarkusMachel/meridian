@@ -41,7 +41,7 @@ pub mod cell_flag {
 }
 /// Bit flags on cell-graph edges.
 pub mod cell_edge_flag {
-    /// A river runs across the shared border of the two cells.
+    /// A river runs along the shared border of the two cells: going from one to the other crosses it.
     pub const RIVER: u8 = 1;
     /// A road crosses the shared border. With `RIVER`: a road bridge stood here in 1990.
     pub const ROAD: u8 = 2;

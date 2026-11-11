@@ -141,3 +141,15 @@ Builder, same container, single-threaded, from the provinces onward: hexagons an
 | Replay from a fresh world | 37 checkpoints and the final hash match |
 
 Before two fixes the same run took 33 s: every march order made 44 MB of search memory afresh (about 7 ms; the world now keeps it between searches) and an order to a place across the sea searched the whole landmass (up to 1.1 s). No per-tick budget is set yet (Phase 8); these are the numbers to set it from, once measured on the M4 Pro.
+
+**The globe client (M3, 2026-11-10).** No graphics card on the machine this was written on: the numbers below are software rendering (llvmpipe, 2 cores) and say nothing about the M4 Pro. **Measure there:** `cargo run --release -p client -- --screenshot /tmp/g.png --size 2560x1440 --at 52.37,9.73,300 --bench 100`, and the frame time shown in the window's top bar.
+
+| View at 2560 x 1440 | Software rendering, drawn and read back |
+| --- | --- |
+| Whole globe | 55 ms |
+| Europe, 4,000 km across (far picture only) | 57 ms |
+| 2,400 km across (hexagons as triangles, the most at once: about 100,000) | 197 ms |
+| 300 km across | 119 ms |
+| Closest zoom, 51 km across (20 m a pixel) | 98 ms |
+
+Start-up on the same machine: hexagon index 0.3 s (13,094 tiles), the picture of the world for the far view (8192 x 4096 hexagon lookups on all cores) 7.9 s on 2 cores. Graphics memory: world picture 134 MB, per-cell table 30 MB, up to 1,200 tiles of about 150 KB each. A tile is built in about 1 ms; at most 24 are built per frame.

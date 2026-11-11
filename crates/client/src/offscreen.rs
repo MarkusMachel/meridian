@@ -55,6 +55,41 @@ pub fn render_rgba(gpu: &Gpu, renderer: &mut Renderer, camera: &Camera, selected
     out
 }
 
+/// Draw one frame of anything into an RGBA8 image (rows top to bottom): `draw` is given the
+/// encoder and the picture to draw into.
+pub fn draw_rgba(gpu: &Gpu, w: u32, h: u32, draw: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView)) -> Vec<u8> {
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("offscreen"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&Default::default());
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    draw(&mut encoder, &view);
+    let padded = (w * 4).div_ceil(256) * 256;
+    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("readback"), size: (padded * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(h) } },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+    gpu.queue.submit([encoder.finish()]);
+    let slice = buffer.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |r| r.expect("map readback buffer"));
+    gpu.device.poll(wgpu::PollType::wait_indefinitely()).expect("gpu poll");
+    let data = slice.get_mapped_range().expect("read mapped range");
+    let mut out = Vec::with_capacity((w * h * 4) as usize);
+    for row in 0..h as usize {
+        out.extend_from_slice(&data[row * padded as usize..row * padded as usize + (w * 4) as usize]);
+    }
+    out
+}
+
 /// GPU throughput: draw `frames` frames back to back into one texture without reading them back,
 /// wait for the GPU once at the end, and return the mean milliseconds per frame. Steadier than
 /// timing single frames, which each wait for a full round trip to the GPU.

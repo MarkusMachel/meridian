@@ -37,6 +37,12 @@ if [ -f data/baked/meridian-map.bin ]; then
   # Map rewrite M2: rivers, bridges and marches on the hexagon map; a year with marching units replays to the same hashes.
   MERIDIAN_REQUIRE_MAP=1 cargo test --release -p runner --test hex_world
   ./target/release/runner map-run data/baked/meridian-map.bin 1 8760
+  # Map rewrite M3: the globe. Picking and hexagon triangles on the real map, and one frame
+  # drawn without a window.
+  MERIDIAN_REQUIRE_MAP=1 cargo test --release -p client --test globe
+  cargo build --release -p client
+  ./target/release/client --screenshot "$tmp/globe.png" --size 800x450 --at 52.4,9.7,400
+  [ -s "$tmp/globe.png" ] || { echo "FAIL: client wrote no picture of the globe"; exit 1; }
   if [ -f data/baked/meridian-render.bin ]; then
     # Client smoke test: draw one frame without a window and check that a picture was written.
     cargo build --release -p client

@@ -19,3 +19,4 @@ pub use camera::{Bounds, Camera};
 pub use modes::{Mode, Rgba};
 pub use picker::{CellPicker, Picker};
 pub use session::{Session, Snapshot, Speed};
+pub mod globe;

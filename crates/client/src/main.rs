@@ -3,8 +3,12 @@
 //!
 //! Options: --data DIR (default data/baked) | --size WxH | --view CX,CY,M_PER_PX (Equal Earth metres)
 //!          --mode political|value|terrain | --ticks N | --select PROVINCE | --bench FRAMES
+//!          --at LAT,LON,KM (hexagon map: look at a place, the screen KM kilometres wide)
+//!
+//! A hexagon map (map rewrite) is shown as a globe; an old cell map with its render file as the flat map.
 
 mod app;
+mod globe_app;
 
 use client::camera::{Bounds, Camera};
 use client::modes::{self, Mode};
@@ -21,6 +25,7 @@ struct Args {
     screenshot: Option<PathBuf>,
     size: (u32, u32),
     view: Option<(f64, f64, f64)>,
+    at: Option<(f64, f64, f64)>,
     mode: Mode,
     ticks: u64,
     select: u32,
@@ -28,7 +33,7 @@ struct Args {
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut a = Args { data: PathBuf::from("data/baked"), screenshot: None, size: (1600, 900), view: None, mode: Mode::Political, ticks: 0, select: NO_PROVINCE, bench: 0 };
+    let mut a = Args { data: PathBuf::from("data/baked"), screenshot: None, size: (1600, 900), view: None, at: None, mode: Mode::Political, ticks: 0, select: NO_PROVINCE, bench: 0 };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
@@ -46,6 +51,13 @@ fn parse_args() -> Result<Args, String> {
                     return Err("--view wants CX,CY,M_PER_PX".into());
                 }
                 a.view = Some((v[0], v[1], v[2]));
+            }
+            "--at" => {
+                let v: Vec<f64> = value("--at")?.split(',').map(|x| x.parse().map_err(|_| "bad --at number")).collect::<Result<_, _>>()?;
+                if v.len() != 3 {
+                    return Err("--at wants LAT,LON,KM".into());
+                }
+                a.at = Some((v[0], v[1], v[2]));
             }
             "--mode" => {
                 a.mode = match value("--mode")?.as_str() {
@@ -73,6 +85,10 @@ fn main() {
         }
     };
     let map = Arc::new(meridian_data::load_map_file(&args.data.join("meridian-map.bin")).unwrap_or_else(|e| panic!("{}", e[0])));
+    if map.is_globe() {
+        globe_main(&args, map);
+        return;
+    }
     let render = meridian_data::load_render_file(&args.data.join("meridian-render.bin")).unwrap_or_else(|e| panic!("{e}"));
     let provinces = map.province_count() as usize;
     let cities = client::labels::city_positions(&map, &render);
@@ -132,4 +148,53 @@ fn main() {
     eprintln!("frame: {:.1} ms (level {}, tick {}, {})", t.elapsed().as_secs_f64() * 1000.0, renderer.level_in_use(), snap.tick, snap.date);
     offscreen::write_png(&out, args.size.0, args.size.1, &rgba).unwrap_or_else(|e| panic!("{e}"));
     eprintln!("wrote {}", out.display());
+}
+
+/// The hexagon world: the globe window, or one frame of it into a picture.
+fn globe_main(args: &Args, map: Arc<meridian_core::Map>) {
+    use client::globe::{GlobeCamera, GlobeRenderer, HexIndex};
+    let world = proving_ground::scenario_on_map(1, map.clone());
+    let mut session = Session::new(world, Box::new(proving_ground::rules(false)), CountryId(0));
+    let Some(out) = args.screenshot.clone() else {
+        globe_app::run(globe_app::Inputs { map, session, view: args.at });
+        return;
+    };
+    session.set_speed(Speed::Run(5));
+    while session.refresh().tick < args.ticks {
+        session.frame();
+        std::thread::yield_now();
+    }
+    let snap = session.refresh().clone();
+    let gpu = offscreen::headless_gpu().expect("no GPU adapter available");
+    eprintln!("GPU: {}", gpu.adapter_name);
+    let index = HexIndex::new(&map);
+    let mut renderer = GlobeRenderer::new(&gpu.device, &gpu.queue, offscreen::FORMAT, &map, &index);
+    let colors = match args.mode {
+        Mode::Political => modes::political(&snap.controllers),
+        Mode::Value => modes::value_ramp(&snap.values),
+        Mode::Terrain => modes::terrain(&modes::dominant_terrain(&map)),
+    };
+    renderer.set_colors(&gpu.queue, &colors);
+    let (w, h) = args.size;
+    let camera = match args.at {
+        Some((lat, lon, km)) => GlobeCamera::looking_at(w as f64, h as f64, lat, lon, km),
+        None => GlobeCamera::whole_globe(w as f64, h as f64, 48.0, 12.0),
+    };
+    let mut frame = |wait: bool| offscreen::draw_rgba(&gpu, w, h, |enc, view| renderer.render(&gpu.device, &gpu.queue, enc, view, &camera, &map, &index, None, wait));
+    let rgba = frame(true);
+    if args.bench > 0 {
+        let mut times: Vec<f64> = (0..args.bench)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                let _ = frame(false);
+                t.elapsed().as_secs_f64() * 1000.0
+            })
+            .collect();
+        times.sort_by(|a, b| a.total_cmp(b));
+        let mean = times.iter().sum::<f64>() / times.len() as f64;
+        eprintln!("bench {w}x{h} at {:.0} m/px: mean {mean:.2} ms, p50 {:.2}, max {:.2} (each frame is drawn and read back)", camera.m_per_px(), times[times.len() / 2], times[times.len() - 1]);
+        return;
+    }
+    offscreen::write_png(&out, w, h, &rgba).unwrap_or_else(|e| panic!("{e}"));
+    eprintln!("wrote {} (tick {}, {})", out.display(), snap.tick, snap.date);
 }
