@@ -645,3 +645,9 @@ The owner's screenshot showed the ground choked with blue lines, and asked that 
 - **A region's border** (the hexagon-edge province line in `fs_tile`) is stronger and in its own colour (a dark red-brown) rather than a faint darkening, and now stays visible out to a region's own scale (to about 3,200 m a pixel) instead of fading by 600. It still follows hexagon edges, a coarser shape than the real admin-1 line engineering M4 may draw later, not the province's true outline.
 - **Country borders already draw from the real 1990 line** (`build_globe_lines.py`, style 1); nothing changed there.
 
+## A name alone did not make a river major (2026-11-11)
+
+The last entry's fix (an unnamed river or canal is drawn as a stream) was not enough: the owner's real Italy screenshot was still a web of blue. In Italy almost every watercourse is named, down to the smallest hillside gully, so "named" and "major" are not the same thing there. `build_pack.py` now reads the file once first, adds up the length of every way that shares a river's or canal's name (one river is many short ways in OpenStreetMap, so one way's own length says nothing), and only a river whose whole length is at least 15 km keeps its place; a shorter one, named or not, is drawn as a stream instead. It prints the count of named rivers and how many clear the bar, so a future run can say whether 15 km was the right line.
+
+Caught before it reached the owner: a first version of this used `name` as the loop variable for the river's own name, inside the same function whose parameter is the pack's name (`rome`, `italy`). Python's scoping made that one variable, so every file it wrote came out named after the last river read instead of the pack. Seen only on made-up data, where the fixture has exactly one named, long waterway, so it could not show the problem this is really meant to fix: whether 15 km is the right line for Italy's own rivers is still unchecked.
+

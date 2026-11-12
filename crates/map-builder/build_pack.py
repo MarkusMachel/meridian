@@ -74,6 +74,7 @@ ROADS = {
 }
 RAIL = (7, 3)
 WATERWAYS = {"river": (3, 2), "canal": (3, 5), "stream": (9, 4)}      # style 9: a stream, a thin line close up
+MAJOR_RIVER_MIN_M = 15_000       # a named "river" or "canal" shorter than this, start to end, is drawn as a stream instead
 SIMPLIFY_DEG = 0.00008          # about 8 m: under half a pixel at the closest zoom
 BUCKET_LEVEL = 4                # hexagons about 45 km across
 BUCKET_REACH_MICRORAD = 6_500
@@ -229,6 +230,47 @@ def heights_picture(dem_dir, west, south, east, north):
     return out, used
 
 
+def approx_length_m(coords):
+    """A line's length in metres, near enough for a size threshold: longitude is scaled by the
+    cosine of its middle latitude, not projected properly."""
+    xy = np.asarray(coords)[:, :2]
+    if len(xy) < 2:
+        return 0.0
+    band = np.cos(np.radians(xy[:, 1].mean()))
+    d = np.diff(xy, axis=0)
+    return float(np.sum(np.hypot(d[:, 0] * band, d[:, 1])) * 111_320.0)
+
+
+def named_waterway_lengths(features_file):
+    """Every named river or canal is really one river or canal cut into many short OpenStreetMap
+    ways; a single way's own length says nothing about whether it is a major river or a trickle
+    that happens to be named. This adds up every way of the same name first, so the length that
+    decides is the whole river's, not one piece of it."""
+    lengths = {}
+    with open(features_file, encoding="utf-8") as f:
+        for row in f:
+            row = row.strip().lstrip("\x1e")
+            if not row:
+                continue
+            try:
+                feature = json.loads(row)
+                tags = feature.get("properties") or {}
+            except (ValueError, TypeError):
+                continue
+            name = tags.get("name")
+            if tags.get("waterway") not in ("river", "canal") or not name:
+                continue
+            try:
+                geom = shape(feature["geometry"])
+            except (KeyError, TypeError, AttributeError):
+                continue
+            if geom.geom_type not in ("LineString", "MultiLineString"):
+                continue
+            key = str(name).strip().casefold()
+            lengths[key] = lengths.get(key, 0.0) + sum(approx_length_m(p) for p in gl.parts(geom))
+    return lengths
+
+
 def main(name, features_file, poly_file, out_dir, land_file=None, dem_dir=None):
     out_dir = Path(out_dir)
     rings = read_poly(poly_file)
@@ -253,6 +295,10 @@ def main(name, features_file, poly_file, out_dir, land_file=None, dem_dir=None):
     else:
         land_sheet = None
         print("no land polygons given: everything inside the picture is taken for land")
+
+    river_length = named_waterway_lengths(features_file)
+    major = sum(1 for v in river_length.values() if v >= MAJOR_RIVER_MIN_M)
+    print(f"named rivers and canals: {len(river_length):,}, of which {major:,} are at least {MAJOR_RIVER_MIN_M / 1000:.0f} km end to end")
 
     lines, counts, areas, bad = [], {}, {}, 0
     labels = {}        # (kind, text, hexagon) -> (lon, lat): one label of a kind and text per hexagon
@@ -283,11 +329,14 @@ def main(name, features_file, poly_file, out_dir, land_file=None, dem_dir=None):
                     for p in gl.parts(geom):
                         network.add(p, road=road, rail=rail)
                 waterway = tags.get("waterway")
-                if waterway in ("river", "canal") and not tags.get("name"):
-                    # OpenStreetMap tags countless small, unnamed watercourses as "river" in
-                    # hilly country; without a name it is almost never one, so it is drawn (if
-                    # at all) as a stream, close up only, not as a major river everywhere.
-                    waterway = "stream"
+                if waterway in ("river", "canal"):
+                    # OpenStreetMap tags countless small watercourses as "river" in hilly country,
+                    # and in Italy most of them are named too (a named trickle is still a
+                    # trickle), so a name alone does not make one major. What does is its whole
+                    # length, added up over every short way that makes up the one river.
+                    river_name = tags.get("name")
+                    if not river_name or river_length.get(str(river_name).strip().casefold(), 0.0) < MAJOR_RIVER_MIN_M:
+                        waterway = "stream"
                 found = ROADS.get(tags.get("highway")) or (RAIL if tags.get("railway") == "rail" and tags.get("service") is None else None) or WATERWAYS.get(waterway)
                 if found is None or tags.get("tunnel") in ("yes", "building_passage"):
                     continue
